@@ -1,0 +1,309 @@
+use tauri::State;
+
+use crate::errors::{ApiError, AppError};
+use crate::models::{
+    CreateLearningContentInput, CreateNoteInput, ImportMaterialFileInput, LearningContent,
+    LearningDetail, MaterialItem, MaterialPreview, Note, ReadingState, SaveReadingStateInput,
+    UpdateNoteInput,
+};
+use crate::repository::LearningContentRepository;
+use crate::AppState;
+
+#[tauri::command]
+pub fn list_learning_contents(
+    state: State<'_, AppState>,
+) -> Result<Vec<LearningContent>, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    list_learning_contents_from_repository(&repository)
+}
+
+#[tauri::command]
+pub fn create_learning_content(
+    state: State<'_, AppState>,
+    input: CreateLearningContentInput,
+) -> Result<LearningContent, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    create_learning_content_in_repository(&repository, input)
+}
+
+#[tauri::command]
+pub fn get_learning_detail(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<LearningDetail>, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    get_learning_detail_from_repository(&repository, &id)
+}
+
+#[tauri::command]
+pub fn delete_learning_content(state: State<'_, AppState>, id: String) -> Result<(), ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    delete_learning_content_in_repository(&repository, &id)
+}
+
+#[tauri::command]
+pub fn import_material_file(
+    state: State<'_, AppState>,
+    input: ImportMaterialFileInput,
+) -> Result<MaterialItem, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    let material_library_dir = state.material_library_dir.clone();
+    import_material_file_in_repository(&repository, input, &material_library_dir)
+}
+
+#[tauri::command]
+pub fn create_note(state: State<'_, AppState>, input: CreateNoteInput) -> Result<Note, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    create_note_in_repository(&repository, input)
+}
+
+#[tauri::command]
+pub fn update_note(state: State<'_, AppState>, input: UpdateNoteInput) -> Result<Note, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    update_note_in_repository(&repository, input)
+}
+
+#[tauri::command]
+pub fn preview_material_file(
+    state: State<'_, AppState>,
+    material_id: String,
+) -> Result<MaterialPreview, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    preview_material_file_in_repository(&repository, &material_id)
+}
+
+#[tauri::command]
+pub fn get_reading_state(
+    state: State<'_, AppState>,
+    learning_content_id: String,
+) -> Result<Option<ReadingState>, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    get_reading_state_from_repository(&repository, &learning_content_id)
+}
+
+#[tauri::command]
+pub fn save_reading_state(
+    state: State<'_, AppState>,
+    input: SaveReadingStateInput,
+) -> Result<ReadingState, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    save_reading_state_in_repository(&repository, input)
+}
+
+fn list_learning_contents_from_repository(
+    repository: &LearningContentRepository,
+) -> Result<Vec<LearningContent>, ApiError> {
+    repository.list().map_err(ApiError::from)
+}
+
+fn create_learning_content_in_repository(
+    repository: &LearningContentRepository,
+    input: CreateLearningContentInput,
+) -> Result<LearningContent, ApiError> {
+    repository.create(input).map_err(ApiError::from)
+}
+
+fn get_learning_detail_from_repository(
+    repository: &LearningContentRepository,
+    id: &str,
+) -> Result<Option<LearningDetail>, ApiError> {
+    repository.get_detail(id).map_err(ApiError::from)
+}
+
+fn delete_learning_content_in_repository(
+    repository: &LearningContentRepository,
+    id: &str,
+) -> Result<(), ApiError> {
+    repository
+        .delete_learning_content(id)
+        .map_err(ApiError::from)
+}
+
+fn import_material_file_in_repository(
+    repository: &LearningContentRepository,
+    input: ImportMaterialFileInput,
+    material_library_dir: &std::path::Path,
+) -> Result<MaterialItem, ApiError> {
+    repository
+        .import_material_file(
+            &input.learning_content_id,
+            input.source_path,
+            material_library_dir,
+        )
+        .map_err(ApiError::from)
+}
+
+fn create_note_in_repository(
+    repository: &LearningContentRepository,
+    input: CreateNoteInput,
+) -> Result<Note, ApiError> {
+    repository
+        .create_note(&input.learning_content_id, input.title, input.body)
+        .map_err(ApiError::from)
+}
+
+fn update_note_in_repository(
+    repository: &LearningContentRepository,
+    input: UpdateNoteInput,
+) -> Result<Note, ApiError> {
+    repository
+        .update_note(&input.note_id, input.title, input.body)
+        .map_err(ApiError::from)
+}
+
+fn preview_material_file_in_repository(
+    repository: &LearningContentRepository,
+    material_id: &str,
+) -> Result<MaterialPreview, ApiError> {
+    repository
+        .preview_material_file(material_id)
+        .map_err(ApiError::from)
+}
+
+fn get_reading_state_from_repository(
+    repository: &LearningContentRepository,
+    learning_content_id: &str,
+) -> Result<Option<ReadingState>, ApiError> {
+    repository
+        .get_reading_state(learning_content_id)
+        .map_err(ApiError::from)
+}
+
+fn save_reading_state_in_repository(
+    repository: &LearningContentRepository,
+    input: SaveReadingStateInput,
+) -> Result<ReadingState, ApiError> {
+    repository
+        .save_reading_state(
+            &input.learning_content_id,
+            input.current_material_id.as_deref(),
+            input.current_note_id.as_deref(),
+            input.split_ratio,
+        )
+        .map_err(ApiError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::repository::LearningContentRepository;
+
+    use super::*;
+
+    #[test]
+    fn command_handlers_share_repository_state_for_create_and_list() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+
+        create_learning_content_in_repository(
+            &repository,
+            CreateLearningContentInput {
+                name: "SQLite 闭环".to_string(),
+                deadline: None,
+                estimated_hours: Some(3.0),
+                progress: Some(10),
+            },
+        )
+        .expect("create learning content");
+
+        let contents =
+            list_learning_contents_from_repository(&repository).expect("list learning contents");
+
+        assert_eq!(contents.len(), 1);
+        assert_eq!(contents[0].name, "SQLite 闭环");
+        assert_eq!(contents[0].progress, 10);
+    }
+
+    #[test]
+    fn command_handlers_create_detail_material_note_and_delete_learning_content() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("source.txt");
+        std::fs::write(&source_file, "hello").expect("write source file");
+
+        let content = create_learning_content_in_repository(
+            &repository,
+            CreateLearningContentInput {
+                name: "详情页命令闭环".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            },
+        )
+        .expect("create learning content");
+        import_material_file_in_repository(
+            &repository,
+            ImportMaterialFileInput {
+                learning_content_id: content.id.clone(),
+                source_path: source_file.to_string_lossy().to_string(),
+            },
+            &material_library_dir,
+        )
+        .expect("import material");
+        create_note_in_repository(
+            &repository,
+            CreateNoteInput {
+                learning_content_id: content.id.clone(),
+                title: "命令笔记".to_string(),
+                body: "正文".to_string(),
+            },
+        )
+        .expect("create note");
+
+        let detail = get_learning_detail_from_repository(&repository, &content.id)
+            .expect("get detail")
+            .expect("detail exists");
+        assert_eq!(detail.materials.len(), 1);
+        assert_eq!(detail.notes.len(), 1);
+
+        delete_learning_content_in_repository(&repository, &content.id)
+            .expect("delete learning content");
+        assert!(
+            get_learning_detail_from_repository(&repository, &content.id)
+                .expect("get deleted detail")
+                .is_none()
+        );
+    }
+}

@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StudySeq 阅读布局概念</title>
+    <style>
+      @import url("https://cdn.jsdelivr.net/npm/misans-webfont@4.3.1/misans-style.css");
+      @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+
+      :root {
+        --bg-top: #eef5ff;
+        --bg-bottom: #f7fbff;
+        --sky-ink: #0f2857;
+        --sky-text: #1c376a;
+        --sky-muted: #6a7b9d;
+        --sky-line: rgba(40, 78, 150, 0.12);
+        --sky-line-soft: rgba(40, 78, 150, 0.08);
+        --accent: #2b61df;
+        --accent-strong: #1f4fc7;
+        --shadow: 0 18px 50px rgba(76, 115, 197, 0.08);
+        --radius-xl: 24px;
+        --radius-lg: 18px;
+        --radius-md: 14px;
+        --radius-sm: 999px;
+        --font-ui: "MiSans", "PingFang SC", "Microsoft YaHei UI",
+          sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; }
+      body {
+        min-height: 100vh;
+        color: var(--sky-ink);
+        font-family: var(--font-ui);
+        background:
+          radial-gradient(circle at top left, rgba(255, 255, 255, 0.88), transparent 26%),
+          radial-gradient(circle at 82% 10%, rgba(173, 200, 255, 0.48), transparent 28%),
+          linear-gradient(180deg, var(--bg-top), var(--bg-bottom) 62%, #fdfefe);
+      }
+      h1, h2, h3, p { margin: 0; }
+      button { font: inherit; border: 0; cursor: pointer; }
+
+      .page {
+        width: min(1400px, calc(100% - 32px));
+        min-height: calc(100vh - 24px);
+        margin: 12px auto;
+        padding: 16px;
+        border-radius: var(--radius-xl);
+        border: 1px solid var(--sky-line);
+        background: rgba(255, 255, 255, 0.56);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(16px);
+      }
+
+      .frame {
+        position: relative;
+        min-height: calc(100vh - 56px);
+        border-radius: 22px;
+        border: 1px solid rgba(40, 78, 150, 0.16);
+        background:
+          radial-gradient(circle at top right, rgba(43, 97, 223, 0.05), transparent 22%),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(247, 251, 255, 0.97));
+        overflow: hidden;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 18px;
+        padding: 20px 20px 14px;
+        border-bottom: 1px solid rgba(40, 78, 150, 0.08);
+      }
+
+      .eyebrow {
+        color: var(--sky-muted);
+        font-family: "Inter", "MiSans", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      .topbar h1 {
+        margin-top: 8px;
+        font-size: clamp(28px, 3vw, 40px);
+        line-height: 1.05;
+        letter-spacing: -0.03em;
+        font-weight: 500;
+      }
+
+      .topbar p {
+        display: none;
+      }
+
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding-top: 8px;
+      }
+
+      .ghost-button,
+      .primary-button {
+        height: 42px;
+        padding: 0 14px;
+        border-radius: 12px;
+        font-size: 13px;
+        font-weight: 400;
+        font-family: "MiSans", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+        letter-spacing: 0.05em;
+      }
+
+      .ghost-button {
+        color: var(--sky-text);
+        border: 1px solid var(--sky-line);
+        background: rgba(255, 255, 255, 0.84);
+      }
+
+      .primary-button {
+        color: #fff;
+        background: linear-gradient(180deg, #3d73eb, var(--accent-strong));
+        box-shadow: 0 10px 24px rgba(43, 97, 223, 0.22);
+      }
+
+      .viewer-shell {
+        position: absolute;
+        inset: 90px 20px 20px;
+        border-radius: 22px;
+        border: 1px solid rgba(40, 78, 150, 0.10);
+        background: rgba(255, 255, 255, 0.42);
+        overflow: hidden;
+      }
+
+      .viewer-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 14px;
+        border-bottom: 1px solid rgba(40, 78, 150, 0.08);
+        background: rgba(255, 255, 255, 0.68);
+      }
+
+      .viewer-title {
+        color: var(--sky-text);
+        font-family: "Inter", "MiSans", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+      }
+
+      .viewer-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .viewer-body {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 360px;
+        min-height: calc(100% - 54px);
+      }
+
+      .content {
+        position: relative;
+        padding: 28px 34px 28px 34px;
+        background: rgba(255, 255, 255, 0.76);
+      }
+
+      .content h2 {
+        margin-top: 18px;
+        font-size: 28px;
+        font-weight: 500;
+        line-height: 1.08;
+        letter-spacing: -0.03em;
+      }
+
+      .content p {
+        margin-top: 12px;
+        max-width: 620px;
+        color: var(--sky-text);
+        font-size: 14px;
+        line-height: 1.8;
+      }
+
+      .reader-placeholder {
+        position: absolute;
+        left: 34px;
+        top: 116px;
+        right: 34px;
+        bottom: 44px;
+        border-radius: 18px;
+        border: 1px solid rgba(40, 78, 150, 0.08);
+        background:
+          linear-gradient(180deg, rgba(249, 251, 255, 0.96), rgba(241, 246, 255, 0.92));
+      }
+
+      .reader-placeholder::before {
+        content: "学习内容（可播放 PDF、Word、视频等）";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: 220px;
+        color: var(--sky-text);
+        font-family: "MiSans", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+        font-size: 22px;
+        line-height: 1.35;
+        text-align: center;
+      }
+
+      .side {
+        position: relative;
+        border-left: 1px solid rgba(40, 78, 150, 0.08);
+        background:
+          linear-gradient(180deg, rgba(239, 245, 255, 0.88), rgba(247, 251, 255, 0.96));
+      }
+
+      .side-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 18px 18px 12px;
+      }
+
+      .side-head strong {
+        color: var(--sky-text);
+        font-size: 16px;
+        font-weight: 500;
+      }
+
+      .dropdown {
+        padding: 8px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--sky-line);
+        background: rgba(255, 255, 255, 0.88);
+        color: var(--sky-text);
+        font-family: "MiSans", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+        font-size: 13px;
+        letter-spacing: 0.04em;
+      }
+
+      .note-list {
+        padding: 0 18px 18px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .note-card {
+        padding: 11px 12px 12px;
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.78);
+        border: 1px solid rgba(40, 78, 150, 0.08);
+      }
+
+      .note-card strong {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--sky-text);
+        font-size: 13px;
+        font-weight: 500;
+      }
+
+      .note-card p {
+        color: var(--sky-text);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+
+      .footer-note {
+        position: absolute;
+        left: 20px;
+        right: 20px;
+        bottom: 14px;
+        color: var(--sky-muted);
+        font-family: "Inter", "MiSans", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      @media (max-width: 1100px) {
+        .viewer-body { grid-template-columns: 1fr; }
+        .side { border-left: 0; border-top: 1px solid rgba(40, 78, 150, 0.08); }
+      }
+
+      @media (max-width: 920px) {
+        .page { width: min(100% - 12px, 100%); padding: 10px; }
+        .frame { min-height: calc(100vh - 44px); }
+        .viewer-shell { inset: 84px 10px 10px; }
+        .topbar { flex-direction: column; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="frame">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">StudySeq / 知序</p>
+            <h1>阅览布局概念</h1>
+            <p>左侧阅读内容，右侧笔记面板。右上角的按钮用于切换 / 下拉选择笔记，布局支持拖动分栏。</p>
+          </div>
+          <div class="toolbar">
+            <button class="ghost-button">返回</button>
+            <button class="primary-button">＋ 新建笔记</button>
+          </div>
+        </header>
+
+        <div class="viewer-shell">
+          <div class="viewer-top">
+            <div class="viewer-title">学习内容 / 资料阅览</div>
+            <div class="viewer-actions">
+              <button class="dropdown">笔记选择（可下拉）</button>
+            </div>
+          </div>
+
+          <div class="viewer-body">
+            <section class="content">
+              <h2>学习内容（可播放 PDF、Word、视频等）</h2>
+              <p>
+                中间区域是主阅览区，尽量保持空白和专注感。用户在这里进行播放、阅读、翻页、搜索，不被右侧信息打断。
+              </p>
+              <div class="reader-placeholder"></div>
+            </section>
+
+            <aside class="side">
+              <div class="side-head">
+                <strong>笔记</strong>
+                <button class="dropdown">学习笔记 01</button>
+              </div>
+              <div class="note-list">
+                <div class="note-card">
+                  <strong>学习笔记 01</strong>
+                  <p>记录当前阅读内容中的关键结论，支持下拉切换到其他笔记。</p>
+                </div>
+                <div class="note-card">
+                  <strong>学习笔记 02</strong>
+                  <p>可作为补充说明、待确认问题或练习记录，保持和内容并行。</p>
+                </div>
+              </div>
+            </aside>
+          </div>
+
+          <div class="footer-note">说明：这里是阅览布局草图，后续可以再把分隔线拖拽、笔记下拉菜单和悬浮窗交互继续细化。</div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

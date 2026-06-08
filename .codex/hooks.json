@@ -1,0 +1,45 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .codex/hooks/sessionStart.ps1",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File .codex/hooks/sessionStart.ps1",
+            "statusMessage": "正在加载 Planassiant 工作上下文",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .codex/hooks/preCompact.ps1",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File .codex/hooks/preCompact.ps1",
+            "statusMessage": "压缩前检查工作上下文",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .codex/hooks/stop.ps1",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File .codex/hooks/stop.ps1",
+            "statusMessage": "检查工作上下文更新提醒",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

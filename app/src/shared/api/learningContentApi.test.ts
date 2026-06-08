@@ -1,0 +1,246 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+}));
+
+import { invoke } from "@tauri-apps/api/core";
+import {
+  createLearningContent,
+  createNote,
+  deleteLearningContent,
+  getReadingState,
+  getLearningDetail,
+  importMaterialFile,
+  listLearningContents,
+  previewMaterialFile,
+  saveReadingState,
+  updateNote,
+} from "./learningContentApi";
+
+const invokeMock = vi.mocked(invoke);
+
+describe("learningContentApi", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+  });
+
+  it("loads learning contents through the Rust command", async () => {
+    invokeMock.mockResolvedValueOnce([
+      {
+        id: "study-1",
+        name: "Rust 入门",
+        status: "planned",
+        deadline: null,
+        estimatedHours: 10,
+        progress: 20,
+        createdAt: "2026-06-08T00:00:00Z",
+        updatedAt: "2026-06-08T00:00:00Z",
+        lastOpenedAt: null,
+      },
+    ]);
+
+    const result = await listLearningContents();
+
+    expect(invokeMock).toHaveBeenCalledWith("list_learning_contents");
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe("Rust 入门");
+  });
+
+  it("creates learning content through the Rust command", async () => {
+    invokeMock.mockResolvedValueOnce({
+      id: "study-2",
+      name: "TypeScript 练习",
+      status: "planned",
+      deadline: null,
+      estimatedHours: 6,
+      progress: 0,
+      createdAt: "2026-06-08T00:00:00Z",
+      updatedAt: "2026-06-08T00:00:00Z",
+      lastOpenedAt: null,
+    });
+
+    const result = await createLearningContent({
+      name: "TypeScript 练习",
+      estimatedHours: 6,
+      progress: 0,
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("create_learning_content", {
+      input: {
+        name: "TypeScript 练习",
+        estimatedHours: 6,
+        progress: 0,
+      },
+    });
+    expect(result.id).toBe("study-2");
+  });
+
+  it("loads a learning detail through the Rust command", async () => {
+    invokeMock.mockResolvedValueOnce({
+      learningContent: {
+        id: "study-1",
+        name: "Rust 入门",
+        status: "planned",
+        deadline: null,
+        estimatedHours: 10,
+        progress: 20,
+        createdAt: "2026-06-08T00:00:00Z",
+        updatedAt: "2026-06-08T00:00:00Z",
+        lastOpenedAt: null,
+      },
+      materials: [],
+      notes: [],
+    });
+
+    const result = await getLearningDetail("study-1");
+
+    expect(invokeMock).toHaveBeenCalledWith("get_learning_detail", { id: "study-1" });
+    expect(result?.learningContent.name).toBe("Rust 入门");
+  });
+
+  it("deletes learning content through the Rust command", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await deleteLearningContent("study-1");
+
+    expect(invokeMock).toHaveBeenCalledWith("delete_learning_content", { id: "study-1" });
+  });
+
+  it("imports material through the Rust command", async () => {
+    invokeMock.mockResolvedValueOnce({
+      id: "mat-1",
+      learningContentId: "study-1",
+      name: "资料.txt",
+      originalPath: "C:/source/资料.txt",
+      storedPath: "C:/app/资料.txt",
+      mimeType: "text/plain",
+      sizeBytes: 5,
+      createdAt: "2026-06-08T00:00:00Z",
+      updatedAt: "2026-06-08T00:00:00Z",
+    });
+
+    const result = await importMaterialFile({
+      learningContentId: "study-1",
+      sourcePath: "C:/source/资料.txt",
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("import_material_file", {
+      input: {
+        learningContentId: "study-1",
+        sourcePath: "C:/source/资料.txt",
+      },
+    });
+    expect(result.name).toBe("资料.txt");
+  });
+
+  it("creates plain-text note through the Rust command", async () => {
+    invokeMock.mockResolvedValueOnce({
+      id: "note-1",
+      learningContentId: "study-1",
+      title: "第一条笔记",
+      body: "纯文本正文",
+      createdAt: "2026-06-08T00:00:00Z",
+      updatedAt: "2026-06-08T00:00:00Z",
+    });
+
+    const result = await createNote({
+      learningContentId: "study-1",
+      title: "第一条笔记",
+      body: "纯文本正文",
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("create_note", {
+      input: {
+        learningContentId: "study-1",
+        title: "第一条笔记",
+        body: "纯文本正文",
+      },
+    });
+    expect(result.body).toBe("纯文本正文");
+  });
+
+  it("previews material through the Rust command", async () => {
+    invokeMock.mockResolvedValueOnce({
+      materialId: "mat-1",
+      kind: "text",
+      mimeType: "text/plain",
+      text: "资料正文",
+      dataUrl: null,
+      encoding: "utf-8",
+    });
+
+    const result = await previewMaterialFile("mat-1");
+
+    expect(invokeMock).toHaveBeenCalledWith("preview_material_file", {
+      materialId: "mat-1",
+    });
+    expect(result.text).toBe("资料正文");
+  });
+
+  it("updates plain-text note through the Rust command", async () => {
+    invokeMock.mockResolvedValueOnce({
+      id: "note-1",
+      learningContentId: "study-1",
+      title: "更新标题",
+      body: "更新正文",
+      createdAt: "2026-06-08T00:00:00Z",
+      updatedAt: "2026-06-08T00:01:00Z",
+    });
+
+    const result = await updateNote({
+      noteId: "note-1",
+      title: "更新标题",
+      body: "更新正文",
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("update_note", {
+      input: {
+        noteId: "note-1",
+        title: "更新标题",
+        body: "更新正文",
+      },
+    });
+    expect(result.title).toBe("更新标题");
+  });
+
+  it("loads and saves reading state through Rust commands", async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        learningContentId: "study-1",
+        currentMaterialId: "mat-1",
+        currentNoteId: "note-1",
+        splitRatio: 62,
+        updatedAt: "2026-06-08T00:00:00Z",
+      })
+      .mockResolvedValueOnce({
+        learningContentId: "study-1",
+        currentMaterialId: "mat-2",
+        currentNoteId: "note-2",
+        splitRatio: 55,
+        updatedAt: "2026-06-08T00:01:00Z",
+      });
+
+    const loaded = await getReadingState("study-1");
+    const saved = await saveReadingState({
+      learningContentId: "study-1",
+      currentMaterialId: "mat-2",
+      currentNoteId: "note-2",
+      splitRatio: 55,
+    });
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "get_reading_state", {
+      learningContentId: "study-1",
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "save_reading_state", {
+      input: {
+        learningContentId: "study-1",
+        currentMaterialId: "mat-2",
+        currentNoteId: "note-2",
+        splitRatio: 55,
+      },
+    });
+    expect(loaded?.currentMaterialId).toBe("mat-1");
+    expect(saved.currentNoteId).toBe("note-2");
+  });
+});

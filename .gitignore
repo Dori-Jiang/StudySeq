@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+out/
+target/
+app/src-tauri/target/
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+.codex/context-inbox.md
+.codex/session-data/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local generated brainstorming artifacts
+.superpowers/

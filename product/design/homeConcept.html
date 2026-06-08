@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Learning OS</title>
+    <style>
+      @import url("https://cdn.jsdelivr.net/npm/misans-webfont@4.3.1/misans-style.css");
+      @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+
+      :root {
+        --bg-top: #eef5ff;
+        --bg-bottom: #f7fbff;
+        --sky-ink: #0f2857;
+        --sky-text: #1c376a;
+        --sky-muted: #6a7b9d;
+        --sky-line: rgba(40, 78, 150, 0.12);
+        --sky-line-soft: rgba(40, 78, 150, 0.08);
+        --sky-cloud: rgba(255, 255, 255, 0.76);
+        --sky-cloud-strong: rgba(255, 255, 255, 0.96);
+        --accent: #2b61df;
+        --accent-strong: #1f4fc7;
+        --blue: #2b61df;
+        --green: #2f7d59;
+        --amber: #b06e2d;
+        --danger: #c3554d;
+        --shadow: 0 18px 50px rgba(76, 115, 197, 0.08);
+        --radius-xl: 18px;
+        --radius-lg: 16px;
+        --radius-md: 14px;
+        --radius-sm: 999px;
+        --font-ui: "MiSans", "PingFang SC", "Microsoft YaHei UI",
+          sans-serif;
+        --fs-label: 11px;
+        --fs-meta: 13px;
+        --fs-body: 16px;
+        --fs-title: 24px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+      }
+
+      body {
+        min-height: 100vh;
+        color: var(--sky-ink);
+        font-family: var(--font-ui);
+        background:
+          radial-gradient(circle at top left, rgba(255, 255, 255, 0.88), transparent 26%),
+          radial-gradient(circle at 82% 10%, rgba(173, 200, 255, 0.48), transparent 28%),
+          linear-gradient(180deg, var(--bg-top), var(--bg-bottom) 62%, #fdfefe);
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      button {
+        font: inherit;
+        border: 0;
+        cursor: pointer;
+      }
+
+      button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+
+      .app-shell {
+        width: min(1400px, calc(100% - 28px));
+        min-height: calc(100vh - 28px);
+        margin: 14px auto;
+        padding: 12px;
+        border: 1px solid var(--sky-line);
+        border-radius: var(--radius-xl);
+        background: rgba(255, 255, 255, 0.56);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(16px);
+      }
+
+      .app-layout {
+        min-height: calc(100vh - 56px);
+      }
+
+      .main-panel {
+        padding: 24px;
+        border-radius: var(--radius-lg);
+        background:
+          radial-gradient(circle at top right, rgba(43, 97, 223, 0.06), transparent 22%),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 251, 255, 0.94));
+      }
+
+      .topbar {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+      }
+
+      .topbar h2 {
+        margin-top: 8px;
+        font-size: clamp(32px, 4.2vw, 42px);
+        line-height: 1.05;
+        letter-spacing: -0.03em;
+        font-weight: 500;
+      }
+
+      .eyebrow,
+      .toolbar,
+      .content-meta,
+      .status,
+      .hours,
+      .deadline,
+      .chevron {
+        font-family: "Inter", "MiSans", "PingFang SC", "Microsoft YaHei UI",
+          sans-serif;
+      }
+
+      .lead {
+        margin-top: 14px;
+        max-width: 600px;
+        color: var(--sky-text);
+        font-size: var(--fs-body);
+        line-height: 1.7;
+        font-weight: 400;
+      }
+
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .primary-button,
+      .search {
+        height: 46px;
+        border-radius: var(--radius-md);
+        font-family: "MiSans", "PingFang SC", "Microsoft YaHei UI",
+          sans-serif;
+        letter-spacing: 0.06em;
+      }
+
+      .primary-button {
+        padding: 0 16px;
+        color: #ffffff;
+        background: linear-gradient(180deg, #3d73eb, var(--accent-strong));
+        font-size: 13px;
+        font-weight: 400;
+        box-shadow: 0 10px 26px rgba(43, 97, 223, 0.24);
+      }
+
+      .search {
+        width: 46px;
+        display: grid;
+        place-items: center;
+        color: var(--sky-text);
+        background: rgba(255, 255, 255, 0.82);
+        border: 1px solid var(--sky-line);
+        font-size: 18px;
+        font-weight: 400;
+      }
+
+      .primary-button:hover,
+      .search:hover,
+      .add-card:hover {
+        filter: brightness(0.99);
+      }
+
+      .primary-button:hover {
+        background: linear-gradient(180deg, #3368e8, #1d49c0);
+      }
+
+      .primary-button:active,
+      .search:active,
+      .add-card:active {
+        transform: scale(0.98);
+      }
+
+      .content-list {
+        margin-top: 22px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .content-card {
+        display: grid;
+        grid-template-columns: 76px minmax(0, 1fr) 180px 18px;
+        gap: 16px;
+        align-items: center;
+        padding: 18px;
+        border: 1px solid var(--sky-line-soft);
+        border-radius: var(--radius-lg);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(244, 248, 255, 0.92));
+        box-shadow: 0 10px 24px rgba(64, 96, 156, 0.06);
+        transition:
+          transform 160ms ease,
+          border-color 180ms ease;
+      }
+
+      .content-card:hover {
+        border-color: rgba(43, 97, 223, 0.22);
+        transform: translateY(-1px);
+      }
+
+      .content-icon {
+        width: 76px;
+        height: 76px;
+        border-radius: 22px;
+        display: grid;
+        place-items: center;
+        color: var(--accent);
+        font-size: 16px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        background:
+          radial-gradient(circle at 35% 25%, rgba(255, 255, 255, 0.9), rgba(227, 238, 255, 0.72) 48%, rgba(210, 227, 255, 0.88));
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+      }
+
+      .content-icon.blue {
+        color: #244dd2;
+      }
+
+      .content-icon.green {
+        color: var(--green);
+        background:
+          radial-gradient(circle at 35% 25%, rgba(255, 255, 255, 0.9), rgba(226, 245, 239, 0.8) 48%, rgba(204, 236, 227, 0.92));
+      }
+
+      .content-icon.amber {
+        color: var(--amber);
+        background:
+          radial-gradient(circle at 35% 25%, rgba(255, 255, 255, 0.9), rgba(250, 238, 224, 0.84) 48%, rgba(245, 224, 199, 0.92));
+      }
+
+      .content-title {
+        margin-bottom: 8px;
+        font-size: 28px;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+      }
+
+      .content-meta {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        color: var(--sky-muted);
+        font-size: 13px;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 8px;
+        border-radius: var(--radius-sm);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+      }
+
+      .status.learning {
+        color: #244dd2;
+        background: rgba(214, 226, 255, 0.78);
+      }
+
+      .status.planned {
+        color: var(--green);
+        background: rgba(221, 243, 235, 0.84);
+      }
+
+      .status.warning {
+        color: var(--amber);
+        background: rgba(249, 233, 214, 0.88);
+      }
+
+      .dot {
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: #a7b7d6;
+      }
+
+      .progress-track {
+        margin-top: 12px;
+        height: 6px;
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+        background: rgba(159, 184, 230, 0.24);
+      }
+
+      .progress-bar {
+        height: 100%;
+        border-radius: inherit;
+      }
+
+      .content-side {
+        text-align: right;
+        color: var(--sky-text);
+      }
+
+      .hours {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 18px;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+      }
+
+      .deadline {
+        color: var(--danger);
+        font-size: 13px;
+      }
+
+      .chevron {
+        color: #8ea2c7;
+        font-size: 18px;
+      }
+
+      .add-card {
+        margin-top: 10px;
+        min-height: 72px;
+        padding: 0 18px;
+        border: 1px dashed rgba(43, 97, 223, 0.18);
+        border-radius: var(--radius-lg);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--sky-text);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(238, 245, 255, 0.84));
+        font-size: 14px;
+        font-weight: 400;
+      }
+
+      .fade-up {
+        opacity: 0;
+        transform: translateY(12px);
+        animation: fade-up 620ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      }
+
+      .delay-1 {
+        animation-delay: 100ms;
+      }
+
+      .delay-2 {
+        animation-delay: 180ms;
+      }
+
+      .delay-3 {
+        animation-delay: 260ms;
+      }
+
+      @keyframes fade-up {
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation: none !important;
+          transition: none !important;
+          scroll-behavior: auto !important;
+        }
+      }
+
+      @media (max-width: 980px) {
+        .topbar {
+          flex-direction: column;
+        }
+
+      .content-card {
+        grid-template-columns: 72px minmax(0, 1fr);
+      }
+
+        .content-side,
+        .chevron {
+          grid-column: 2;
+          text-align: left;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .app-shell {
+          width: min(100% - 12px, 100%);
+          min-height: calc(100vh - 12px);
+          margin: 6px auto;
+          padding: 8px;
+          border-radius: var(--radius-xl);
+        }
+
+        .app-layout {
+          min-height: calc(100vh - 28px);
+          gap: 8px;
+        }
+
+        .main-panel {
+          padding: 14px;
+        }
+
+        .content-card {
+          grid-template-columns: 1fr;
+          padding: 16px;
+        }
+
+        .content-icon {
+          width: 64px;
+          height: 64px;
+        }
+
+        .content-side,
+        .chevron {
+          grid-column: auto;
+        }
+
+        .content-title {
+          font-size: 24px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <div class="app-layout">
+        <main class="main-panel fade-up">
+          <header class="topbar">
+            <div>
+              <p class="eyebrow">轻量化学习管理</p>
+              <h2>学习内容</h2>
+            </div>
+
+            <div class="toolbar">
+              <button class="primary-button">＋ 新建</button>
+              <button class="search">⌕</button>
+            </div>
+          </header>
+
+          <section class="content-list fade-up delay-1">
+            <article class="content-card">
+              <div class="content-icon">ROS</div>
+              <div>
+                <h3 class="content-title">ROS2</h3>
+                <div class="content-meta">
+                  <span class="status learning">学习中</span>
+                  <span class="dot"></span>
+                  <span>45%</span>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-bar" style="width: 45%; background: #2f6b90"></div>
+                </div>
+              </div>
+              <div class="content-side">
+                <span class="hours">18 / 40 h</span>
+                <span class="deadline">截止：2026-06-30</span>
+              </div>
+              <div class="chevron">›</div>
+            </article>
+
+            <article class="content-card">
+              <div class="content-icon blue">PY</div>
+              <div>
+                <h3 class="content-title">Python</h3>
+                <div class="content-meta">
+                  <span class="status learning">学习中</span>
+                  <span class="dot"></span>
+                  <span>30%</span>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-bar" style="width: 30%; background: #2f6b90"></div>
+                </div>
+              </div>
+              <div class="content-side">
+                <span class="hours">12 / 40 h</span>
+                <span class="deadline">截止：2026-07-15</span>
+              </div>
+              <div class="chevron">›</div>
+            </article>
+
+            <article class="content-card">
+              <div class="content-icon green">ML</div>
+              <div>
+                <h3 class="content-title">机器学习</h3>
+                <div class="content-meta">
+                  <span class="status planned">计划中</span>
+                  <span class="dot"></span>
+                  <span>10%</span>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-bar" style="width: 10%; background: #4c7b57"></div>
+                </div>
+              </div>
+              <div class="content-side">
+                <span class="hours">4 / 40 h</span>
+                <span class="deadline">截止：2026-08-30</span>
+              </div>
+              <div class="chevron">›</div>
+            </article>
+
+            <article class="content-card">
+              <div class="content-icon amber">PR</div>
+              <div>
+                <h3 class="content-title">项目实战</h3>
+                <div class="content-meta">
+                  <span class="status warning">学习中</span>
+                  <span class="dot"></span>
+                  <span>20%</span>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-bar" style="width: 20%; background: #b6783c"></div>
+                </div>
+              </div>
+              <div class="content-side">
+                <span class="hours">8 / 40 h</span>
+                <span class="deadline">截止：2026-09-20</span>
+              </div>
+              <div class="chevron">›</div>
+            </article>
+
+            <button class="add-card">＋ 新建学习内容</button>
+          </section>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

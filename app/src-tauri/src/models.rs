@@ -1,0 +1,129 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StudyStatus {
+    Planned,
+    Active,
+    Paused,
+    Completed,
+    Overdue,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningContent {
+    pub id: String,
+    pub name: String,
+    pub status: StudyStatus,
+    pub deadline: Option<String>,
+    pub estimated_hours: f64,
+    pub progress: i64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_opened_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateLearningContentInput {
+    pub name: String,
+    pub deadline: Option<String>,
+    pub estimated_hours: Option<f64>,
+    pub progress: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterialItem {
+    pub id: String,
+    pub learning_content_id: String,
+    pub name: String,
+    pub original_path: String,
+    pub stored_path: String,
+    pub mime_type: Option<String>,
+    pub size_bytes: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Note {
+    pub id: String,
+    pub learning_content_id: String,
+    pub title: String,
+    pub body: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningDetail {
+    pub learning_content: LearningContent,
+    pub materials: Vec<MaterialItem>,
+    pub notes: Vec<Note>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaterialPreviewKind {
+    Text,
+    Image,
+    Pdf,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterialPreview {
+    pub material_id: String,
+    pub kind: MaterialPreviewKind,
+    pub mime_type: Option<String>,
+    pub text: Option<String>,
+    pub data_url: Option<String>,
+    pub encoding: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingState {
+    pub learning_content_id: String,
+    pub current_material_id: Option<String>,
+    pub current_note_id: Option<String>,
+    pub split_ratio: i64,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportMaterialFileInput {
+    pub learning_content_id: String,
+    pub source_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateNoteInput {
+    pub learning_content_id: String,
+    pub title: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateNoteInput {
+    pub note_id: String,
+    pub title: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveReadingStateInput {
+    pub learning_content_id: String,
+    pub current_material_id: Option<String>,
+    pub current_note_id: Option<String>,
+    pub split_ratio: i64,
+}

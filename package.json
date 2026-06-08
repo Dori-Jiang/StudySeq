@@ -1,0 +1,11 @@
+{
+  "name": "planassiant",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local-first Learning OS desktop app.",
+  "scripts": {
+    "check": "echo \"No checks configured yet\"",
+    "test": "echo \"No tests configured yet\""
+  }
+}
+

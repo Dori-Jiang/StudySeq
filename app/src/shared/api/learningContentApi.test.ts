@@ -9,12 +9,15 @@ import {
   createLearningContent,
   createNote,
   deleteLearningContent,
+  deleteMaterialItem,
+  deleteNote,
   getReadingState,
   getLearningDetail,
   importMaterialFile,
   listLearningContents,
   previewMaterialFile,
   saveReadingState,
+  updateLearningContent,
   updateNote,
 } from "./learningContentApi";
 
@@ -107,6 +110,36 @@ describe("learningContentApi", () => {
     expect(invokeMock).toHaveBeenCalledWith("delete_learning_content", { id: "study-1" });
   });
 
+  it("updates learning content progress and deadline through the Rust command", async () => {
+    invokeMock.mockResolvedValueOnce({
+      id: "study-1",
+      name: "Rust 入门",
+      status: "planned",
+      deadline: "2026-08-15",
+      estimatedHours: 10,
+      progress: 65,
+      createdAt: "2026-06-08T00:00:00Z",
+      updatedAt: "2026-06-08T00:01:00Z",
+      lastOpenedAt: null,
+    });
+
+    const result = await updateLearningContent({
+      id: "study-1",
+      progress: 65,
+      deadline: "2026-08-15",
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("update_learning_content", {
+      input: {
+        id: "study-1",
+        progress: 65,
+        deadline: "2026-08-15",
+      },
+    });
+    expect(result.progress).toBe(65);
+    expect(result.deadline).toBe("2026-08-15");
+  });
+
   it("imports material through the Rust command", async () => {
     invokeMock.mockResolvedValueOnce({
       id: "mat-1",
@@ -134,6 +167,14 @@ describe("learningContentApi", () => {
     expect(result.name).toBe("资料.txt");
   });
 
+  it("deletes material through the Rust command", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await deleteMaterialItem("mat-1");
+
+    expect(invokeMock).toHaveBeenCalledWith("delete_material_item", { id: "mat-1" });
+  });
+
   it("creates plain-text note through the Rust command", async () => {
     invokeMock.mockResolvedValueOnce({
       id: "note-1",
@@ -158,6 +199,14 @@ describe("learningContentApi", () => {
       },
     });
     expect(result.body).toBe("纯文本正文");
+  });
+
+  it("deletes note through the Rust command", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await deleteNote("note-1");
+
+    expect(invokeMock).toHaveBeenCalledWith("delete_note", { id: "note-1" });
   });
 
   it("previews material through the Rust command", async () => {

@@ -4,7 +4,7 @@ use crate::errors::{ApiError, AppError};
 use crate::models::{
     CreateLearningContentInput, CreateNoteInput, ImportMaterialFileInput, LearningContent,
     LearningDetail, MaterialItem, MaterialPreview, Note, ReadingState, SaveReadingStateInput,
-    UpdateNoteInput,
+    UpdateLearningContentInput, UpdateNoteInput,
 };
 use crate::repository::LearningContentRepository;
 use crate::AppState;
@@ -35,6 +35,19 @@ pub fn create_learning_content(
 }
 
 #[tauri::command]
+pub fn update_learning_content(
+    state: State<'_, AppState>,
+    input: UpdateLearningContentInput,
+) -> Result<LearningContent, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    update_learning_content_in_repository(&repository, input)
+}
+
+#[tauri::command]
 pub fn get_learning_detail(
     state: State<'_, AppState>,
     id: String,
@@ -55,6 +68,16 @@ pub fn delete_learning_content(state: State<'_, AppState>, id: String) -> Result
         .map_err(|_| AppError::StateUnavailable)?;
 
     delete_learning_content_in_repository(&repository, &id)
+}
+
+#[tauri::command]
+pub fn delete_material_item(state: State<'_, AppState>, id: String) -> Result<(), ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    delete_material_item_in_repository(&repository, &id)
 }
 
 #[tauri::command]
@@ -89,6 +112,16 @@ pub fn update_note(state: State<'_, AppState>, input: UpdateNoteInput) -> Result
         .map_err(|_| AppError::StateUnavailable)?;
 
     update_note_in_repository(&repository, input)
+}
+
+#[tauri::command]
+pub fn delete_note(state: State<'_, AppState>, id: String) -> Result<(), ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    delete_note_in_repository(&repository, &id)
 }
 
 #[tauri::command]
@@ -143,6 +176,15 @@ fn create_learning_content_in_repository(
     repository.create(input).map_err(ApiError::from)
 }
 
+fn update_learning_content_in_repository(
+    repository: &LearningContentRepository,
+    input: UpdateLearningContentInput,
+) -> Result<LearningContent, ApiError> {
+    repository
+        .update_learning_content(&input.id, input.progress, input.deadline)
+        .map_err(ApiError::from)
+}
+
 fn get_learning_detail_from_repository(
     repository: &LearningContentRepository,
     id: &str,
@@ -157,6 +199,13 @@ fn delete_learning_content_in_repository(
     repository
         .delete_learning_content(id)
         .map_err(ApiError::from)
+}
+
+fn delete_material_item_in_repository(
+    repository: &LearningContentRepository,
+    id: &str,
+) -> Result<(), ApiError> {
+    repository.delete_material_item(id).map_err(ApiError::from)
 }
 
 fn import_material_file_in_repository(
@@ -189,6 +238,13 @@ fn update_note_in_repository(
     repository
         .update_note(&input.note_id, input.title, input.body)
         .map_err(ApiError::from)
+}
+
+fn delete_note_in_repository(
+    repository: &LearningContentRepository,
+    id: &str,
+) -> Result<(), ApiError> {
+    repository.delete_note(id).map_err(ApiError::from)
 }
 
 fn preview_material_file_in_repository(
@@ -255,6 +311,36 @@ mod tests {
     }
 
     #[test]
+    fn command_handlers_update_learning_content_progress_and_deadline() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let content = create_learning_content_in_repository(
+            &repository,
+            CreateLearningContentInput {
+                name: "编辑命令".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: Some(10),
+            },
+        )
+        .expect("create learning content");
+
+        let updated = update_learning_content_in_repository(
+            &repository,
+            UpdateLearningContentInput {
+                id: content.id.clone(),
+                deadline: Some("2026-08-15".to_string()),
+                progress: 65,
+            },
+        )
+        .expect("update learning content");
+
+        assert_eq!(updated.progress, 65);
+        assert_eq!(updated.deadline.as_deref(), Some("2026-08-15"));
+    }
+
+    #[test]
     fn command_handlers_create_detail_material_note_and_delete_learning_content() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
@@ -305,5 +391,76 @@ mod tests {
                 .expect("get deleted detail")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn command_handlers_delete_material_item() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("source.txt");
+        std::fs::write(&source_file, "hello").expect("write source file");
+        let content = create_learning_content_in_repository(
+            &repository,
+            CreateLearningContentInput {
+                name: "删除资料命令".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            },
+        )
+        .expect("create learning content");
+        let material = import_material_file_in_repository(
+            &repository,
+            ImportMaterialFileInput {
+                learning_content_id: content.id.clone(),
+                source_path: source_file.to_string_lossy().to_string(),
+            },
+            &material_library_dir,
+        )
+        .expect("import material");
+        let stored_path = material.stored_path.clone();
+
+        delete_material_item_in_repository(&repository, &material.id).expect("delete material");
+
+        let detail = get_learning_detail_from_repository(&repository, &content.id)
+            .expect("get detail")
+            .expect("detail exists");
+        assert!(detail.materials.is_empty());
+        assert!(!std::path::Path::new(&stored_path).exists());
+    }
+
+    #[test]
+    fn command_handlers_delete_note() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let content = create_learning_content_in_repository(
+            &repository,
+            CreateLearningContentInput {
+                name: "删除笔记命令".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            },
+        )
+        .expect("create learning content");
+        let note = create_note_in_repository(
+            &repository,
+            CreateNoteInput {
+                learning_content_id: content.id.clone(),
+                title: "待删笔记".to_string(),
+                body: "正文".to_string(),
+            },
+        )
+        .expect("create note");
+
+        delete_note_in_repository(&repository, &note.id).expect("delete note");
+
+        let detail = get_learning_detail_from_repository(&repository, &content.id)
+            .expect("get detail")
+            .expect("detail exists");
+        assert!(detail.notes.is_empty());
     }
 }

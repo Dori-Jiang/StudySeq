@@ -1,8 +1,17 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  FormEvent,
+  PointerEvent as ReactPointerEvent,
+  WheelEvent as ReactWheelEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 
 import {
   createNote,
+  deleteNote,
   getLearningDetail,
   getReadingState,
   previewMaterialFile,
@@ -12,6 +21,10 @@ import {
 import type { LearningDetail, MaterialItem, MaterialPreview, Note } from "../shared/types";
 
 const DEFAULT_SPLIT_RATIO = 55;
+const PDF_BASE_WIDTH = 794;
+const PDF_BASE_HEIGHT = 1123;
+const PDF_MIN_SCALE = 0.6;
+const PDF_MAX_SCALE = 2.4;
 
 export function StudyReaderPage() {
   const { studyId } = useParams<{ studyId: string }>();
@@ -188,6 +201,27 @@ export function StudyReaderPage() {
     }
   }
 
+  async function handleDeleteSelectedNote() {
+    if (!selectedNote) return;
+    if (!window.confirm(`确定删除笔记「${selectedNote.title}」吗？`)) {
+      return;
+    }
+
+    await deleteNote(selectedNote.id);
+    setDetail((currentDetail) =>
+      currentDetail
+        ? {
+            ...currentDetail,
+            notes: currentDetail.notes.filter((note) => note.id !== selectedNote.id),
+          }
+        : currentDetail,
+    );
+    setSelectedNoteId(null);
+    setNoteTitle("");
+    setNoteBody("");
+    setError(null);
+  }
+
   if (isLoading) {
     return <main className="reader-shell">正在加载阅读页</main>;
   }
@@ -271,6 +305,9 @@ export function StudyReaderPage() {
               />
             </label>
             <button type="submit">保存笔记</button>
+            <button type="button" disabled={!selectedNote} onClick={handleDeleteSelectedNote}>
+              删除当前笔记
+            </button>
           </form>
 
           <label>
@@ -321,6 +358,13 @@ function PreviewPane({
 
 function PdfPreview({ dataUrl }: { dataUrl: string }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const panStateRef = useRef<{
+    startX: number;
+    startY: number;
+    startScrollLeft: number;
+    startScrollTop: number;
+  } | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [pageCount, setPageCount] = useState(1);
   const [scale, setScale] = useState(1);
@@ -340,7 +384,7 @@ function PdfPreview({ dataUrl }: { dataUrl: string }) {
         setPageNumber((currentPage) => Math.min(currentPage, document.numPages));
       }
       const page = await document.getPage(pageNumber);
-      const viewport = page.getViewport({ scale: scale * 1.2 });
+      const viewport = page.getViewport({ scale: scale * 1.35 });
       const canvas = canvasRef.current;
       if (!canvas || isCancelled) return;
       canvas.width = viewport.width;
@@ -358,6 +402,55 @@ function PdfPreview({ dataUrl }: { dataUrl: string }) {
       isCancelled = true;
     };
   }, [dataUrl, pageNumber, scale]);
+
+  useEffect(() => {
+    function handlePointerMove(event: PointerEvent) {
+      const panState = panStateRef.current;
+      const viewport = viewportRef.current;
+      if (!panState || !viewport) return;
+
+      viewport.scrollLeft = panState.startScrollLeft + panState.startX - event.clientX;
+      viewport.scrollTop = panState.startScrollTop + panState.startY - event.clientY;
+    }
+
+    function handlePointerUp() {
+      panStateRef.current = null;
+      document.body.classList.remove("is-panning-pdf");
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      document.body.classList.remove("is-panning-pdf");
+    };
+  }, []);
+
+  function adjustScale(delta: number) {
+    setScale((currentScale) => clampScale(Number((currentScale + delta).toFixed(2))));
+  }
+
+  function handleWheel(event: ReactWheelEvent<HTMLDivElement>) {
+    if (!event.ctrlKey) return;
+
+    event.preventDefault();
+    adjustScale(event.deltaY < 0 ? 0.1 : -0.1);
+  }
+
+  function handlePanStart(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 1) return;
+
+    event.preventDefault();
+    panStateRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      startScrollLeft: event.currentTarget.scrollLeft,
+      startScrollTop: event.currentTarget.scrollTop,
+    };
+    document.body.classList.add("is-panning-pdf");
+  }
 
   return (
     <div className="pdf-viewer">
@@ -379,21 +472,44 @@ function PdfPreview({ dataUrl }: { dataUrl: string }) {
         </button>
         <button
           type="button"
-          onClick={() => setScale((currentScale) => Math.max(0.6, currentScale - 0.2))}
+          onClick={() => adjustScale(-0.2)}
         >
           缩小
         </button>
         <span>{`${Math.round(scale * 100)}%`}</span>
         <button
           type="button"
-          onClick={() => setScale((currentScale) => Math.min(2, currentScale + 0.2))}
+          onClick={() => adjustScale(0.2)}
         >
           放大
         </button>
       </div>
-      <canvas className="pdf-preview" ref={canvasRef} aria-label="PDF 预览" />
+      <div
+        aria-label="PDF 阅读区域"
+        className="pdf-scroll-viewport"
+        ref={viewportRef}
+        onPointerDown={handlePanStart}
+        onWheel={handleWheel}
+      >
+        <div className="pdf-page-stage">
+          <div
+            aria-label="A4 PDF 页面"
+            className="pdf-page-sheet"
+            style={{
+              width: `${PDF_BASE_WIDTH * scale}px`,
+              height: `${PDF_BASE_HEIGHT * scale}px`,
+            }}
+          >
+            <canvas className="pdf-preview" ref={canvasRef} aria-label="PDF 预览" />
+          </div>
+        </div>
+      </div>
     </div>
   );
+}
+
+function clampScale(value: number) {
+  return Math.min(Math.max(value, PDF_MIN_SCALE), PDF_MAX_SCALE);
 }
 
 function mergeSavedNote(detail: LearningDetail | null, saved: Note) {

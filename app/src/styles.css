@@ -158,6 +158,18 @@ h1 {
   min-width: 76px;
 }
 
+.content-edit-form {
+  display: grid;
+  grid-template-columns: 160px 180px max-content;
+  gap: 16px;
+  align-items: end;
+  margin-bottom: 20px;
+  padding: 16px 18px;
+  border: 1px solid #d9e7f6;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
 label {
   display: grid;
   gap: 8px;
@@ -483,6 +495,7 @@ a {
 .material-item,
 .note-item {
   display: flex;
+  align-items: center;
   gap: 12px;
   padding: 12px;
   border: 1px solid #edf3fa;
@@ -508,6 +521,30 @@ a {
   font-size: 15px;
 }
 
+.note-title-button {
+  justify-content: start;
+  flex: 1;
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  color: #172033;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.note-title-button:hover,
+.note-title-button:active,
+.note-title-button[aria-pressed="true"] {
+  color: #2f78c6;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+}
+
 .material-item p,
 .note-item p {
   margin: 0;
@@ -523,7 +560,6 @@ a {
 }
 
 .material-actions a,
-.light-preview a,
 .reader-header a {
   color: #2f78c6;
   font-weight: 650;
@@ -551,17 +587,19 @@ a {
   padding: 0 12px;
 }
 
-.light-preview {
-  margin-top: 18px;
-  padding-top: 16px;
-  border-top: 1px solid #edf3fa;
+.pending-delete-bar {
+  margin: 14px 0 0;
+  padding: 12px;
+  border: 1px solid #d9e7f6;
+  border-radius: 8px;
+  background: #fbfdff;
 }
 
-.light-preview h3 {
+.pending-delete-bar p {
   margin: 0;
+  color: #506277;
 }
 
-.light-preview pre,
 .text-preview {
   max-height: 420px;
   overflow: auto;
@@ -573,7 +611,6 @@ a {
   background: #fbfdff;
 }
 
-.light-preview img,
 .image-preview {
   max-width: 100%;
   max-height: 620px;
@@ -655,17 +692,50 @@ textarea {
   min-height: 300px;
 }
 
-.pdf-preview {
-  width: 100%;
-  max-height: 720px;
-  border: 1px solid #edf3fa;
-  border-radius: 8px;
-  background: #ffffff;
-}
-
 .pdf-viewer {
   display: grid;
   gap: 12px;
+}
+
+.pdf-scroll-viewport {
+  height: min(72vh, 820px);
+  overflow: auto;
+  border: 1px solid #dbe8f5;
+  border-radius: 8px;
+  background: #f4f8fc;
+  cursor: grab;
+}
+
+.pdf-scroll-viewport:active,
+.is-panning-pdf .pdf-scroll-viewport {
+  cursor: grabbing;
+}
+
+.pdf-page-stage {
+  display: grid;
+  min-width: max-content;
+  min-height: 100%;
+  padding: 28px;
+  place-items: start center;
+}
+
+.pdf-page-sheet {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid #d6e1ec;
+  background: #ffffff;
+  box-shadow:
+    0 1px 2px rgb(23 32 51 / 8%),
+    0 18px 34px rgb(47 120 198 / 12%);
+}
+
+.pdf-preview {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  background: #ffffff;
 }
 
 .pdf-toolbar {
@@ -716,6 +786,7 @@ textarea {
   }
 
   .create-form,
+  .content-edit-form,
   .detail-grid,
   .reader-grid {
     grid-template-columns: 1fr;

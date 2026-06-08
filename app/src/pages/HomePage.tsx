@@ -128,9 +128,7 @@ export function HomePage() {
             >
               <div>
                 <h2>{content.name}</h2>
-                <p>
-                  {statusLabels[content.status]} · {content.estimatedHours} 小时
-                </p>
+                <p>{statusLabels[content.status]}</p>
               </div>
               <div className="study-meta">
                 <span>{content.deadline ?? "未设置截止日期"}</span>

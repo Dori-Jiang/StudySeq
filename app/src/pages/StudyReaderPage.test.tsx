@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,6 +32,7 @@ const getReadingState = vi.mocked(learningContentApi.getReadingState);
 const previewMaterialFile = vi.mocked(learningContentApi.previewMaterialFile);
 const updateNote = vi.mocked(learningContentApi.updateNote);
 const createNote = vi.mocked(learningContentApi.createNote);
+const deleteNote = vi.mocked(learningContentApi.deleteNote);
 const saveReadingState = vi.mocked(learningContentApi.saveReadingState);
 
 const baseDetail = {
@@ -97,6 +98,7 @@ describe("StudyReaderPage", () => {
     previewMaterialFile.mockReset();
     updateNote.mockReset();
     createNote.mockReset();
+    deleteNote.mockReset();
     saveReadingState.mockReset();
     saveReadingState.mockResolvedValue({
       learningContentId: "study-1",
@@ -279,6 +281,48 @@ describe("StudyReaderPage", () => {
     expect(await screen.findByText("第 1 / 3 页")).toBeInTheDocument();
   });
 
+  it("renders pdf pages in an A4 sheet and supports browser-like zoom and pan", async () => {
+    getLearningDetail.mockResolvedValueOnce({
+      ...baseDetail,
+      materials: [
+        {
+          ...baseDetail.materials[0],
+          id: "mat-pdf",
+          name: "资料.pdf",
+          mimeType: "application/pdf",
+        },
+      ],
+    });
+    getReadingState.mockResolvedValueOnce(null);
+    previewMaterialFile.mockResolvedValueOnce({
+      materialId: "mat-pdf",
+      kind: "pdf",
+      mimeType: "application/pdf",
+      text: null,
+      dataUrl: "data:application/pdf;base64,JVBERi0xLjc=",
+      encoding: null,
+    });
+
+    renderReaderPage("/studies/study-1/read?materialId=mat-pdf");
+
+    const viewport = await screen.findByLabelText("PDF 阅读区域");
+    const sheet = screen.getByLabelText("A4 PDF 页面");
+    expect(sheet).toHaveClass("pdf-page-sheet");
+    expect(await screen.findByLabelText("PDF 预览")).toBeInTheDocument();
+
+    fireEvent.wheel(viewport, { ctrlKey: true, deltaY: -120 });
+    expect(screen.getByText("110%")).toBeInTheDocument();
+
+    Object.defineProperty(viewport, "scrollLeft", { configurable: true, value: 80, writable: true });
+    Object.defineProperty(viewport, "scrollTop", { configurable: true, value: 120, writable: true });
+    fireEvent.pointerDown(viewport, { button: 1, clientX: 320, clientY: 260 });
+    fireEvent.pointerMove(window, { clientX: 280, clientY: 220 });
+    fireEvent.pointerUp(window);
+
+    expect(viewport.scrollLeft).toBe(120);
+    expect(viewport.scrollTop).toBe(160);
+  });
+
   it("auto-saves edited note before switching notes", async () => {
     getLearningDetail.mockResolvedValueOnce(baseDetail);
     getReadingState.mockResolvedValueOnce(null);
@@ -390,6 +434,36 @@ describe("StudyReaderPage", () => {
       currentNoteId: "note-1",
       splitRatio: 55,
     });
+  });
+
+  it("deletes the selected note and returns to new note state", async () => {
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    getReadingState.mockResolvedValueOnce(null);
+    previewMaterialFile.mockResolvedValueOnce({
+      materialId: "mat-1",
+      kind: "text",
+      mimeType: "text/plain",
+      text: "资料正文",
+      dataUrl: null,
+      encoding: "utf-8",
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    deleteNote.mockResolvedValueOnce();
+
+    renderReaderPage("/studies/study-1/read?materialId=mat-1");
+    await screen.findByText("资料正文");
+    await waitFor(() => {
+      expect(screen.getByLabelText("笔记标题")).toHaveValue("第一条笔记");
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "删除当前笔记" }));
+
+    await waitFor(() => {
+      expect(deleteNote).toHaveBeenCalledWith("note-1");
+    });
+    expect(screen.getByLabelText("选择笔记")).toHaveValue("");
+    expect(screen.getByLabelText("笔记标题")).toHaveValue("");
+    expect(screen.getByLabelText("笔记正文")).toHaveValue("");
   });
 });
 

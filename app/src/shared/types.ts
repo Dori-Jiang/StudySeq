@@ -19,6 +19,12 @@ export type CreateLearningContentInput = {
   progress?: number;
 };
 
+export type UpdateLearningContentInput = {
+  id: string;
+  deadline: string | null;
+  progress: number;
+};
+
 export type MaterialItem = {
   id: string;
   learningContentId: string;

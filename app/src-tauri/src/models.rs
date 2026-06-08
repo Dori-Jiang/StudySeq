@@ -35,6 +35,14 @@ pub struct CreateLearningContentInput {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateLearningContentInput {
+    pub id: String,
+    pub deadline: Option<String>,
+    pub progress: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MaterialItem {
     pub id: String,
     pub learning_content_id: String,

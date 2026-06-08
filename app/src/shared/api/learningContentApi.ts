@@ -11,6 +11,7 @@ import type {
   Note,
   ReadingState,
   SaveReadingStateInput,
+  UpdateLearningContentInput,
   UpdateNoteInput,
 } from "../types";
 
@@ -24,12 +25,22 @@ export function createLearningContent(
   return invoke<LearningContent>("create_learning_content", { input });
 }
 
+export function updateLearningContent(
+  input: UpdateLearningContentInput,
+): Promise<LearningContent> {
+  return invoke<LearningContent>("update_learning_content", { input });
+}
+
 export function getLearningDetail(id: string): Promise<LearningDetail | null> {
   return invoke<LearningDetail | null>("get_learning_detail", { id });
 }
 
 export function deleteLearningContent(id: string): Promise<void> {
   return invoke<void>("delete_learning_content", { id });
+}
+
+export function deleteMaterialItem(id: string): Promise<void> {
+  return invoke<void>("delete_material_item", { id });
 }
 
 export function importMaterialFile(input: ImportMaterialFileInput): Promise<MaterialItem> {
@@ -42,6 +53,10 @@ export function createNote(input: CreateNoteInput): Promise<Note> {
 
 export function updateNote(input: UpdateNoteInput): Promise<Note> {
   return invoke<Note>("update_note", { input });
+}
+
+export function deleteNote(id: string): Promise<void> {
+  return invoke<void>("delete_note", { id });
 }
 
 export function previewMaterialFile(materialId: string): Promise<MaterialPreview> {

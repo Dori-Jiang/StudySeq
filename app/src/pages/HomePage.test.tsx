@@ -42,6 +42,33 @@ describe("HomePage", () => {
     expect(screen.getByText("2026-07-01")).toBeInTheDocument();
   });
 
+  it("keeps the home list focused on status, progress, and deadline only", async () => {
+    listLearningContents.mockResolvedValueOnce([
+      {
+        id: "study-1",
+        name: "Rust 入门",
+        status: "active",
+        deadline: "2026-07-01",
+        estimatedHours: 12,
+        progress: 45,
+        createdAt: "2026-06-08T00:00:00Z",
+        updatedAt: "2026-06-08T00:00:00Z",
+        lastOpenedAt: null,
+      },
+    ]);
+
+    renderHomePage();
+
+    expect(await screen.findByText("Rust 入门")).toBeInTheDocument();
+    expect(screen.getByText(/进行中/)).toBeInTheDocument();
+    expect(screen.getByText("45%")).toBeInTheDocument();
+    expect(screen.getByText("2026-07-01")).toBeInTheDocument();
+    expect(screen.queryByText(/小时/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/资料/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/笔记/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/最近学习/)).not.toBeInTheDocument();
+  });
+
   it("makes the whole learning content row navigate to detail", async () => {
     listLearningContents.mockResolvedValueOnce([
       {

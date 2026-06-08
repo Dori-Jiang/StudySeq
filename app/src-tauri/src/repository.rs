@@ -102,6 +102,36 @@ impl LearningContentRepository {
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
     }
 
+    pub fn update_learning_content(
+        &self,
+        id: &str,
+        progress: i64,
+        deadline: Option<String>,
+    ) -> Result<LearningContent, AppError> {
+        if !(0..=100).contains(&progress) {
+            return Err(AppError::InvalidProgress);
+        }
+
+        let Some(existing) = self.get_learning_content(id)? else {
+            return Err(AppError::LearningContentNotFound);
+        };
+
+        let now = Utc::now().to_rfc3339();
+        self.connection.execute(
+            "UPDATE learning_contents
+             SET progress = ?1, deadline = ?2, updated_at = ?3
+             WHERE id = ?4",
+            params![progress, deadline, now, id],
+        )?;
+
+        Ok(LearningContent {
+            progress,
+            deadline,
+            updated_at: now,
+            ..existing
+        })
+    }
+
     pub fn get_detail(&self, id: &str) -> Result<Option<LearningDetail>, AppError> {
         let learning_content = self.get_learning_content(id)?;
         let Some(learning_content) = learning_content else {
@@ -184,6 +214,31 @@ impl LearningContentRepository {
         Ok(material)
     }
 
+    pub fn delete_material_item(&self, material_id: &str) -> Result<(), AppError> {
+        let Some(material) = self.get_material(material_id)? else {
+            return Err(AppError::MaterialNotFound);
+        };
+
+        match std::fs::remove_file(&material.stored_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(AppError::Io(error)),
+        }
+
+        self.connection.execute(
+            "DELETE FROM material_items WHERE id = ?1",
+            params![material_id],
+        )?;
+        self.connection.execute(
+            "UPDATE reading_states
+             SET current_material_id = NULL, updated_at = ?1
+             WHERE current_material_id = ?2",
+            params![Utc::now().to_rfc3339(), material_id],
+        )?;
+
+        Ok(())
+    }
+
     pub fn create_note(
         &self,
         learning_content_id: &str,
@@ -255,6 +310,23 @@ impl LearningContentRepository {
             updated_at: now,
             ..existing
         })
+    }
+
+    pub fn delete_note(&self, note_id: &str) -> Result<(), AppError> {
+        if self.get_note(note_id)?.is_none() {
+            return Err(AppError::NoteNotFound);
+        }
+
+        self.connection
+            .execute("DELETE FROM notes WHERE id = ?1", params![note_id])?;
+        self.connection.execute(
+            "UPDATE reading_states
+             SET current_note_id = NULL, updated_at = ?1
+             WHERE current_note_id = ?2",
+            params![Utc::now().to_rfc3339(), note_id],
+        )?;
+
+        Ok(())
     }
 
     pub fn preview_material_file(&self, material_id: &str) -> Result<MaterialPreview, AppError> {
@@ -745,6 +817,36 @@ mod tests {
     }
 
     #[test]
+    fn updates_learning_content_progress_and_deadline_after_reopening_database() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let database_path = temp_dir.path().join("studyseq.sqlite");
+        let repository = LearningContentRepository::open(&database_path).expect("open db");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "进度编辑".to_string(),
+                deadline: Some("2026-07-01".to_string()),
+                estimated_hours: None,
+                progress: Some(20),
+            })
+            .expect("create learning content");
+
+        let updated = repository
+            .update_learning_content(&learning_content.id, 65, Some("2026-08-15".to_string()))
+            .expect("update learning content");
+        drop(repository);
+
+        let reopened_repository =
+            LearningContentRepository::open(&database_path).expect("reopen db");
+        let restored = reopened_repository.list().expect("list learning contents");
+
+        assert_eq!(updated.progress, 65);
+        assert_eq!(updated.deadline.as_deref(), Some("2026-08-15"));
+        assert_eq!(restored[0].id, learning_content.id);
+        assert_eq!(restored[0].progress, 65);
+        assert_eq!(restored[0].deadline.as_deref(), Some("2026-08-15"));
+    }
+
+    #[test]
     fn detail_restores_imported_materials_and_plain_text_notes_after_reopening_database() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let database_path = temp_dir.path().join("studyseq.sqlite");
@@ -1010,5 +1112,84 @@ mod tests {
             Some(updated_note.id.as_str())
         );
         assert_eq!(reading_state.split_ratio, 62);
+    }
+
+    #[test]
+    fn deleting_material_clears_reading_state_material_reference() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("source.txt");
+        std::fs::write(&source_file, "hello").expect("write source file");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "资料阅读状态".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(&learning_content.id, &source_file, &material_library_dir)
+            .expect("import material");
+        let note = repository
+            .create_note(
+                &learning_content.id,
+                "保留笔记".to_string(),
+                "正文".to_string(),
+            )
+            .expect("create note");
+        repository
+            .save_reading_state(&learning_content.id, Some(&material.id), Some(&note.id), 60)
+            .expect("save reading state");
+
+        repository
+            .delete_material_item(&material.id)
+            .expect("delete material");
+
+        let reading_state = repository
+            .get_reading_state(&learning_content.id)
+            .expect("get reading state")
+            .expect("reading state exists");
+        assert_eq!(reading_state.current_material_id, None);
+        assert_eq!(
+            reading_state.current_note_id.as_deref(),
+            Some(note.id.as_str())
+        );
+    }
+
+    #[test]
+    fn deleting_note_clears_reading_state_note_reference() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "笔记阅读状态".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let note = repository
+            .create_note(
+                &learning_content.id,
+                "待删笔记".to_string(),
+                "正文".to_string(),
+            )
+            .expect("create note");
+        repository
+            .save_reading_state(&learning_content.id, None, Some(&note.id), 60)
+            .expect("save reading state");
+
+        repository.delete_note(&note.id).expect("delete note");
+
+        let reading_state = repository
+            .get_reading_state(&learning_content.id)
+            .expect("get reading state")
+            .expect("reading state exists");
+        assert_eq!(reading_state.current_material_id, None);
+        assert_eq!(reading_state.current_note_id, None);
     }
 }

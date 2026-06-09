@@ -314,21 +314,22 @@ export function StudyDetailPage() {
         <ChevronLeftIcon />
       </Link>
       <section className="detail-header">
-        <div>
+        <div className="detail-title-block">
           <h1>{detail.learningContent.name}</h1>
           <p className="detail-header-meta">{`${statusLabels[detail.learningContent.status]} · 预计 ${formatHours(detail.learningContent.estimatedHours)}`}</p>
-        </div>
-        <div className="detail-progress-summary">
-          <strong>{detail.learningContent.progress}%</strong>
-          <div
-            aria-label="学习进度"
-            aria-valuemax={100}
-            aria-valuemin={0}
-            aria-valuenow={detail.learningContent.progress}
-            className="detail-progress-bar"
-            role="progressbar"
-          >
-            <span style={{ width: `${detail.learningContent.progress}%` }} />
+          <div className="detail-progress-summary">
+            <span>学习进度</span>
+            <strong>{detail.learningContent.progress}%</strong>
+            <div
+              aria-label="学习进度"
+              aria-valuemax={100}
+              aria-valuemin={0}
+              aria-valuenow={detail.learningContent.progress}
+              className="detail-progress-bar"
+              role="progressbar"
+            >
+              <span style={{ width: `${detail.learningContent.progress}%` }} />
+            </div>
           </div>
         </div>
       </section>
@@ -343,25 +344,28 @@ export function StudyDetailPage() {
         }}
       >
         <section className="detail-panel">
-          <div className="panel-title-row">
-            <h2>资料</h2>
-            <button type="button" onClick={handleImportMaterial}>
-              导入资料
-            </button>
-          </div>
-          <MaterialList
-            materials={detail.materials}
-            pendingDeletedMaterialIds={pendingDeletedMaterialIds}
-            onOpen={handleOpenMaterial}
-            onStageDelete={handleStageDeleteMaterial}
-          />
           {selectedMaterial ? (
             <MaterialInlineReader
               material={selectedMaterial}
               preview={selectedMaterialPreview}
               onReturn={handleReturnToMaterialList}
             />
-          ) : null}
+          ) : (
+            <>
+              <div className="panel-title-row">
+                <h2>资料</h2>
+                <button type="button" onClick={handleImportMaterial}>
+                  导入资料
+                </button>
+              </div>
+              <MaterialList
+                materials={detail.materials}
+                pendingDeletedMaterialIds={pendingDeletedMaterialIds}
+                onOpen={handleOpenMaterial}
+                onStageDelete={handleStageDeleteMaterial}
+              />
+            </>
+          )}
           <MaterialDeletionBar
             materials={detail.materials}
             pendingDeletedMaterialIds={pendingDeletedMaterialIds}
@@ -513,7 +517,7 @@ function ChevronLeftIcon() {
         stroke="currentColor"
         strokeLinecap="round"
         strokeLinejoin="round"
-        strokeWidth="2.4"
+        strokeWidth="3"
       />
     </svg>
   );

@@ -107,6 +107,7 @@ describe("StudyDetailPage", () => {
     expect(screen.getByText("第一条笔记")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "第一条笔记" })).not.toBeInTheDocument();
     expect(screen.queryByText("纯文本正文")).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "学习进度" }).closest(".detail-title-block")).toBeInTheDocument();
   });
 
   it("shows the note editor as a document surface with the title as the headline", async () => {
@@ -189,7 +190,19 @@ describe("StudyDetailPage", () => {
   });
 
   it("opens a material inside the left detail pane and can return to the material list", async () => {
-    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    getLearningDetail.mockResolvedValueOnce({
+      ...baseDetail,
+      materials: [
+        baseDetail.materials[0],
+        {
+          ...baseDetail.materials[0],
+          id: "mat-2",
+          name: "补充资料.pdf",
+          mimeType: "application/pdf",
+          storedPath: "C:/app/补充资料.pdf",
+        },
+      ],
+    });
     previewMaterialFile.mockResolvedValueOnce({
       materialId: "mat-1",
       kind: "text",
@@ -201,6 +214,7 @@ describe("StudyDetailPage", () => {
 
     renderDetailPage();
     await screen.findByText("资料.txt");
+    expect(screen.getByText("补充资料.pdf")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "打开资料：资料.txt" }));
 
@@ -209,10 +223,14 @@ describe("StudyDetailPage", () => {
     });
     expect(await screen.findByText("资料正文")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "返回资料列表" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "导入资料" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "打开资料：补充资料.pdf" })).not.toBeInTheDocument();
+    expect(screen.queryByText("补充资料.pdf")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "返回资料列表" }));
 
     expect(screen.getByRole("button", { name: "打开资料：资料.txt" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "打开资料：补充资料.pdf" })).toBeInTheDocument();
     expect(screen.queryByText("资料正文")).not.toBeInTheDocument();
   });
 

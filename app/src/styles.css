@@ -8,9 +8,12 @@
   --primary-action-active: #d7ebf0;
   --primary-action-border: #b8d7e1;
   --primary-action-focus: rgb(40 95 117 / 16%);
-  --glass-button-surface: rgb(238 247 250 / 72%);
-  --glass-button-hover: rgb(227 241 245 / 88%);
-  --glass-button-active: rgb(215 235 240 / 94%);
+  --glass-button-surface: rgb(234 244 255 / 72%);
+  --glass-button-hover: rgb(218 237 255 / 92%);
+  --glass-button-active: rgb(204 228 250 / 96%);
+  --glass-button-shadow: 0 8px 18px rgb(47 120 198 / 10%);
+  --glass-button-shadow-hover: 0 10px 22px rgb(47 120 198 / 14%);
+  --glass-button-shadow-active: 0 5px 12px rgb(47 120 198 / 12%);
   font-family:
     "Segoe UI",
     "Microsoft YaHei",
@@ -71,30 +74,32 @@ body {
   height: 34px;
   padding: 0;
   place-items: center;
-  color: #485b6f;
+  color: #2f78c6;
   border: 0;
   border-radius: 8px;
-  background: rgb(247 251 255 / 74%);
-  box-shadow: none;
+  background: rgb(234 244 255 / 66%);
+  box-shadow: 0 6px 14px rgb(47 120 198 / 8%);
   font-size: 17px;
   line-height: 1;
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(8px);
 }
 
 .window-controls button:hover {
-  color: #172033;
-  background: rgb(237 245 252 / 94%);
-  box-shadow: none;
+  color: #185d9e;
+  background: var(--glass-button-hover);
+  box-shadow: 0 8px 18px rgb(47 120 198 / 12%);
 }
 
 .window-controls button:active {
-  background: rgb(226 237 247 / 96%);
+  background: var(--glass-button-active);
+  box-shadow: 0 4px 10px rgb(47 120 198 / 10%);
   transform: none;
 }
 
 .window-controls button:last-child:hover {
   color: #ffffff;
   background: #c42b1c;
+  box-shadow: 0 8px 18px rgb(196 43 28 / 16%);
 }
 
 .route-transition {
@@ -216,11 +221,13 @@ select {
 button {
   height: 40px;
   padding: 0 18px;
-  color: #ffffff;
+  color: #2f78c6;
   border: 0;
   border-radius: 6px;
-  background: var(--primary-action);
+  background: var(--glass-button-surface);
+  box-shadow: var(--glass-button-shadow);
   cursor: pointer;
+  backdrop-filter: blur(8px);
   transition:
     background 140ms ease,
     border-color 140ms ease,
@@ -230,11 +237,14 @@ button {
 }
 
 button:hover {
-  background: var(--primary-action-hover);
+  color: #185d9e;
+  background: var(--glass-button-hover);
+  box-shadow: var(--glass-button-shadow-hover);
 }
 
 button:active {
-  background: var(--primary-action-active);
+  background: var(--glass-button-active);
+  box-shadow: var(--glass-button-shadow-active);
   transform: translateY(1px);
 }
 
@@ -253,9 +263,9 @@ textarea:focus-visible {
 .reader-notes button,
 .pdf-toolbar button {
   color: var(--primary-action);
-  border: 1px solid var(--primary-action-border);
+  border: 0;
   background: var(--glass-button-surface);
-  box-shadow: none;
+  box-shadow: var(--glass-button-shadow);
   backdrop-filter: blur(10px);
 }
 
@@ -264,9 +274,9 @@ textarea:focus-visible {
 .material-actions button:hover,
 .reader-notes button:hover,
 .pdf-toolbar button:hover {
-  border-color: #9fc8d3;
+  color: #185d9e;
   background: var(--glass-button-hover);
-  box-shadow: 0 6px 14px rgb(40 95 117 / 8%);
+  box-shadow: var(--glass-button-shadow-hover);
 }
 
 .create-form button[type="submit"]:active,
@@ -275,7 +285,7 @@ textarea:focus-visible {
 .reader-notes button:active,
 .pdf-toolbar button:active {
   background: var(--glass-button-active);
-  box-shadow: none;
+  box-shadow: var(--glass-button-shadow-active);
 }
 
 input:focus,
@@ -289,19 +299,21 @@ textarea:focus {
 .secondary-button {
   height: 32px;
   padding: 0 12px;
-  color: #2f4660;
-  border: 1px solid #c8d9ea;
-  background: #f7fbff;
+  color: #2f78c6;
+  border: 0;
+  background: rgb(234 244 255 / 54%);
+  box-shadow: none;
 }
 
 .secondary-button:hover {
-  color: #173a5f;
-  border-color: #9fc7ef;
-  background: #eaf4ff;
+  color: #185d9e;
+  background: rgb(218 237 255 / 72%);
+  box-shadow: none;
 }
 
 .secondary-button:active {
-  background: #dceeff;
+  background: rgb(204 228 250 / 82%);
+  box-shadow: none;
 }
 
 a {
@@ -357,9 +369,9 @@ a {
   flex: 1;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
+  gap: 32px;
   min-width: 0;
-  padding: 18px 156px 18px 18px;
+  padding: 18px 220px 18px 18px;
   cursor: pointer;
 }
 
@@ -382,7 +394,8 @@ a {
 
 .study-meta {
   display: grid;
-  gap: 8px;
+  min-width: 138px;
+  gap: 12px;
   justify-items: end;
   color: #607086;
 }
@@ -409,11 +422,17 @@ a {
 
 .study-row-actions {
   position: absolute;
-  right: 18px;
-  bottom: 18px;
+  right: 22px;
+  top: calc(50% + 14px);
   z-index: 1;
   display: flex;
-  gap: 8px;
+  gap: 12px;
+  transform: translateY(-50%);
+}
+
+.study-row-actions .secondary-button {
+  height: 32px;
+  padding: 0 13px;
 }
 
 .study-row-edit-form {
@@ -439,8 +458,9 @@ a {
   height: 32px;
   padding: 0 12px;
   color: var(--primary-action);
-  border: 1px solid var(--primary-action-border);
-  background: var(--primary-action-surface);
+  border: 0;
+  background: var(--glass-button-surface);
+  box-shadow: var(--glass-button-shadow);
 }
 
 .study-row-edit-error {
@@ -464,64 +484,78 @@ a {
   height: 38px;
   margin-bottom: 18px;
   place-items: center;
-  color: #26384a;
-  border: 1px solid #d6e3ef;
+  color: #2f78c6;
+  border: 0;
   border-radius: 999px;
-  background: rgb(255 255 255 / 62%);
-  box-shadow: 0 8px 18px rgb(23 32 51 / 6%);
-  backdrop-filter: blur(10px);
+  background: rgb(234 244 255 / 68%);
+  box-shadow:
+    0 8px 18px rgb(47 120 198 / 10%),
+    inset 0 0 0 1px rgb(255 255 255 / 26%);
+  backdrop-filter: blur(8px);
 }
 
 .page-back-button svg,
 .icon-button svg {
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
 }
 
 .page-back-button:hover {
-  color: #172033;
-  border-color: #bdd3e6;
-  background: #ffffff;
+  color: #185d9e;
+  background: rgb(218 237 255 / 92%);
+  box-shadow:
+    0 10px 22px rgb(47 120 198 / 14%),
+    inset 0 0 0 1px rgb(255 255 255 / 18%);
 }
 
 .detail-header {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 24px;
+  display: block;
   margin-bottom: 24px;
 }
 
+.detail-title-block {
+  display: grid;
+  gap: 14px;
+  max-width: min(760px, 100%);
+}
+
 .detail-header-meta {
-  margin: 8px 0 0;
+  margin: 0;
   color: #607086;
 }
 
 .detail-progress-summary {
   display: grid;
-  gap: 8px;
-  justify-items: end;
-  min-width: 180px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 16px;
+  align-items: center;
+  width: min(520px, 100%);
+  color: #607086;
+  font-size: 13px;
 }
 
 .detail-progress-summary strong {
   color: #2f78c6;
-  font-size: 28px;
+  font-size: 18px;
+  font-weight: 750;
 }
 
 .detail-progress-bar {
-  width: 180px;
-  height: 8px;
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 10px;
   overflow: hidden;
   border-radius: 999px;
-  background: #dceeff;
+  background: #e8f1fa;
+  box-shadow: inset 0 0 0 1px rgb(47 120 198 / 5%);
 }
 
 .detail-progress-bar span {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #7bb6df, #2f78c6);
+  background: linear-gradient(90deg, #3d95df, #2f78c6);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 18%) inset;
 }
 
 .content-edit-form {
@@ -544,14 +578,15 @@ a {
   height: 40px;
   padding: 0 14px;
   color: var(--primary-action);
-  border: 1px solid var(--primary-action-border);
-  background: var(--primary-action-surface);
+  border: 0;
+  background: var(--glass-button-surface);
+  box-shadow: var(--glass-button-shadow);
 }
 
 .content-edit-form button:hover {
-  border-color: #9fc8d3;
-  background: var(--primary-action-hover);
-  box-shadow: 0 6px 14px rgb(40 95 117 / 8%);
+  color: #185d9e;
+  background: var(--glass-button-hover);
+  box-shadow: var(--glass-button-shadow-hover);
 }
 
 .detail-grid {
@@ -853,7 +888,33 @@ a {
   height: 34px;
   padding: 0;
   place-items: center;
+  color: #2f78c6;
+  border: 0;
   border-radius: 999px;
+  background: rgb(234 244 255 / 72%);
+  box-shadow:
+    0 8px 18px rgb(47 120 198 / 10%),
+    inset 0 0 0 1px rgb(255 255 255 / 24%);
+  backdrop-filter: blur(8px);
+}
+
+.detail-panel .icon-button,
+.detail-panel .icon-button:hover,
+.detail-panel .icon-button:active {
+  border: 0;
+}
+
+.icon-button:hover {
+  color: #185d9e;
+  background: rgb(218 237 255 / 92%);
+  box-shadow:
+    0 10px 22px rgb(47 120 198 / 14%),
+    inset 0 0 0 1px rgb(255 255 255 / 18%);
+}
+
+.icon-button:active {
+  background: rgb(204 228 250 / 96%);
+  box-shadow: 0 5px 12px rgb(47 120 198 / 12%);
 }
 
 .pending-delete-bar {
@@ -1116,6 +1177,7 @@ textarea {
     justify-content: flex-end;
     width: 100%;
     padding: 0 18px 18px;
+    transform: none;
   }
 
   .create-form,

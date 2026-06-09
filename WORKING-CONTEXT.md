@@ -80,9 +80,11 @@
 - 当前资料删除采用“先标记、可撤回、保存后正式删除”模式；正式删除只删除 App 管理的资料副本和数据库记录，不删除用户原始来源文件。
 - 当前资料删除失败时，成功项会从资料列表移除，失败项保留为待删除状态并提示可再次保存重试。
 - 当前笔记删除支持详情页和阅读页删除；删除前二次确认；阅读页删除当前笔记后回到新建笔记状态。
+- 当前 V1 UI 收口已完成：按钮统一为淡蓝轻量风格；详情页进度条已移到左侧标题区并改成长条 SaaS 风格；详情页资料阅读模式隐藏其他资料列表；笔记区为下拉选择 + 飞书文档式纯文本编辑。
 - 已验证：`npm.cmd test`、`npm.cmd run typecheck`、`npm.cmd run build`、`cargo fmt --check`、`cargo test`、`cargo clippy -- -D warnings`、`npm.cmd run tauri -- build --debug`。
-- 本阶段已验证：前端 `vitest run` 45 个测试通过、`tsc --noEmit` 通过、`vite build` 通过；Rust `cargo fmt --check` 通过、`cargo test` 17 个测试通过、`cargo clippy -- -D warnings` 通过；Tauri debug build 已重新生成 `app/src-tauri/target/debug/studyseq.exe`。
-- 下一步目标：用真实 App 数据手工验收“编辑名称/状态/预计工时/截止日期/进度后重启恢复”“导入并阅读 txt/图片/多页 PDF”“删除当前阅读资料后再进阅读页不报错”“删除当前笔记后阅读页选择状态清空”“debug 包独立启动且不访问 localhost”。
+- 本阶段已验证：前端 `vitest run` 46 个测试通过、`tsc --noEmit` 通过、`vite build` 通过；Rust `cargo fmt --check` 通过、`cargo test` 17 个测试通过、`cargo clippy -- -D warnings` 通过；Tauri debug build 已重新生成 `app/src-tauri/target/debug/studyseq.exe`。
+- 用户已完成 V1 手工测试，反馈“似乎没啥问题”，当前 V1 可按发布候选收口。
+- 下一步目标：提交并推送 V1 收口改动；随后进入 V1.1 窄版规划，优先评估 PDF 当前页/缩放恢复、资料库空间占用统计和清理入口。
 - 后续增强项：资料重命名、PDF 搜索/目录、阅读页滚动位置或页码保存、资料库空间占用统计和清理入口。
 
 ## 已准备依赖

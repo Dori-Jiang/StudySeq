@@ -21,7 +21,10 @@ export type CreateLearningContentInput = {
 
 export type UpdateLearningContentInput = {
   id: string;
+  name: string;
+  status: StudyStatus;
   deadline: string | null;
+  estimatedHours: number;
   progress: number;
 };
 

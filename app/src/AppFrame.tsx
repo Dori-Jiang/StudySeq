@@ -55,7 +55,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
         />
         <div className="window-controls" aria-label="窗口控制">
           <button type="button" aria-label="最小化窗口" onClick={() => void appWindow.minimize()}>
-            <span aria-hidden="true">-</span>
+            <span aria-hidden="true">−</span>
           </button>
           <button
             type="button"

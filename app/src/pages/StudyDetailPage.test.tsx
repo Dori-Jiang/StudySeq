@@ -11,6 +11,25 @@ vi.mock("../shared/api/learningContentApi");
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
 }));
+vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
+  GlobalWorkerOptions: {
+    workerSrc: "",
+  },
+  getDocument: vi.fn(() => ({
+    promise: Promise.resolve({
+      numPages: 3,
+      getPage: vi.fn(() =>
+        Promise.resolve({
+          getViewport: vi.fn(({ scale }: { scale: number }) => ({
+            width: 100 * scale,
+            height: 120 * scale,
+          })),
+          render: vi.fn(() => ({ promise: Promise.resolve() })),
+        }),
+      ),
+    }),
+  })),
+}));
 
 const getLearningDetail = vi.mocked(learningContentApi.getLearningDetail);
 const importMaterialFile = vi.mocked(learningContentApi.importMaterialFile);
@@ -70,6 +89,9 @@ describe("StudyDetailPage", () => {
     updateLearningContent.mockReset();
     updateNote.mockReset();
     open.mockReset();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+      { clearRect: vi.fn() } as unknown as CanvasRenderingContext2D,
+    );
   });
 
   it("renders learning detail with materials and note titles only", async () => {
@@ -78,9 +100,25 @@ describe("StudyDetailPage", () => {
     renderDetailPage();
 
     expect(await screen.findByText("Rust 入门")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "返回主页" })).toHaveClass("page-back-button");
+    expect(screen.queryByText("学习内容详情")).not.toBeInTheDocument();
     expect(screen.getByText("资料.txt")).toBeInTheDocument();
+    expect(screen.getByLabelText("选择笔记")).toHaveValue("");
     expect(screen.getByText("第一条笔记")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "第一条笔记" })).not.toBeInTheDocument();
     expect(screen.queryByText("纯文本正文")).not.toBeInTheDocument();
+  });
+
+  it("shows the note editor as a document surface with the title as the headline", async () => {
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+
+    renderDetailPage();
+    await screen.findByText("第一条笔记");
+
+    expect(screen.getByLabelText("笔记标题")).toHaveClass("note-document-title");
+    expect(screen.getByLabelText("笔记正文")).toHaveClass("note-document-body");
+    expect(screen.queryByText(/^笔记标题$/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^笔记正文$/)).not.toBeInTheDocument();
   });
 
   it("imports a root material file and appends it to the list", async () => {
@@ -124,7 +162,7 @@ describe("StudyDetailPage", () => {
     expect(screen.getByLabelText("笔记正文")).toHaveValue("纯文本正文");
   });
 
-  it("keeps materials as read-or-delete items without a detail preview surface", async () => {
+  it("uses the material row as the read entry without showing a read button", async () => {
     getLearningDetail.mockResolvedValueOnce({
       ...baseDetail,
       materials: [
@@ -142,10 +180,86 @@ describe("StudyDetailPage", () => {
     expect(screen.queryByRole("button", { name: /预览/ })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("资料轻量预览")).not.toBeInTheDocument();
     expect(previewMaterialFile).not.toHaveBeenCalled();
-    expect(screen.getByRole("link", { name: "阅读" })).toHaveAttribute(
-      "href",
-      "/studies/study-1/read?materialId=mat-1",
-    );
+    expect(screen.queryByRole("link", { name: "阅读" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "阅读" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "打开资料：资料.txt" })).toBeInTheDocument();
+    const materialItem = screen.getByText("资料.txt").closest("article") as HTMLElement;
+    const actions = within(materialItem).getByRole("group", { name: "资料操作：资料.txt" });
+    expect(within(actions).getByRole("button", { name: "删除" })).toBeInTheDocument();
+  });
+
+  it("opens a material inside the left detail pane and can return to the material list", async () => {
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    previewMaterialFile.mockResolvedValueOnce({
+      materialId: "mat-1",
+      kind: "text",
+      mimeType: "text/plain",
+      text: "资料正文",
+      dataUrl: null,
+      encoding: "utf-8",
+    });
+
+    renderDetailPage();
+    await screen.findByText("资料.txt");
+
+    await userEvent.click(screen.getByRole("button", { name: "打开资料：资料.txt" }));
+
+    await waitFor(() => {
+      expect(previewMaterialFile).toHaveBeenCalledWith("mat-1");
+    });
+    expect(await screen.findByText("资料正文")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "返回资料列表" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "返回资料列表" }));
+
+    expect(screen.getByRole("button", { name: "打开资料：资料.txt" })).toBeInTheDocument();
+    expect(screen.queryByText("资料正文")).not.toBeInTheDocument();
+  });
+
+  it("keeps material delete independent from the inline reader", async () => {
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderDetailPage();
+    await screen.findByText("资料.txt");
+
+    const materialItem = screen.getByText("资料.txt").closest("article") as HTMLElement;
+    await userEvent.click(within(materialItem).getByRole("button", { name: "删除" }));
+
+    expect(previewMaterialFile).not.toHaveBeenCalled();
+    expect(screen.getByText("已标记删除 1 个资料")).toBeInTheDocument();
+  });
+
+  it("renders PDF material inside the detail pane with the shared reader controls", async () => {
+    getLearningDetail.mockResolvedValueOnce({
+      ...baseDetail,
+      materials: [
+        {
+          ...baseDetail.materials[0],
+          id: "mat-pdf",
+          name: "资料.pdf",
+          mimeType: "application/pdf",
+        },
+      ],
+    });
+    previewMaterialFile.mockResolvedValueOnce({
+      materialId: "mat-pdf",
+      kind: "pdf",
+      mimeType: "application/pdf",
+      text: null,
+      dataUrl: "data:application/pdf;base64,JVBERi0xLjc=",
+      encoding: null,
+    });
+
+    renderDetailPage();
+    await screen.findByText("资料.pdf");
+
+    await userEvent.click(screen.getByRole("button", { name: "打开资料：资料.pdf" }));
+
+    expect(await screen.findByLabelText("PDF 预览")).toBeInTheDocument();
+    expect(await screen.findByText("第 1 / 3 页")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(await screen.findByText("第 2 / 3 页")).toBeInTheDocument();
   });
 
   it("lets the detail split pane ratio be resized by dragging the splitter", async () => {
@@ -175,31 +289,21 @@ describe("StudyDetailPage", () => {
     expect(grid.style.gridTemplateColumns).toBe("68fr 16px 32fr");
   });
 
-  it("edits learning content progress and deadline manually", async () => {
+  it("shows learning content progress without editing fields in detail", async () => {
     getLearningDetail.mockResolvedValueOnce(baseDetail);
-    updateLearningContent.mockResolvedValueOnce({
-      ...baseDetail.learningContent,
-      progress: 65,
-      deadline: "2026-08-15",
-      updatedAt: "2026-06-08T00:01:00Z",
-    });
 
     renderDetailPage();
     await screen.findByText("Rust 入门");
 
-    await userEvent.clear(screen.getByLabelText("进度百分比"));
-    await userEvent.type(screen.getByLabelText("进度百分比"), "65");
-    await userEvent.type(screen.getByLabelText("截止日期"), "2026-08-15");
-    await userEvent.click(screen.getByRole("button", { name: "保存学习内容" }));
-
-    await waitFor(() => {
-      expect(updateLearningContent).toHaveBeenCalledWith({
-        id: "study-1",
-        progress: 65,
-        deadline: "2026-08-15",
-      });
-    });
-    expect(screen.getByText("65%")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "学习进度" })).toHaveAttribute(
+      "aria-valuenow",
+      "20",
+    );
+    expect(screen.getByText("20%")).toBeInTheDocument();
+    expect(screen.queryByLabelText("学习名称")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("状态")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "保存学习内容" })).not.toBeInTheDocument();
+    expect(updateLearningContent).not.toHaveBeenCalled();
   });
 
   it("stages material deletion, allows undo, and permanently deletes on save", async () => {
@@ -228,6 +332,60 @@ describe("StudyDetailPage", () => {
     expect(screen.queryByText("已标记删除 1 个资料")).not.toBeInTheDocument();
   });
 
+  it("keeps failed material deletes pending with a retryable error", async () => {
+    const detailWithTwoMaterials = {
+      ...baseDetail,
+      materials: [
+        baseDetail.materials[0],
+        {
+          ...baseDetail.materials[0],
+          id: "mat-2",
+          name: "失败资料.txt",
+          storedPath: "C:/app/失败资料.txt",
+        },
+      ],
+    };
+    getLearningDetail.mockResolvedValueOnce(detailWithTwoMaterials);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    deleteMaterialItem
+      .mockResolvedValueOnce()
+      .mockRejectedValueOnce(new Error("文件被占用"));
+
+    renderDetailPage();
+    await screen.findByText("资料.txt");
+
+    await userEvent.click(
+      within(screen.getByText("资料.txt").closest("article") as HTMLElement).getByRole("button", {
+        name: "删除",
+      }),
+    );
+    await userEvent.click(
+      within(screen.getByText("失败资料.txt").closest("article") as HTMLElement).getByRole(
+        "button",
+        { name: "删除" },
+      ),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "保存资料删除" }));
+
+    await waitFor(() => {
+      expect(deleteMaterialItem).toHaveBeenCalledWith("mat-1");
+      expect(deleteMaterialItem).toHaveBeenCalledWith("mat-2");
+    });
+    expect(screen.getByText(/部分资料删除失败/)).toBeInTheDocument();
+    expect(screen.getByText(/失败项已保留/)).toBeInTheDocument();
+    expect(screen.getByText("已标记删除 1 个资料")).toBeInTheDocument();
+    expect(screen.queryByText("资料.txt")).not.toBeInTheDocument();
+    expect(screen.queryByText("失败资料.txt")).not.toBeInTheDocument();
+
+    deleteMaterialItem.mockResolvedValueOnce();
+    await userEvent.click(screen.getByRole("button", { name: "保存资料删除" }));
+
+    await waitFor(() => {
+      expect(deleteMaterialItem).toHaveBeenLastCalledWith("mat-2");
+    });
+    expect(screen.queryByText("已标记删除 1 个资料")).not.toBeInTheDocument();
+  });
+
   it("deletes a note after confirmation", async () => {
     getLearningDetail.mockResolvedValueOnce(baseDetail);
     vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -236,8 +394,8 @@ describe("StudyDetailPage", () => {
     renderDetailPage();
     await screen.findByText("第一条笔记");
 
-    const noteItem = screen.getByText("第一条笔记").closest("article") as HTMLElement;
-    await userEvent.click(within(noteItem).getByRole("button", { name: "删除" }));
+    await userEvent.selectOptions(screen.getByLabelText("选择笔记"), "note-1");
+    await userEvent.click(screen.getByRole("button", { name: "删除当前笔记" }));
 
     await waitFor(() => {
       expect(deleteNote).toHaveBeenCalledWith("note-1");
@@ -257,7 +415,7 @@ describe("StudyDetailPage", () => {
     renderDetailPage();
     await screen.findByText("第一条笔记");
 
-    await userEvent.click(screen.getByRole("button", { name: "第一条笔记" }));
+    await userEvent.selectOptions(screen.getByLabelText("选择笔记"), "note-1");
     expect(screen.getByLabelText("笔记标题")).toHaveValue("第一条笔记");
     expect(screen.getByLabelText("笔记正文")).toHaveValue("纯文本正文");
 

@@ -110,13 +110,13 @@ describe("learningContentApi", () => {
     expect(invokeMock).toHaveBeenCalledWith("delete_learning_content", { id: "study-1" });
   });
 
-  it("updates learning content progress and deadline through the Rust command", async () => {
+  it("updates learning content basic fields through the Rust command", async () => {
     invokeMock.mockResolvedValueOnce({
       id: "study-1",
-      name: "Rust 入门",
-      status: "planned",
+      name: "Rust 深入",
+      status: "active",
       deadline: "2026-08-15",
-      estimatedHours: 10,
+      estimatedHours: 12,
       progress: 65,
       createdAt: "2026-06-08T00:00:00Z",
       updatedAt: "2026-06-08T00:01:00Z",
@@ -125,17 +125,26 @@ describe("learningContentApi", () => {
 
     const result = await updateLearningContent({
       id: "study-1",
+      name: "Rust 深入",
+      status: "active",
       progress: 65,
       deadline: "2026-08-15",
+      estimatedHours: 12,
     });
 
     expect(invokeMock).toHaveBeenCalledWith("update_learning_content", {
       input: {
         id: "study-1",
+        name: "Rust 深入",
+        status: "active",
         progress: 65,
         deadline: "2026-08-15",
+        estimatedHours: 12,
       },
     });
+    expect(result.name).toBe("Rust 深入");
+    expect(result.status).toBe("active");
+    expect(result.estimatedHours).toBe(12);
     expect(result.progress).toBe(65);
     expect(result.deadline).toBe("2026-08-15");
   });

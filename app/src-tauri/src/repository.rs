@@ -105,9 +105,21 @@ impl LearningContentRepository {
     pub fn update_learning_content(
         &self,
         id: &str,
-        progress: i64,
+        name: String,
+        status: StudyStatus,
         deadline: Option<String>,
+        estimated_hours: f64,
+        progress: i64,
     ) -> Result<LearningContent, AppError> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(AppError::EmptyName);
+        }
+
+        if estimated_hours < 0.0 {
+            return Err(AppError::InvalidEstimatedHours);
+        }
+
         if !(0..=100).contains(&progress) {
             return Err(AppError::InvalidProgress);
         }
@@ -119,14 +131,25 @@ impl LearningContentRepository {
         let now = Utc::now().to_rfc3339();
         self.connection.execute(
             "UPDATE learning_contents
-             SET progress = ?1, deadline = ?2, updated_at = ?3
-             WHERE id = ?4",
-            params![progress, deadline, now, id],
+             SET name = ?1, status = ?2, deadline = ?3, estimated_hours = ?4, progress = ?5, updated_at = ?6
+             WHERE id = ?7",
+            params![
+                name,
+                status_to_str(&status),
+                deadline,
+                estimated_hours,
+                progress,
+                now,
+                id
+            ],
         )?;
 
         Ok(LearningContent {
+            name,
+            status,
             progress,
             deadline,
+            estimated_hours,
             updated_at: now,
             ..existing
         })
@@ -817,7 +840,7 @@ mod tests {
     }
 
     #[test]
-    fn updates_learning_content_progress_and_deadline_after_reopening_database() {
+    fn updates_learning_content_basic_fields_after_reopening_database() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let database_path = temp_dir.path().join("studyseq.sqlite");
         let repository = LearningContentRepository::open(&database_path).expect("open db");
@@ -831,7 +854,14 @@ mod tests {
             .expect("create learning content");
 
         let updated = repository
-            .update_learning_content(&learning_content.id, 65, Some("2026-08-15".to_string()))
+            .update_learning_content(
+                &learning_content.id,
+                "进度编辑更新".to_string(),
+                StudyStatus::Active,
+                Some("2026-08-15".to_string()),
+                8.5,
+                65,
+            )
             .expect("update learning content");
         drop(repository);
 
@@ -839,9 +869,15 @@ mod tests {
             LearningContentRepository::open(&database_path).expect("reopen db");
         let restored = reopened_repository.list().expect("list learning contents");
 
+        assert_eq!(updated.name, "进度编辑更新");
+        assert_eq!(updated.status, StudyStatus::Active);
+        assert_eq!(updated.estimated_hours, 8.5);
         assert_eq!(updated.progress, 65);
         assert_eq!(updated.deadline.as_deref(), Some("2026-08-15"));
         assert_eq!(restored[0].id, learning_content.id);
+        assert_eq!(restored[0].name, "进度编辑更新");
+        assert_eq!(restored[0].status, StudyStatus::Active);
+        assert_eq!(restored[0].estimated_hours, 8.5);
         assert_eq!(restored[0].progress, 65);
         assert_eq!(restored[0].deadline.as_deref(), Some("2026-08-15"));
     }

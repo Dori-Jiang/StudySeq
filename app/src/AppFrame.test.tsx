@@ -37,6 +37,10 @@ describe("AppFrame", () => {
   it("calls Tauri window controls from the custom chrome", async () => {
     renderFrame();
 
+    expect(screen.getByRole("button", { name: "最小化窗口" })).toHaveTextContent("−");
+    expect(screen.getByRole("button", { name: "最大化或还原窗口" })).toHaveTextContent("□");
+    expect(screen.getByRole("button", { name: "关闭窗口" })).toHaveTextContent("×");
+
     await userEvent.click(screen.getByRole("button", { name: "最小化窗口" }));
     await userEvent.click(screen.getByRole("button", { name: "最大化或还原窗口" }));
     await userEvent.click(screen.getByRole("button", { name: "关闭窗口" }));

@@ -8,14 +8,29 @@ import {
   deleteNote,
   getLearningDetail,
   importMaterialFile,
-  updateLearningContent,
+  previewMaterialFile,
   updateNote,
 } from "../shared/api/learningContentApi";
-import type { LearningDetail, MaterialItem, Note } from "../shared/types";
+import { MaterialPreviewPane } from "./MaterialPreviewPane";
+import type {
+  LearningDetail,
+  MaterialItem,
+  MaterialPreview,
+  Note,
+  StudyStatus,
+} from "../shared/types";
 
 const DEFAULT_DETAIL_SPLIT_RATIO = 58;
 const MIN_DETAIL_SPLIT_RATIO = 30;
 const MAX_DETAIL_SPLIT_RATIO = 70;
+
+const statusLabels: Record<StudyStatus, string> = {
+  planned: "计划中",
+  active: "进行中",
+  paused: "暂停",
+  completed: "完成",
+  overdue: "超期",
+};
 
 export function StudyDetailPage() {
   const { studyId } = useParams<{ studyId: string }>();
@@ -26,11 +41,15 @@ export function StudyDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [noteTitle, setNoteTitle] = useState("");
   const [noteBody, setNoteBody] = useState("");
-  const [progressInput, setProgressInput] = useState("0");
-  const [deadlineInput, setDeadlineInput] = useState("");
   const [pendingDeletedMaterialIds, setPendingDeletedMaterialIds] = useState<string[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [selectedMaterialId, setSelectedMaterialId] = useState<string | null>(null);
+  const [selectedMaterialPreview, setSelectedMaterialPreview] = useState<MaterialPreview | null>(
+    null,
+  );
   const [detailSplitRatio, setDetailSplitRatio] = useState(DEFAULT_DETAIL_SPLIT_RATIO);
+  const selectedMaterial =
+    detail?.materials.find((material) => material.id === selectedMaterialId) ?? undefined;
 
   useEffect(() => {
     if (!studyId) {
@@ -44,10 +63,6 @@ export function StudyDetailPage() {
       .then((loadedDetail) => {
         if (isMounted) {
           setDetail(loadedDetail);
-          if (loadedDetail) {
-            setProgressInput(String(loadedDetail.learningContent.progress));
-            setDeadlineInput(loadedDetail.learningContent.deadline ?? "");
-          }
         }
       })
       .catch((loadError: unknown) => {
@@ -119,6 +134,23 @@ export function StudyDetailPage() {
     );
   }
 
+  async function handleOpenMaterial(material: MaterialItem) {
+    setSelectedMaterialId(material.id);
+    setSelectedMaterialPreview(null);
+    try {
+      const preview = await previewMaterialFile(material.id);
+      setSelectedMaterialPreview(preview);
+      setError(null);
+    } catch (previewError: unknown) {
+      setError(toMessage(previewError));
+    }
+  }
+
+  function handleReturnToMaterialList() {
+    setSelectedMaterialId(null);
+    setSelectedMaterialPreview(null);
+  }
+
   async function handleSaveNote(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!studyId) return;
@@ -155,35 +187,6 @@ export function StudyDetailPage() {
     setError(null);
   }
 
-  async function handleUpdateLearningContent(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!detail) return;
-
-    const progress = Number(progressInput);
-    if (!Number.isInteger(progress) || progress < 0 || progress > 100) {
-      setError("进度必须是 0 到 100 的整数");
-      return;
-    }
-
-    const updated = await updateLearningContent({
-      id: detail.learningContent.id,
-      progress,
-      deadline: deadlineInput || null,
-    });
-
-    setDetail((currentDetail) =>
-      currentDetail
-        ? {
-            ...currentDetail,
-            learningContent: updated,
-          }
-        : currentDetail,
-    );
-    setProgressInput(String(updated.progress));
-    setDeadlineInput(updated.deadline ?? "");
-    setError(null);
-  }
-
   function handleStageDeleteMaterial(material: MaterialItem) {
     if (!window.confirm(`确定删除资料「${material.name}」吗？保存后将无法撤回。`)) {
       return;
@@ -192,6 +195,9 @@ export function StudyDetailPage() {
     setPendingDeletedMaterialIds((currentIds) =>
       currentIds.includes(material.id) ? currentIds : [...currentIds, material.id],
     );
+    if (selectedMaterialId === material.id) {
+      handleReturnToMaterialList();
+    }
   }
 
   function handleUndoDeleteMaterial(materialId: string) {
@@ -204,18 +210,38 @@ export function StudyDetailPage() {
     if (!detail || pendingDeletedMaterialIds.length === 0) return;
 
     const idsToDelete = [...pendingDeletedMaterialIds];
-    await Promise.all(idsToDelete.map((materialId) => deleteMaterialItem(materialId)));
+    const deleteResults = await Promise.allSettled(
+      idsToDelete.map(async (materialId) => {
+        await deleteMaterialItem(materialId);
+        return materialId;
+      }),
+    );
+    const deletedIds = deleteResults.flatMap((result) =>
+      result.status === "fulfilled" ? [result.value] : [],
+    );
+    const failedIds = idsToDelete.filter((materialId) => !deletedIds.includes(materialId));
     setDetail((currentDetail) =>
       currentDetail
         ? {
             ...currentDetail,
             materials: currentDetail.materials.filter(
-              (material) => !idsToDelete.includes(material.id),
+              (material) => !deletedIds.includes(material.id),
             ),
           }
         : currentDetail,
     );
-    setPendingDeletedMaterialIds([]);
+    setPendingDeletedMaterialIds(failedIds);
+    if (failedIds.length > 0) {
+      const failedNames = failedIds
+        .map(
+          (materialId) =>
+            detail.materials.find((material) => material.id === materialId)?.name ?? materialId,
+        )
+        .join("、");
+      setError(`部分资料删除失败：${failedNames}。失败项已保留，可再次保存重试。`);
+      return;
+    }
+
     setError(null);
   }
 
@@ -246,6 +272,16 @@ export function StudyDetailPage() {
     setError(null);
   }
 
+  function handleSelectNoteId(noteId: string) {
+    const note = detail?.notes.find((currentNote) => currentNote.id === noteId);
+    if (!note) {
+      handleNewNote();
+      return;
+    }
+
+    handleSelectNote(note);
+  }
+
   function handleNewNote() {
     setSelectedNoteId(null);
     setNoteTitle("");
@@ -274,39 +310,28 @@ export function StudyDetailPage() {
 
   return (
     <main className="detail-shell">
-      <Link className="back-link" to="/">
-        返回主页
+      <Link className="page-back-button" to="/" aria-label="返回主页">
+        <ChevronLeftIcon />
       </Link>
       <section className="detail-header">
         <div>
-          <p className="eyebrow">学习内容详情</p>
           <h1>{detail.learningContent.name}</h1>
+          <p className="detail-header-meta">{`${statusLabels[detail.learningContent.status]} · 预计 ${formatHours(detail.learningContent.estimatedHours)}`}</p>
         </div>
-        <strong>{detail.learningContent.progress}%</strong>
+        <div className="detail-progress-summary">
+          <strong>{detail.learningContent.progress}%</strong>
+          <div
+            aria-label="学习进度"
+            aria-valuemax={100}
+            aria-valuemin={0}
+            aria-valuenow={detail.learningContent.progress}
+            className="detail-progress-bar"
+            role="progressbar"
+          >
+            <span style={{ width: `${detail.learningContent.progress}%` }} />
+          </div>
+        </div>
       </section>
-
-      <form className="content-edit-form" onSubmit={handleUpdateLearningContent}>
-        <label>
-          进度百分比
-          <input
-            type="number"
-            min="0"
-            max="100"
-            step="1"
-            value={progressInput}
-            onChange={(event) => setProgressInput(event.target.value)}
-          />
-        </label>
-        <label>
-          截止日期
-          <input
-            type="date"
-            value={deadlineInput}
-            onChange={(event) => setDeadlineInput(event.target.value)}
-          />
-        </label>
-        <button type="submit">保存学习内容</button>
-      </form>
 
       {error ? <p className="error-message">{error}</p> : null}
 
@@ -327,8 +352,16 @@ export function StudyDetailPage() {
           <MaterialList
             materials={detail.materials}
             pendingDeletedMaterialIds={pendingDeletedMaterialIds}
+            onOpen={handleOpenMaterial}
             onStageDelete={handleStageDeleteMaterial}
           />
+          {selectedMaterial ? (
+            <MaterialInlineReader
+              material={selectedMaterial}
+              preview={selectedMaterialPreview}
+              onReturn={handleReturnToMaterialList}
+            />
+          ) : null}
           <MaterialDeletionBar
             materials={detail.materials}
             pendingDeletedMaterialIds={pendingDeletedMaterialIds}
@@ -356,30 +389,34 @@ export function StudyDetailPage() {
               新建笔记
             </button>
           </div>
-          <NoteList
+          <NoteSelector
             notes={detail.notes}
             selectedNoteId={selectedNoteId}
             onDelete={handleDeleteNote}
-            onSelect={handleSelectNote}
+            onSelect={handleSelectNoteId}
           />
-          <form className="note-form note-editor" onSubmit={handleSaveNote}>
-            <label>
-              笔记标题
-              <input
-                value={noteTitle}
-                onChange={(event) => setNoteTitle(event.target.value)}
-                placeholder="例如：第一条笔记"
-              />
-            </label>
-            <label>
-              笔记正文
-              <textarea
-                value={noteBody}
-                onChange={(event) => setNoteBody(event.target.value)}
-                placeholder="记录纯文本笔记"
-              />
-            </label>
-            <button type="submit">保存笔记</button>
+          <form
+            aria-label="笔记编辑区"
+            className="note-form note-document-editor"
+            onSubmit={handleSaveNote}
+          >
+            <input
+              aria-label="笔记标题"
+              className="note-document-title"
+              value={noteTitle}
+              onChange={(event) => setNoteTitle(event.target.value)}
+              placeholder="无标题笔记"
+            />
+            <textarea
+              aria-label="笔记正文"
+              className="note-document-body"
+              value={noteBody}
+              onChange={(event) => setNoteBody(event.target.value)}
+              placeholder="开始记录..."
+            />
+            <div className="note-document-actions">
+              <button type="submit">保存笔记</button>
+            </div>
           </form>
         </section>
       </div>
@@ -389,10 +426,12 @@ export function StudyDetailPage() {
 
 function MaterialList({
   materials,
+  onOpen,
   onStageDelete,
   pendingDeletedMaterialIds,
 }: {
   materials: MaterialItem[];
+  onOpen: (material: MaterialItem) => void;
   onStageDelete?: (material: MaterialItem) => void;
   pendingDeletedMaterialIds?: string[];
 }) {
@@ -409,23 +448,74 @@ function MaterialList({
       {visibleMaterials.map((material) => (
         <article className="material-item" key={material.id}>
           <span className="file-icon">{iconForMime(material.mimeType)}</span>
-          <div>
+          <button
+            className="material-open-button"
+            type="button"
+            aria-label={`打开资料：${material.name}`}
+            onClick={() => onOpen(material)}
+          >
             <h3>{material.name}</h3>
             <p>{formatBytes(material.sizeBytes)}</p>
-            <div className="material-actions">
-              <Link to={`/studies/${material.learningContentId}/read?materialId=${material.id}`}>
-                阅读
-              </Link>
-              {onStageDelete ? (
-                <button type="button" onClick={() => onStageDelete(material)}>
-                  删除
-                </button>
-              ) : null}
-            </div>
+          </button>
+          <div
+            aria-label={`资料操作：${material.name}`}
+            className="material-actions material-actions-inline"
+            role="group"
+          >
+            {onStageDelete ? (
+              <button type="button" onClick={() => onStageDelete(material)}>
+                删除
+              </button>
+            ) : null}
           </div>
         </article>
       ))}
     </div>
+  );
+}
+
+function MaterialInlineReader({
+  material,
+  onReturn,
+  preview,
+}: {
+  material: MaterialItem;
+  onReturn: () => void;
+  preview: MaterialPreview | null;
+}) {
+  return (
+    <section className="material-inline-reader" aria-label={`正在阅读：${material.name}`}>
+      <div className="material-reader-header">
+        <button
+          className="icon-button"
+          type="button"
+          aria-label="返回资料列表"
+          onClick={onReturn}
+        >
+          <ChevronLeftIcon />
+        </button>
+        <div>
+          <h3>{material.name}</h3>
+          <p>{formatBytes(material.sizeBytes)}</p>
+        </div>
+      </div>
+      <MaterialPreviewPane material={material} preview={preview} />
+    </section>
+  );
+}
+
+function ChevronLeftIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path
+        d="M15 6l-6 6 6 6"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2.4"
+      />
+    </svg>
   );
 }
 
@@ -467,7 +557,7 @@ function MaterialDeletionBar({
   );
 }
 
-function NoteList({
+function NoteSelector({
   notes,
   onDelete,
   onSelect,
@@ -475,32 +565,40 @@ function NoteList({
 }: {
   notes: Note[];
   onDelete?: (note: Note) => void;
-  onSelect: (note: Note) => void;
+  onSelect: (noteId: string) => void;
   selectedNoteId: string | null;
 }) {
+  const selectedNote = notes.find((note) => note.id === selectedNoteId);
+
   if (notes.length === 0) {
     return <p className="empty-state">还没有笔记</p>;
   }
 
   return (
-    <div className="note-list">
-      {notes.map((note) => (
-        <article className="note-item" key={note.id}>
-          <button
-            aria-pressed={selectedNoteId === note.id}
-            className="note-title-button"
-            type="button"
-            onClick={() => onSelect(note)}
-          >
-            {note.title}
-          </button>
-          {onDelete ? (
-            <button type="button" onClick={() => onDelete(note)}>
-              删除
-            </button>
-          ) : null}
-        </article>
-      ))}
+    <div className="note-selector-row">
+      <label>
+        选择笔记
+        <select value={selectedNoteId ?? ""} onChange={(event) => onSelect(event.target.value)}>
+          <option value="">新建笔记</option>
+          {notes.map((note) => (
+            <option key={note.id} value={note.id}>
+              {note.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      {onDelete ? (
+        <button
+          type="button"
+          aria-label="删除当前笔记"
+          disabled={!selectedNote}
+          onClick={() => {
+            if (selectedNote) onDelete(selectedNote);
+          }}
+        >
+          删除
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -525,6 +623,10 @@ function formatBytes(sizeBytes: number) {
 
   if (unitIndex === 0) return `${value} ${units[unitIndex]}`;
   return `${value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function formatHours(hours: number) {
+  return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} 小时`;
 }
 
 function upsertNote(notes: Note[], savedNote: Note) {

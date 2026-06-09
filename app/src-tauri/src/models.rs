@@ -37,7 +37,10 @@ pub struct CreateLearningContentInput {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateLearningContentInput {
     pub id: String,
+    pub name: String,
+    pub status: StudyStatus,
     pub deadline: Option<String>,
+    pub estimated_hours: f64,
     pub progress: i64,
 }
 

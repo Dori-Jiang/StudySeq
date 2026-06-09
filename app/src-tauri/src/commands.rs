@@ -181,7 +181,14 @@ fn update_learning_content_in_repository(
     input: UpdateLearningContentInput,
 ) -> Result<LearningContent, ApiError> {
     repository
-        .update_learning_content(&input.id, input.progress, input.deadline)
+        .update_learning_content(
+            &input.id,
+            input.name,
+            input.status,
+            input.deadline,
+            input.estimated_hours,
+            input.progress,
+        )
         .map_err(ApiError::from)
 }
 
@@ -311,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn command_handlers_update_learning_content_progress_and_deadline() {
+    fn command_handlers_update_learning_content_basic_fields() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
             .expect("open db");
@@ -330,12 +337,18 @@ mod tests {
             &repository,
             UpdateLearningContentInput {
                 id: content.id.clone(),
+                name: "编辑命令更新".to_string(),
+                status: crate::models::StudyStatus::Active,
                 deadline: Some("2026-08-15".to_string()),
+                estimated_hours: 8.5,
                 progress: 65,
             },
         )
         .expect("update learning content");
 
+        assert_eq!(updated.name, "编辑命令更新");
+        assert_eq!(updated.status, crate::models::StudyStatus::Active);
+        assert_eq!(updated.estimated_hours, 8.5);
         assert_eq!(updated.progress, 65);
         assert_eq!(updated.deadline.as_deref(), Some("2026-08-15"));
     }

@@ -94,6 +94,7 @@
 - 当前已完成详情页阅读框中等上移微调：只压缩顶部垂直间距，不改变资料、笔记、PDF 阅读和分栏结构。
 - 当前已验证：前端 `vitest run` 42 个测试通过、`tsc --noEmit` 通过、`vite build` 通过；Rust `cargo fmt --check` 通过、`cargo test` 20 个测试通过、`cargo clippy -- -D warnings` 通过。
 - 当前 V1.1 发包版本号已统一为 `1.1.0`。
+- 当前已修复 V1.1 release 包启动时出现黑色控制台窗口的问题：`main.rs` 在非 debug 构建使用 Windows GUI 子系统，并新增静态检查脚本防回归。
 - 已运行 `npm.cmd run tauri -- build`，正式 V1.1 release 包已生成：`app/src-tauri/target/release/studyseq.exe`、`app/src-tauri/target/release/bundle/msi/StudySeq_1.1.0_x64_en-US.msi`、`app/src-tauri/target/release/bundle/nsis/StudySeq_1.1.0_x64-setup.exe`。
 - 用户已完成 V1.1 真实 App 手工测试，反馈“没什么问题了”。
 - 下一步：如需要发布到远端，推送当前 V1.1 提交和后续 tag；当前先完成本地提交与本地 release 发包。

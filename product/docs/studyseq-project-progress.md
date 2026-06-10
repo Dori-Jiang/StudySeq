@@ -181,6 +181,7 @@ Tauri 2 + Vite + React + TypeScript + Rust + SQLite
 - 已通过测试验证学习内容完整字段编辑和资料删除失败重试。
 - 已通过测试验证 V1.1 数据迁移、PDF 阅读状态、详情页内嵌 PDF 继续阅读、资料库统计清理、资料重命名和前端关键交互。
 - 已通过完整工程验证：前端测试、类型检查、前端构建、Rust fmt、Rust 测试、Rust clippy、Tauri release build。
+- 已修复 V1.1 release 包启动时出现黑色控制台窗口的问题，并新增静态检查脚本防回归。
 - 已生成 V1.1 release 包：`app/src-tauri/target/release/studyseq.exe`、`app/src-tauri/target/release/bundle/msi/StudySeq_1.1.0_x64_en-US.msi`、`app/src-tauri/target/release/bundle/nsis/StudySeq_1.1.0_x64-setup.exe`。
 
 ## 待发布
@@ -445,3 +446,4 @@ npm.cmd run tauri -- build --debug
 - 2026-06-10：按手工视觉反馈完成详情页阅读框中等上移：压缩详情页顶部 padding、返回按钮下边距、标题块间距和标题区下边距，资料/笔记双栏整体上移。
 - 2026-06-10：确认提交当前 V1.1 改动并准备 V1.1 发包；版本号统一调整为 `1.1.0`。
 - 2026-06-10：完成 V1.1 release build，生成 `StudySeq_1.1.0_x64_en-US.msi` 和 `StudySeq_1.1.0_x64-setup.exe`。
+- 2026-06-10：根据正式包手工反馈修复启动时出现黑色控制台窗口的问题；release 构建入口改为 Windows GUI 子系统，并新增 `tests/check-tauri-windows-subsystem.ps1`。

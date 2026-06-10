@@ -260,7 +260,6 @@ textarea:focus-visible {
 .create-form button[type="submit"],
 .detail-panel button,
 .material-actions button,
-.reader-notes button,
 .pdf-toolbar button {
   color: var(--primary-action);
   border: 0;
@@ -272,7 +271,6 @@ textarea:focus-visible {
 .create-form button[type="submit"]:hover,
 .detail-panel button:hover,
 .material-actions button:hover,
-.reader-notes button:hover,
 .pdf-toolbar button:hover {
   color: #185d9e;
   background: var(--glass-button-hover);
@@ -282,7 +280,6 @@ textarea:focus-visible {
 .create-form button[type="submit"]:active,
 .detail-panel button:active,
 .material-actions button:active,
-.reader-notes button:active,
 .pdf-toolbar button:active {
   background: var(--glass-button-active);
   box-shadow: var(--glass-button-shadow-active);
@@ -468,12 +465,79 @@ a {
   margin: 0;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  padding: 24px;
+  place-items: center;
+  background: rgb(23 32 51 / 34%);
+}
+
+.confirm-dialog {
+  width: min(440px, 100%);
+  padding: 22px;
+  color: #172033;
+  border: 1px solid #c8d9ea;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 48px rgb(23 32 51 / 22%);
+}
+
+.confirm-dialog h2 {
+  margin: 0 0 12px;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.confirm-dialog p {
+  margin: 0;
+  color: #506277;
+  line-height: 1.7;
+}
+
+.confirm-dialog-warning {
+  padding-top: 10px;
+  color: #b3261e;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.danger-button {
+  color: #ffffff;
+  background: #b3261e;
+  box-shadow: 0 8px 18px rgb(179 38 30 / 14%);
+}
+
+.danger-button:hover {
+  color: #ffffff;
+  background: #9f211a;
+  box-shadow: 0 10px 22px rgb(179 38 30 / 18%);
+}
+
+.danger-button:active {
+  background: #8c1d17;
+  box-shadow: 0 5px 12px rgb(179 38 30 / 14%);
+}
+
+button:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .detail-shell {
   width: calc(100% - var(--page-gutter) * 2);
   max-width: none;
   min-height: 100vh;
   margin: 0 auto;
-  padding: 46px 0 48px;
+  padding: 28px 0 48px;
   display: flex;
   flex-direction: column;
 }
@@ -482,7 +546,7 @@ a {
   display: grid;
   width: 38px;
   height: 38px;
-  margin-bottom: 18px;
+  margin-bottom: 10px;
   place-items: center;
   color: #2f78c6;
   border: 0;
@@ -510,12 +574,12 @@ a {
 
 .detail-header {
   display: block;
-  margin-bottom: 24px;
+  margin-bottom: 14px;
 }
 
 .detail-title-block {
   display: grid;
-  gap: 14px;
+  gap: 8px;
   max-width: min(760px, 100%);
 }
 
@@ -828,11 +892,6 @@ a {
   margin-top: 0;
 }
 
-.reader-header a {
-  color: #2f78c6;
-  font-weight: 650;
-}
-
 .link-button {
   height: auto;
   padding: 0;
@@ -853,6 +912,45 @@ a {
 .material-actions button {
   height: 32px;
   padding: 0 12px;
+}
+
+.material-library-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgb(202 218 236 / 62%);
+}
+
+.material-library-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.material-library-actions button {
+  height: 32px;
+  padding: 0 12px;
+}
+
+.material-library-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.material-library-stats span {
+  padding: 5px 8px;
+  color: #42556c;
+  border-radius: 6px;
+  background: rgb(241 247 254 / 78%);
+  font-size: 12px;
+}
+
+.muted-text {
+  margin: 0;
+  color: #607086;
+  font-size: 13px;
 }
 
 .material-inline-reader {
@@ -1033,57 +1131,6 @@ textarea {
     background 140ms ease;
 }
 
-.reader-shell {
-  width: calc(100% - var(--page-gutter) * 2);
-  max-width: none;
-  margin: 0 auto;
-  padding: 46px 0 48px;
-}
-
-.reader-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 24px;
-}
-
-.reader-header h1 {
-  margin: 0;
-  font-size: 28px;
-}
-
-.reader-grid {
-  display: grid;
-  gap: 16px;
-  align-items: start;
-}
-
-.reader-preview,
-.reader-notes {
-  min-width: 0;
-  padding: 18px;
-  background: #ffffff;
-  border: 1px solid #d9e7f6;
-  border-radius: 8px;
-}
-
-.reader-preview label,
-.reader-notes label {
-  margin-bottom: 16px;
-}
-
-.reader-preview select,
-.reader-notes select,
-.reader-notes input,
-.reader-notes textarea {
-  width: 100%;
-}
-
-.reader-notes textarea {
-  min-height: 300px;
-}
-
 .pdf-viewer {
   display: grid;
   gap: 12px;
@@ -1183,8 +1230,7 @@ textarea {
   .create-form,
   .content-edit-form,
   .study-row-edit-form,
-  .detail-grid,
-  .reader-grid {
+  .detail-grid {
     grid-template-columns: 1fr;
   }
 

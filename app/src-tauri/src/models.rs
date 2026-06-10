@@ -60,6 +60,53 @@ pub struct MaterialItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MaterialReadingState {
+    pub material_id: String,
+    pub page_number: i64,
+    pub scale: f64,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveMaterialReadingStateInput {
+    pub material_id: String,
+    pub page_number: i64,
+    pub scale: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterialLibraryStats {
+    pub material_count: i64,
+    pub referenced_bytes: i64,
+    pub actual_referenced_bytes: i64,
+    pub library_bytes: i64,
+    pub missing_file_count: i64,
+    pub orphan_file_count: i64,
+    pub orphan_bytes: i64,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterialLibraryCleanupReport {
+    pub deleted_orphan_file_count: i64,
+    pub deleted_orphan_database_record_count: i64,
+    pub deleted_bytes: i64,
+    pub failed_paths: Vec<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameMaterialItemInput {
+    pub material_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Note {
     pub id: String,
     pub learning_content_id: String,
@@ -99,16 +146,6 @@ pub struct MaterialPreview {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ReadingState {
-    pub learning_content_id: String,
-    pub current_material_id: Option<String>,
-    pub current_note_id: Option<String>,
-    pub split_ratio: i64,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ImportMaterialFileInput {
     pub learning_content_id: String,
     pub source_path: String,
@@ -128,13 +165,4 @@ pub struct UpdateNoteInput {
     pub note_id: String,
     pub title: String,
     pub body: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveReadingStateInput {
-    pub learning_content_id: String,
-    pub current_material_id: Option<String>,
-    pub current_note_id: Option<String>,
-    pub split_ratio: i64,
 }

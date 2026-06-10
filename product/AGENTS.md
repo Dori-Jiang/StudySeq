@@ -1,6 +1,6 @@
-# Planassiant Product Guide
+# StudySeq / 知序 Product Guide
 
-Planassiant is a local-first, offline-capable Learning OS desktop app. Product-specific planning and design live under this directory.
+StudySeq / 知序 是本地优先、离线可用的桌面端学习资料管理与阅读 App。当前版本设计已经固定，`product/` 保留原始设计资产和当前版本管理文档。
 
 ## Product Structure
 
@@ -8,21 +8,20 @@ Planassiant is a local-first, offline-capable Learning OS desktop app. Product-s
 product/
   docs.md
   design/
+  docs/
 ```
 
 ## Product Direction
 
-- Desktop first, later expandable to phone and tablet.
-- Fully local and offline for the first version.
-- No account system, no cloud sync, and no calendar layout in the first version.
-- UI should be quiet, simple, readable, and low-noise.
-- The core product model is: learning content -> learning nodes -> resources, notes, and study sessions.
+- 桌面端优先，后续再评估手机和平板移植。
+- 本地优先、离线优先。
+- 第一版不做账号、云同步和日历中心布局。
+- UI 保持现代、极简、安静、清晰。
+- 当前主线是：学习内容 -> 资料导入 -> App 内阅读 -> 纯文本笔记 -> 继续阅读状态恢复。
 
 ## Product Constraints
 
-- Keep the first version local-first and offline.
-- Avoid cloud, account, sync, or calendar infrastructure until explicitly planned.
-- Use full detail pages instead of side drawers for learning content details.
-- Keep the home page list-first and learning-content centered.
-- Avoid heavy dashboards, large charts, and dense calendar layouts.
-- Product planning notes and stable context should be written in Chinese by default.
+- 保持 V1/V1.1 本地优先和离线优先。
+- 未明确规划前，不加入云、账号、同步、日历、复杂统计。
+- 当前详情页是主要学习工作台；原始概念原型可作为设计参考，但不能驱动新功能接入废弃实现路径。
+- 产品规划、进度和稳定上下文默认使用中文记录。

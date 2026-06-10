@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +6,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StudyDetailPage } from "./StudyDetailPage";
 import * as learningContentApi from "../shared/api/learningContentApi";
 import * as dialog from "@tauri-apps/plugin-dialog";
+
+const pdfRenderMock = vi.fn(() => ({ promise: Promise.resolve() }));
+const pdfGetPageMock = vi.fn((pageNumber: number) =>
+  Promise.resolve({
+    pageNumber,
+    getViewport: vi.fn(({ scale }: { scale: number }) => ({
+      width: 100 * scale,
+      height: 120 * scale,
+    })),
+    render: pdfRenderMock,
+  }),
+);
+const pdfGetDocumentMock = vi.fn(() => ({
+  promise: Promise.resolve({
+    numPages: 3,
+    getPage: pdfGetPageMock,
+  }),
+}));
 
 vi.mock("../shared/api/learningContentApi");
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -15,20 +33,7 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   GlobalWorkerOptions: {
     workerSrc: "",
   },
-  getDocument: vi.fn(() => ({
-    promise: Promise.resolve({
-      numPages: 3,
-      getPage: vi.fn(() =>
-        Promise.resolve({
-          getViewport: vi.fn(({ scale }: { scale: number }) => ({
-            width: 100 * scale,
-            height: 120 * scale,
-          })),
-          render: vi.fn(() => ({ promise: Promise.resolve() })),
-        }),
-      ),
-    }),
-  })),
+  getDocument: pdfGetDocumentMock,
 }));
 
 const getLearningDetail = vi.mocked(learningContentApi.getLearningDetail);
@@ -39,6 +44,11 @@ const deleteNote = vi.mocked(learningContentApi.deleteNote);
 const previewMaterialFile = vi.mocked(learningContentApi.previewMaterialFile);
 const updateLearningContent = vi.mocked(learningContentApi.updateLearningContent);
 const updateNote = vi.mocked(learningContentApi.updateNote);
+const getMaterialReadingState = vi.mocked(learningContentApi.getMaterialReadingState);
+const saveMaterialReadingState = vi.mocked(learningContentApi.saveMaterialReadingState);
+const getMaterialLibraryStats = vi.mocked(learningContentApi.getMaterialLibraryStats);
+const cleanupMaterialLibrary = vi.mocked(learningContentApi.cleanupMaterialLibrary);
+const renameMaterialItem = vi.mocked(learningContentApi.renameMaterialItem);
 const open = vi.mocked(dialog.open);
 
 const baseDetail = {
@@ -88,6 +98,21 @@ describe("StudyDetailPage", () => {
     previewMaterialFile.mockReset();
     updateLearningContent.mockReset();
     updateNote.mockReset();
+    getMaterialReadingState.mockReset();
+    saveMaterialReadingState.mockReset();
+    getMaterialLibraryStats.mockReset();
+    cleanupMaterialLibrary.mockReset();
+    renameMaterialItem.mockReset();
+    pdfGetDocumentMock.mockClear();
+    pdfGetPageMock.mockClear();
+    pdfRenderMock.mockClear();
+    getMaterialReadingState.mockResolvedValue(null);
+    saveMaterialReadingState.mockResolvedValue({
+      materialId: "mat-pdf",
+      pageNumber: 1,
+      scale: 1,
+      updatedAt: "2026-06-09T00:00:00Z",
+    });
     open.mockReset();
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
       { clearRect: vi.fn() } as unknown as CanvasRenderingContext2D,
@@ -265,7 +290,7 @@ describe("StudyDetailPage", () => {
       kind: "pdf",
       mimeType: "application/pdf",
       text: null,
-      dataUrl: "data:application/pdf;base64,JVBERi0xLjc=",
+      dataUrl: "data:application/pdf;base64,JVBERi0xLjcKQ2FjaGU=",
       encoding: null,
     });
 
@@ -278,6 +303,107 @@ describe("StudyDetailPage", () => {
     expect(await screen.findByText("第 1 / 3 页")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "下一页" }));
     expect(await screen.findByText("第 2 / 3 页")).toBeInTheDocument();
+  });
+
+  it("restores and saves PDF page state in the detail inline reader", async () => {
+    getLearningDetail.mockResolvedValueOnce({
+      ...baseDetail,
+      materials: [
+        {
+          ...baseDetail.materials[0],
+          id: "mat-pdf",
+          name: "资料.pdf",
+          mimeType: "application/pdf",
+        },
+      ],
+    });
+    getMaterialReadingState.mockResolvedValueOnce({
+      materialId: "mat-pdf",
+      pageNumber: 2,
+      scale: 1.4,
+      updatedAt: "2026-06-09T00:00:00Z",
+    });
+    previewMaterialFile.mockResolvedValueOnce({
+      materialId: "mat-pdf",
+      kind: "pdf",
+      mimeType: "application/pdf",
+      text: null,
+      dataUrl: "data:application/pdf;base64,JVBERi0xLjcgY2FjaGUtdGVzdA==",
+      encoding: null,
+    });
+
+    renderDetailPage();
+    await screen.findByText("资料.pdf");
+
+    await userEvent.click(screen.getByRole("button", { name: "打开资料：资料.pdf" }));
+
+    expect(await screen.findByText("第 2 / 3 页")).toBeInTheDocument();
+    expect(screen.getByText("140%")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "下一页" }));
+
+    await waitFor(() => {
+      expect(saveMaterialReadingState).toHaveBeenCalledWith({
+        materialId: "mat-pdf",
+        pageNumber: 3,
+        scale: 1.4,
+      });
+    }, { timeout: 1500 });
+  });
+
+  it("caches the PDF document, pre-renders adjacent pages, and debounces zoom rendering", async () => {
+    getLearningDetail.mockResolvedValueOnce({
+      ...baseDetail,
+      materials: [
+        {
+          ...baseDetail.materials[0],
+          id: "mat-pdf",
+          name: "资料.pdf",
+          mimeType: "application/pdf",
+        },
+      ],
+    });
+    previewMaterialFile.mockResolvedValueOnce({
+      materialId: "mat-pdf",
+      kind: "pdf",
+      mimeType: "application/pdf",
+      text: null,
+      dataUrl: "data:application/pdf;base64,JVBERi0xLjc=",
+      encoding: null,
+    });
+
+    renderDetailPage();
+    await screen.findByText("资料.pdf");
+    await userEvent.click(screen.getByRole("button", { name: "打开资料：资料.pdf" }));
+
+    await waitFor(() => {
+      expect(pdfGetDocumentMock).toHaveBeenCalledTimes(1);
+      expect(pdfGetPageMock).toHaveBeenCalledWith(1);
+      expect(pdfGetPageMock).toHaveBeenCalledWith(2);
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await waitFor(() => {
+      expect(pdfGetDocumentMock).toHaveBeenCalledTimes(1);
+      expect(pdfGetPageMock).toHaveBeenCalledWith(3);
+    });
+
+    vi.useFakeTimers();
+    try {
+      pdfRenderMock.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "放大" }));
+      fireEvent.click(screen.getByRole("button", { name: "放大" }));
+      fireEvent.click(screen.getByRole("button", { name: "放大" }));
+      expect(screen.getByText("160%")).toBeInTheDocument();
+      expect(pdfRenderMock).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(180);
+      });
+
+      expect(pdfRenderMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("lets the detail split pane ratio be resized by dragging the splitter", async () => {
@@ -348,6 +474,93 @@ describe("StudyDetailPage", () => {
       expect(deleteMaterialItem).toHaveBeenCalledWith("mat-1");
     });
     expect(screen.queryByText("已标记删除 1 个资料")).not.toBeInTheDocument();
+  });
+
+  it("refreshes material library stats and cleans orphan files after confirmation", async () => {
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    getMaterialLibraryStats
+      .mockResolvedValueOnce({
+        materialCount: 2,
+        referencedBytes: 10,
+        actualReferencedBytes: 5,
+        libraryBytes: 11,
+        missingFileCount: 1,
+        orphanFileCount: 1,
+        orphanBytes: 6,
+        updatedAt: "2026-06-09T00:00:00Z",
+      })
+      .mockResolvedValueOnce({
+        materialCount: 1,
+        referencedBytes: 10,
+        actualReferencedBytes: 5,
+        libraryBytes: 11,
+        missingFileCount: 1,
+        orphanFileCount: 1,
+        orphanBytes: 6,
+        updatedAt: "2026-06-09T00:01:00Z",
+      })
+      .mockResolvedValueOnce({
+        materialCount: 1,
+        referencedBytes: 5,
+        actualReferencedBytes: 5,
+        libraryBytes: 5,
+        missingFileCount: 0,
+        orphanFileCount: 0,
+        orphanBytes: 0,
+        updatedAt: "2026-06-09T00:02:00Z",
+      });
+    cleanupMaterialLibrary.mockResolvedValueOnce({
+      deletedOrphanFileCount: 1,
+      deletedOrphanDatabaseRecordCount: 1,
+      deletedBytes: 6,
+      failedPaths: [],
+      updatedAt: "2026-06-09T00:01:00Z",
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderDetailPage();
+    await screen.findByText("资料.txt");
+    await userEvent.click(screen.getByRole("button", { name: "刷新资料库统计" }));
+
+    expect(await screen.findByText("资料数量 2")).toBeInTheDocument();
+    expect(screen.getByText("记录大小 10 B")).toBeInTheDocument();
+    expect(screen.getByText("磁盘占用 11 B")).toBeInTheDocument();
+    expect(screen.getByText("缺失文件 1")).toBeInTheDocument();
+    expect(screen.getByText("无引用文件 1")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "清理无引用资料" }));
+
+    await waitFor(() => {
+      expect(getMaterialLibraryStats).toHaveBeenCalledTimes(3);
+      expect(cleanupMaterialLibrary).toHaveBeenCalledTimes(1);
+    });
+    expect(await screen.findByText(/已清理 1 个无引用文件/)).toBeInTheDocument();
+    expect(screen.getByText("无引用文件 0")).toBeInTheDocument();
+  });
+
+  it("renames material and updates the visible material row", async () => {
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    vi.spyOn(window, "prompt").mockReturnValue("新资料.txt");
+    renameMaterialItem.mockResolvedValueOnce({
+      ...baseDetail.materials[0],
+      name: "新资料.txt",
+      storedPath: "C:/app/新资料.txt",
+      updatedAt: "2026-06-09T00:00:00Z",
+    });
+
+    renderDetailPage();
+    await screen.findByText("资料.txt");
+    const materialItem = screen.getByText("资料.txt").closest("article") as HTMLElement;
+    await userEvent.click(within(materialItem).getByRole("button", { name: "重命名" }));
+
+    await waitFor(() => {
+      expect(renameMaterialItem).toHaveBeenCalledWith({
+        materialId: "mat-1",
+        name: "新资料.txt",
+      });
+    });
+    expect(screen.getByText("新资料.txt")).toBeInTheDocument();
+    expect(screen.queryByText("资料.txt")).not.toBeInTheDocument();
   });
 
   it("keeps failed material deletes pending with a retryable error", async () => {

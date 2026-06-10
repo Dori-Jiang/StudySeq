@@ -40,6 +40,43 @@ export type MaterialItem = {
   updatedAt: string;
 };
 
+export type MaterialReadingState = {
+  materialId: string;
+  pageNumber: number;
+  scale: number;
+  updatedAt: string;
+};
+
+export type SaveMaterialReadingStateInput = {
+  materialId: string;
+  pageNumber: number;
+  scale: number;
+};
+
+export type MaterialLibraryStats = {
+  materialCount: number;
+  referencedBytes: number;
+  actualReferencedBytes: number;
+  libraryBytes: number;
+  missingFileCount: number;
+  orphanFileCount: number;
+  orphanBytes: number;
+  updatedAt: string;
+};
+
+export type MaterialLibraryCleanupReport = {
+  deletedOrphanFileCount: number;
+  deletedOrphanDatabaseRecordCount: number;
+  deletedBytes: number;
+  failedPaths: string[];
+  updatedAt: string;
+};
+
+export type RenameMaterialItemInput = {
+  materialId: string;
+  name: string;
+};
+
 export type Note = {
   id: string;
   learningContentId: string;
@@ -66,14 +103,6 @@ export type MaterialPreview = {
   encoding: string | null;
 };
 
-export type ReadingState = {
-  learningContentId: string;
-  currentMaterialId: string | null;
-  currentNoteId: string | null;
-  splitRatio: number;
-  updatedAt: string;
-};
-
 export type ImportMaterialFileInput = {
   learningContentId: string;
   sourcePath: string;
@@ -89,11 +118,4 @@ export type UpdateNoteInput = {
   noteId: string;
   title: string;
   body: string;
-};
-
-export type SaveReadingStateInput = {
-  learningContentId: string;
-  currentMaterialId: string | null;
-  currentNoteId: string | null;
-  splitRatio: number;
 };

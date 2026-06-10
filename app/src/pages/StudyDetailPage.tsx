@@ -1,20 +1,33 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { FormEvent, PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
+import {
+  FormEvent,
+  PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Link, useParams } from "react-router";
 
 import {
   createNote,
+  cleanupMaterialLibrary,
   deleteMaterialItem,
   deleteNote,
   getLearningDetail,
+  getMaterialReadingState,
+  getMaterialLibraryStats,
   importMaterialFile,
   previewMaterialFile,
+  renameMaterialItem,
+  saveMaterialReadingState,
   updateNote,
 } from "../shared/api/learningContentApi";
 import { MaterialPreviewPane } from "./MaterialPreviewPane";
 import type {
   LearningDetail,
   MaterialItem,
+  MaterialLibraryStats,
   MaterialPreview,
   Note,
   StudyStatus,
@@ -23,6 +36,7 @@ import type {
 const DEFAULT_DETAIL_SPLIT_RATIO = 58;
 const MIN_DETAIL_SPLIT_RATIO = 30;
 const MAX_DETAIL_SPLIT_RATIO = 70;
+const PDF_STATE_SAVE_DELAY_MS = 800;
 
 const statusLabels: Record<StudyStatus, string> = {
   planned: "计划中",
@@ -47,6 +61,19 @@ export function StudyDetailPage() {
   const [selectedMaterialPreview, setSelectedMaterialPreview] = useState<MaterialPreview | null>(
     null,
   );
+  const [selectedMaterialPdfState, setSelectedMaterialPdfState] = useState<{
+    pageNumber: number;
+    scale: number;
+  } | null>(null);
+  const [pendingPdfState, setPendingPdfState] = useState<{
+    materialId: string;
+    pageNumber: number;
+    scale: number;
+  } | null>(null);
+  const [materialLibraryStats, setMaterialLibraryStats] = useState<MaterialLibraryStats | null>(
+    null,
+  );
+  const [statsMessage, setStatsMessage] = useState<string | null>(null);
   const [detailSplitRatio, setDetailSplitRatio] = useState(DEFAULT_DETAIL_SPLIT_RATIO);
   const selectedMaterial =
     detail?.materials.find((material) => material.id === selectedMaterialId) ?? undefined;
@@ -137,9 +164,21 @@ export function StudyDetailPage() {
   async function handleOpenMaterial(material: MaterialItem) {
     setSelectedMaterialId(material.id);
     setSelectedMaterialPreview(null);
+    setSelectedMaterialPdfState(null);
     try {
-      const preview = await previewMaterialFile(material.id);
+      const [preview, readingState] = await Promise.all([
+        previewMaterialFile(material.id),
+        getMaterialReadingState(material.id).catch(() => null),
+      ]);
       setSelectedMaterialPreview(preview);
+      setSelectedMaterialPdfState(
+        readingState
+          ? {
+              pageNumber: readingState.pageNumber,
+              scale: readingState.scale,
+            }
+          : null,
+      );
       setError(null);
     } catch (previewError: unknown) {
       setError(toMessage(previewError));
@@ -149,7 +188,43 @@ export function StudyDetailPage() {
   function handleReturnToMaterialList() {
     setSelectedMaterialId(null);
     setSelectedMaterialPreview(null);
+    setSelectedMaterialPdfState(null);
   }
+
+  const handlePdfStateChange = useCallback(
+    (nextPdfState: { pageNumber: number; scale: number }) => {
+      if (!selectedMaterialId) return;
+
+      setPendingPdfState((currentState) => {
+        if (
+          currentState?.materialId === selectedMaterialId &&
+          currentState.pageNumber === nextPdfState.pageNumber &&
+          currentState.scale === nextPdfState.scale
+        ) {
+          return currentState;
+        }
+
+        return {
+          materialId: selectedMaterialId,
+          pageNumber: nextPdfState.pageNumber,
+          scale: nextPdfState.scale,
+        };
+      });
+    },
+    [selectedMaterialId],
+  );
+
+  useEffect(() => {
+    if (!pendingPdfState) return;
+
+    const timeoutId = window.setTimeout(() => {
+      saveMaterialReadingState(pendingPdfState).catch((saveError: unknown) => {
+        setError(toMessage(saveError));
+      });
+    }, PDF_STATE_SAVE_DELAY_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [pendingPdfState]);
 
   async function handleSaveNote(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -243,6 +318,75 @@ export function StudyDetailPage() {
     }
 
     setError(null);
+  }
+
+  async function handleRefreshMaterialStats() {
+    try {
+      const stats = await getMaterialLibraryStats();
+      setMaterialLibraryStats(stats);
+      setStatsMessage(null);
+      setError(null);
+    } catch (statsError: unknown) {
+      setError(toMessage(statsError));
+    }
+  }
+
+  async function handleCleanupMaterialLibrary() {
+    try {
+      const latestStats = await getMaterialLibraryStats();
+      setMaterialLibraryStats(latestStats);
+      if (latestStats.orphanFileCount === 0 && latestStats.missingFileCount === 0) {
+        setStatsMessage("没有可清理的无引用资料");
+        return;
+      }
+
+      if (
+        !window.confirm(
+          `确定清理 ${latestStats.orphanFileCount} 个无引用文件，并删除 ${latestStats.missingFileCount} 条缺失资料记录吗？`,
+        )
+      ) {
+        return;
+      }
+
+      const report = await cleanupMaterialLibrary();
+      const refreshedStats = await getMaterialLibraryStats();
+      setMaterialLibraryStats(refreshedStats);
+      setStatsMessage(
+        `已清理 ${report.deletedOrphanFileCount} 个无引用文件，释放 ${formatBytes(report.deletedBytes)}`,
+      );
+      setError(report.failedPaths.length > 0 ? `部分路径清理失败：${report.failedPaths.join("、")}` : null);
+    } catch (cleanupError: unknown) {
+      setError(toMessage(cleanupError));
+    }
+  }
+
+  async function handleRenameMaterial(material: MaterialItem) {
+    const nextName = window.prompt("输入新的资料名称", material.name);
+    if (nextName === null) return;
+
+    try {
+      const renamed = await renameMaterialItem({
+        materialId: material.id,
+        name: nextName,
+      });
+      setDetail((currentDetail) =>
+        currentDetail
+          ? {
+              ...currentDetail,
+              materials: currentDetail.materials.map((currentMaterial) =>
+                currentMaterial.id === renamed.id ? renamed : currentMaterial,
+              ),
+            }
+          : currentDetail,
+      );
+      if (selectedMaterialId === renamed.id) {
+        setSelectedMaterialPreview(null);
+        void handleOpenMaterial(renamed);
+      }
+      setError(null);
+    } catch (renameError: unknown) {
+      setError(toMessage(renameError));
+    }
   }
 
   async function handleDeleteNote(note: Note) {
@@ -348,6 +492,8 @@ export function StudyDetailPage() {
             <MaterialInlineReader
               material={selectedMaterial}
               preview={selectedMaterialPreview}
+              pdfState={selectedMaterialPdfState}
+              onPdfStateChange={handlePdfStateChange}
               onReturn={handleReturnToMaterialList}
             />
           ) : (
@@ -362,7 +508,14 @@ export function StudyDetailPage() {
                 materials={detail.materials}
                 pendingDeletedMaterialIds={pendingDeletedMaterialIds}
                 onOpen={handleOpenMaterial}
+                onRename={handleRenameMaterial}
                 onStageDelete={handleStageDeleteMaterial}
+              />
+              <MaterialLibraryStatsPanel
+                stats={materialLibraryStats}
+                message={statsMessage}
+                onCleanup={handleCleanupMaterialLibrary}
+                onRefresh={handleRefreshMaterialStats}
               />
             </>
           )}
@@ -431,11 +584,13 @@ export function StudyDetailPage() {
 function MaterialList({
   materials,
   onOpen,
+  onRename,
   onStageDelete,
   pendingDeletedMaterialIds,
 }: {
   materials: MaterialItem[];
   onOpen: (material: MaterialItem) => void;
+  onRename?: (material: MaterialItem) => void;
   onStageDelete?: (material: MaterialItem) => void;
   pendingDeletedMaterialIds?: string[];
 }) {
@@ -466,6 +621,11 @@ function MaterialList({
             className="material-actions material-actions-inline"
             role="group"
           >
+            {onRename ? (
+              <button type="button" onClick={() => onRename(material)}>
+                重命名
+              </button>
+            ) : null}
             {onStageDelete ? (
               <button type="button" onClick={() => onStageDelete(material)}>
                 删除
@@ -478,13 +638,54 @@ function MaterialList({
   );
 }
 
+function MaterialLibraryStatsPanel({
+  message,
+  onCleanup,
+  onRefresh,
+  stats,
+}: {
+  message: string | null;
+  onCleanup: () => void;
+  onRefresh: () => void;
+  stats: MaterialLibraryStats | null;
+}) {
+  return (
+    <section className="material-library-panel" aria-label="资料库统计">
+      <div className="material-library-actions">
+        <button type="button" onClick={onRefresh}>
+          刷新资料库统计
+        </button>
+        <button type="button" onClick={onCleanup}>
+          清理无引用资料
+        </button>
+      </div>
+      {stats ? (
+        <div className="material-library-stats">
+          <span>{`资料数量 ${stats.materialCount}`}</span>
+          <span>{`记录大小 ${formatBytes(stats.referencedBytes)}`}</span>
+          <span>{`磁盘占用 ${formatBytes(stats.libraryBytes)}`}</span>
+          <span>{`缺失文件 ${stats.missingFileCount}`}</span>
+          <span>{`无引用文件 ${stats.orphanFileCount}`}</span>
+        </div>
+      ) : (
+        <p className="muted-text">资料库统计低频刷新，可手动刷新。</p>
+      )}
+      {message ? <p className="muted-text">{message}</p> : null}
+    </section>
+  );
+}
+
 function MaterialInlineReader({
   material,
+  onPdfStateChange,
   onReturn,
+  pdfState,
   preview,
 }: {
   material: MaterialItem;
+  onPdfStateChange: (state: { pageNumber: number; scale: number }) => void;
   onReturn: () => void;
+  pdfState: { pageNumber: number; scale: number } | null;
   preview: MaterialPreview | null;
 }) {
   return (
@@ -503,7 +704,12 @@ function MaterialInlineReader({
           <p>{formatBytes(material.sizeBytes)}</p>
         </div>
       </div>
-      <MaterialPreviewPane material={material} preview={preview} />
+      <MaterialPreviewPane
+        material={material}
+        preview={preview}
+        pdfState={pdfState}
+        onPdfStateChange={onPdfStateChange}
+      />
     </section>
   );
 }

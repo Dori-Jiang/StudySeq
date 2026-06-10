@@ -6,17 +6,20 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 import {
+  cleanupMaterialLibrary,
   createLearningContent,
   createNote,
   deleteLearningContent,
   deleteMaterialItem,
   deleteNote,
-  getReadingState,
   getLearningDetail,
+  getMaterialLibraryStats,
+  getMaterialReadingState,
   importMaterialFile,
   listLearningContents,
   previewMaterialFile,
-  saveReadingState,
+  renameMaterialItem,
+  saveMaterialReadingState,
   updateLearningContent,
   updateNote,
 } from "./learningContentApi";
@@ -262,43 +265,84 @@ describe("learningContentApi", () => {
     expect(result.title).toBe("更新标题");
   });
 
-  it("loads and saves reading state through Rust commands", async () => {
+  it("manages V1.1 material reading state and library operations through Rust commands", async () => {
     invokeMock
       .mockResolvedValueOnce({
-        learningContentId: "study-1",
-        currentMaterialId: "mat-1",
-        currentNoteId: "note-1",
-        splitRatio: 62,
-        updatedAt: "2026-06-08T00:00:00Z",
+        materialId: "mat-pdf",
+        pageNumber: 3,
+        scale: 1.4,
+        updatedAt: "2026-06-09T00:00:00Z",
       })
       .mockResolvedValueOnce({
+        materialId: "mat-pdf",
+        pageNumber: 4,
+        scale: 1.5,
+        updatedAt: "2026-06-09T00:01:00Z",
+      })
+      .mockResolvedValueOnce({
+        materialCount: 2,
+        referencedBytes: 10,
+        actualReferencedBytes: 5,
+        libraryBytes: 11,
+        missingFileCount: 1,
+        orphanFileCount: 1,
+        orphanBytes: 6,
+        updatedAt: "2026-06-09T00:02:00Z",
+      })
+      .mockResolvedValueOnce({
+        deletedOrphanFileCount: 1,
+        deletedOrphanDatabaseRecordCount: 1,
+        deletedBytes: 6,
+        failedPaths: [],
+        updatedAt: "2026-06-09T00:03:00Z",
+      })
+      .mockResolvedValueOnce({
+        id: "mat-pdf",
         learningContentId: "study-1",
-        currentMaterialId: "mat-2",
-        currentNoteId: "note-2",
-        splitRatio: 55,
-        updatedAt: "2026-06-08T00:01:00Z",
+        name: "重命名.pdf",
+        originalPath: "C:/source/source.pdf",
+        storedPath: "C:/app/重命名.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 4,
+        createdAt: "2026-06-09T00:00:00Z",
+        updatedAt: "2026-06-09T00:04:00Z",
       });
 
-    const loaded = await getReadingState("study-1");
-    const saved = await saveReadingState({
-      learningContentId: "study-1",
-      currentMaterialId: "mat-2",
-      currentNoteId: "note-2",
-      splitRatio: 55,
+    const loadedState = await getMaterialReadingState("mat-pdf");
+    const savedState = await saveMaterialReadingState({
+      materialId: "mat-pdf",
+      pageNumber: 4,
+      scale: 1.5,
+    });
+    const stats = await getMaterialLibraryStats();
+    const cleanup = await cleanupMaterialLibrary();
+    const renamed = await renameMaterialItem({
+      materialId: "mat-pdf",
+      name: "重命名.pdf",
     });
 
-    expect(invokeMock).toHaveBeenNthCalledWith(1, "get_reading_state", {
-      learningContentId: "study-1",
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "get_material_reading_state", {
+      materialId: "mat-pdf",
     });
-    expect(invokeMock).toHaveBeenNthCalledWith(2, "save_reading_state", {
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "save_material_reading_state", {
       input: {
-        learningContentId: "study-1",
-        currentMaterialId: "mat-2",
-        currentNoteId: "note-2",
-        splitRatio: 55,
+        materialId: "mat-pdf",
+        pageNumber: 4,
+        scale: 1.5,
       },
     });
-    expect(loaded?.currentMaterialId).toBe("mat-1");
-    expect(saved.currentNoteId).toBe("note-2");
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "get_material_library_stats");
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "cleanup_material_library");
+    expect(invokeMock).toHaveBeenNthCalledWith(5, "rename_material_item", {
+      input: {
+        materialId: "mat-pdf",
+        name: "重命名.pdf",
+      },
+    });
+    expect(loadedState?.pageNumber).toBe(3);
+    expect(savedState.scale).toBe(1.5);
+    expect(stats.orphanFileCount).toBe(1);
+    expect(cleanup.deletedBytes).toBe(6);
+    expect(renamed.name).toBe("重命名.pdf");
   });
 });

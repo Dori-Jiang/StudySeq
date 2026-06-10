@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router";
 
 import {
@@ -22,6 +23,9 @@ export function HomePage() {
   const [name, setName] = useState("");
   const [estimatedHours, setEstimatedHours] = useState("1");
   const [editingContentId, setEditingContentId] = useState<string | null>(null);
+  const [contentPendingDelete, setContentPendingDelete] = useState<LearningContent | null>(null);
+  const [isDeletingContent, setIsDeletingContent] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,16 +74,44 @@ export function HomePage() {
     setEstimatedHours("1");
   }
 
-  async function handleDelete(content: LearningContent) {
-    if (!window.confirm(`确定删除「${content.name}」吗？`)) {
+  function handleRequestDelete(content: LearningContent) {
+    setContentPendingDelete(content);
+    setDeleteError(null);
+    setError(null);
+  }
+
+  function handleCancelDelete() {
+    if (!isDeletingContent) {
+      setContentPendingDelete(null);
+      setDeleteError(null);
+    }
+  }
+
+  async function handleConfirmDelete() {
+    if (!contentPendingDelete) {
       return;
     }
 
-    await deleteLearningContent(content.id);
-    setContents((currentContents) =>
-      currentContents.filter((currentContent) => currentContent.id !== content.id),
-    );
+    const content = contentPendingDelete;
+    setIsDeletingContent(true);
+    setDeleteError(null);
+    setError(null);
+    try {
+      await deleteLearningContent(content.id);
+      setContents((currentContents) =>
+        currentContents.filter((currentContent) => currentContent.id !== content.id),
+      );
+      setContentPendingDelete(null);
+    } catch (deleteError: unknown) {
+      setDeleteError(`删除学习内容失败：${toMessage(deleteError)}`);
+    } finally {
+      setIsDeletingContent(false);
+    }
   }
+
+  const deleteConfirmationMessage = contentPendingDelete
+    ? `删除「${contentPendingDelete.name}」会同步删除该学习内容下的资料、笔记和阅读状态。只会删除 App 管理的资料副本，不会删除用户原始来源文件。`
+    : "";
 
   function handleStartEdit(content: LearningContent) {
     setEditingContentId(content.id);
@@ -201,7 +233,7 @@ export function HomePage() {
                     className="secondary-button"
                     type="button"
                     aria-label={`删除 ${content.name}`}
-                    onClick={() => handleDelete(content)}
+                    onClick={() => handleRequestDelete(content)}
                   >
                     删除
                   </button>
@@ -211,6 +243,45 @@ export function HomePage() {
           </article>
         ))}
       </section>
+
+      {contentPendingDelete
+        ? createPortal(
+            <div className="modal-backdrop">
+              <section
+                aria-labelledby="delete-learning-content-title"
+                aria-modal="true"
+                className="confirm-dialog"
+                role="dialog"
+              >
+                <h2 id="delete-learning-content-title">删除学习内容</h2>
+                <p>{deleteConfirmationMessage}</p>
+                <p className="confirm-dialog-warning">删除后无法撤回。</p>
+                {deleteError ? (
+                  <p className="error-message confirm-dialog-error">{deleteError}</p>
+                ) : null}
+                <div className="confirm-dialog-actions">
+                  <button
+                    className="danger-button"
+                    type="button"
+                    onClick={handleConfirmDelete}
+                    disabled={isDeletingContent}
+                  >
+                    {isDeletingContent ? "删除中" : "确认删除"}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={handleCancelDelete}
+                    disabled={isDeletingContent}
+                  >
+                    取消
+                  </button>
+                </div>
+              </section>
+            </div>,
+            document.body,
+          )
+        : null}
     </main>
   );
 }

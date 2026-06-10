@@ -7,10 +7,13 @@ import type {
   LearningContent,
   LearningDetail,
   MaterialItem,
+  MaterialLibraryCleanupReport,
+  MaterialLibraryStats,
   MaterialPreview,
+  MaterialReadingState,
   Note,
-  ReadingState,
-  SaveReadingStateInput,
+  RenameMaterialItemInput,
+  SaveMaterialReadingStateInput,
   UpdateLearningContentInput,
   UpdateNoteInput,
 } from "../types";
@@ -63,10 +66,26 @@ export function previewMaterialFile(materialId: string): Promise<MaterialPreview
   return invoke<MaterialPreview>("preview_material_file", { materialId });
 }
 
-export function getReadingState(learningContentId: string): Promise<ReadingState | null> {
-  return invoke<ReadingState | null>("get_reading_state", { learningContentId });
+export function getMaterialReadingState(
+  materialId: string,
+): Promise<MaterialReadingState | null> {
+  return invoke<MaterialReadingState | null>("get_material_reading_state", { materialId });
 }
 
-export function saveReadingState(input: SaveReadingStateInput): Promise<ReadingState> {
-  return invoke<ReadingState>("save_reading_state", { input });
+export function saveMaterialReadingState(
+  input: SaveMaterialReadingStateInput,
+): Promise<MaterialReadingState> {
+  return invoke<MaterialReadingState>("save_material_reading_state", { input });
+}
+
+export function getMaterialLibraryStats(): Promise<MaterialLibraryStats> {
+  return invoke<MaterialLibraryStats>("get_material_library_stats");
+}
+
+export function cleanupMaterialLibrary(): Promise<MaterialLibraryCleanupReport> {
+  return invoke<MaterialLibraryCleanupReport>("cleanup_material_library");
+}
+
+export function renameMaterialItem(input: RenameMaterialItemInput): Promise<MaterialItem> {
+  return invoke<MaterialItem>("rename_material_item", { input });
 }

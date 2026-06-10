@@ -3,8 +3,9 @@ use tauri::State;
 use crate::errors::{ApiError, AppError};
 use crate::models::{
     CreateLearningContentInput, CreateNoteInput, ImportMaterialFileInput, LearningContent,
-    LearningDetail, MaterialItem, MaterialPreview, Note, ReadingState, SaveReadingStateInput,
-    UpdateLearningContentInput, UpdateNoteInput,
+    LearningDetail, MaterialItem, MaterialLibraryCleanupReport, MaterialLibraryStats,
+    MaterialPreview, MaterialReadingState, Note, RenameMaterialItemInput,
+    SaveMaterialReadingStateInput, UpdateLearningContentInput, UpdateNoteInput,
 };
 use crate::repository::LearningContentRepository;
 use crate::AppState;
@@ -138,29 +139,68 @@ pub fn preview_material_file(
 }
 
 #[tauri::command]
-pub fn get_reading_state(
+pub fn get_material_reading_state(
     state: State<'_, AppState>,
-    learning_content_id: String,
-) -> Result<Option<ReadingState>, ApiError> {
+    material_id: String,
+) -> Result<Option<MaterialReadingState>, ApiError> {
     let repository = state
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
 
-    get_reading_state_from_repository(&repository, &learning_content_id)
+    get_material_reading_state_from_repository(&repository, &material_id)
 }
 
 #[tauri::command]
-pub fn save_reading_state(
+pub fn save_material_reading_state(
     state: State<'_, AppState>,
-    input: SaveReadingStateInput,
-) -> Result<ReadingState, ApiError> {
+    input: SaveMaterialReadingStateInput,
+) -> Result<MaterialReadingState, ApiError> {
     let repository = state
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
 
-    save_reading_state_in_repository(&repository, input)
+    save_material_reading_state_in_repository(&repository, input)
+}
+
+#[tauri::command]
+pub fn get_material_library_stats(
+    state: State<'_, AppState>,
+) -> Result<MaterialLibraryStats, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+    let material_library_dir = state.material_library_dir.clone();
+
+    get_material_library_stats_from_repository(&repository, &material_library_dir)
+}
+
+#[tauri::command]
+pub fn cleanup_material_library(
+    state: State<'_, AppState>,
+) -> Result<MaterialLibraryCleanupReport, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+    let material_library_dir = state.material_library_dir.clone();
+
+    cleanup_material_library_in_repository(&repository, &material_library_dir)
+}
+
+#[tauri::command]
+pub fn rename_material_item(
+    state: State<'_, AppState>,
+    input: RenameMaterialItemInput,
+) -> Result<MaterialItem, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    rename_material_item_in_repository(&repository, input)
 }
 
 fn list_learning_contents_from_repository(
@@ -263,26 +303,48 @@ fn preview_material_file_in_repository(
         .map_err(ApiError::from)
 }
 
-fn get_reading_state_from_repository(
+fn get_material_reading_state_from_repository(
     repository: &LearningContentRepository,
-    learning_content_id: &str,
-) -> Result<Option<ReadingState>, ApiError> {
+    material_id: &str,
+) -> Result<Option<MaterialReadingState>, ApiError> {
     repository
-        .get_reading_state(learning_content_id)
+        .get_material_reading_state(material_id)
         .map_err(ApiError::from)
 }
 
-fn save_reading_state_in_repository(
+fn save_material_reading_state_in_repository(
     repository: &LearningContentRepository,
-    input: SaveReadingStateInput,
-) -> Result<ReadingState, ApiError> {
+    input: SaveMaterialReadingStateInput,
+) -> Result<MaterialReadingState, ApiError> {
     repository
-        .save_reading_state(
-            &input.learning_content_id,
-            input.current_material_id.as_deref(),
-            input.current_note_id.as_deref(),
-            input.split_ratio,
-        )
+        .save_material_reading_state(&input.material_id, input.page_number, input.scale)
+        .map_err(ApiError::from)
+}
+
+fn get_material_library_stats_from_repository(
+    repository: &LearningContentRepository,
+    material_library_dir: &std::path::Path,
+) -> Result<MaterialLibraryStats, ApiError> {
+    repository
+        .get_material_library_stats(material_library_dir)
+        .map_err(ApiError::from)
+}
+
+fn cleanup_material_library_in_repository(
+    repository: &LearningContentRepository,
+    material_library_dir: &std::path::Path,
+) -> Result<MaterialLibraryCleanupReport, ApiError> {
+    repository
+        .cleanup_material_library(material_library_dir)
+        .map_err(ApiError::from)
+}
+
+fn rename_material_item_in_repository(
+    repository: &LearningContentRepository,
+    input: RenameMaterialItemInput,
+) -> Result<MaterialItem, ApiError> {
+    repository
+        .rename_material_item(&input.material_id, &input.name)
         .map_err(ApiError::from)
 }
 
@@ -442,6 +504,68 @@ mod tests {
             .expect("detail exists");
         assert!(detail.materials.is_empty());
         assert!(!std::path::Path::new(&stored_path).exists());
+    }
+
+    #[test]
+    fn command_handlers_manage_v1_1_material_state_stats_cleanup_and_rename() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("source.pdf");
+        std::fs::write(&source_file, b"%PDF").expect("write source file");
+        let content = create_learning_content_in_repository(
+            &repository,
+            CreateLearningContentInput {
+                name: "V1.1 命令".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            },
+        )
+        .expect("create learning content");
+        let material = import_material_file_in_repository(
+            &repository,
+            ImportMaterialFileInput {
+                learning_content_id: content.id.clone(),
+                source_path: source_file.to_string_lossy().to_string(),
+            },
+            &material_library_dir,
+        )
+        .expect("import material");
+        let orphan_file = material_library_dir.join(&content.id).join("orphan.tmp");
+        std::fs::write(&orphan_file, b"orphan").expect("write orphan");
+
+        let saved_state = save_material_reading_state_in_repository(
+            &repository,
+            SaveMaterialReadingStateInput {
+                material_id: material.id.clone(),
+                page_number: 4,
+                scale: 1.5,
+            },
+        )
+        .expect("save material reading state");
+        let loaded_state = get_material_reading_state_from_repository(&repository, &material.id)
+            .expect("get material reading state")
+            .expect("state exists");
+        let stats = get_material_library_stats_from_repository(&repository, &material_library_dir)
+            .expect("get stats");
+        let renamed = rename_material_item_in_repository(
+            &repository,
+            RenameMaterialItemInput {
+                material_id: material.id.clone(),
+                name: "重命名.pdf".to_string(),
+            },
+        )
+        .expect("rename material");
+        let cleanup = cleanup_material_library_in_repository(&repository, &material_library_dir)
+            .expect("cleanup");
+
+        assert_eq!(saved_state.page_number, 4);
+        assert_eq!(loaded_state.scale, 1.5);
+        assert_eq!(stats.orphan_file_count, 1);
+        assert_eq!(renamed.name, "重命名.pdf");
+        assert_eq!(cleanup.deleted_orphan_file_count, 1);
     }
 
     #[test]

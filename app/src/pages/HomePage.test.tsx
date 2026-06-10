@@ -131,7 +131,7 @@ describe("HomePage", () => {
     expect(await screen.findByText("TypeScript 练习")).toBeInTheDocument();
   });
 
-  it("asks for confirmation before deleting a learning content", async () => {
+  it("shows an in-app confirmation before deleting a learning content", async () => {
     listLearningContents.mockResolvedValueOnce([
       {
         id: "study-1",
@@ -145,17 +145,84 @@ describe("HomePage", () => {
         lastOpenedAt: null,
       },
     ]);
-    vi.spyOn(window, "confirm").mockReturnValueOnce(true);
     deleteLearningContent.mockResolvedValueOnce();
 
     renderHomePage();
     await screen.findByText("Rust 入门");
     await userEvent.click(screen.getByRole("button", { name: "删除 Rust 入门" }));
 
+    const dialog = screen.getByRole("dialog", { name: "删除学习内容" });
+    expect(dialog.closest(".modal-backdrop")?.parentElement).toBe(document.body);
+    expect(
+      within(dialog).getByText(
+        "删除「Rust 入门」会同步删除该学习内容下的资料、笔记和阅读状态。只会删除 App 管理的资料副本，不会删除用户原始来源文件。",
+      ),
+    ).toBeInTheDocument();
+    expect(deleteLearningContent).not.toHaveBeenCalled();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
+
     await waitFor(() => {
       expect(deleteLearningContent).toHaveBeenCalledWith("study-1");
     });
+    expect(screen.queryByRole("dialog", { name: "删除学习内容" })).not.toBeInTheDocument();
     expect(screen.queryByText("Rust 入门")).not.toBeInTheDocument();
+  });
+
+  it("keeps the learning content when deleting is cancelled", async () => {
+    listLearningContents.mockResolvedValueOnce([
+      {
+        id: "study-1",
+        name: "Rust 入门",
+        status: "planned",
+        deadline: null,
+        estimatedHours: 12,
+        progress: 30,
+        createdAt: "2026-06-08T00:00:00Z",
+        updatedAt: "2026-06-08T00:00:00Z",
+        lastOpenedAt: null,
+      },
+    ]);
+
+    renderHomePage();
+    await screen.findByText("Rust 入门");
+    await userEvent.click(screen.getByRole("button", { name: "删除 Rust 入门" }));
+    await userEvent.click(
+      within(screen.getByRole("dialog", { name: "删除学习内容" })).getByRole("button", {
+        name: "取消",
+      }),
+    );
+
+    expect(deleteLearningContent).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "删除学习内容" })).not.toBeInTheDocument();
+    expect(screen.getByText("Rust 入门")).toBeInTheDocument();
+  });
+
+  it("keeps the confirmation visible when deleting a learning content fails", async () => {
+    listLearningContents.mockResolvedValueOnce([
+      {
+        id: "study-1",
+        name: "Rust 入门",
+        status: "planned",
+        deadline: null,
+        estimatedHours: 12,
+        progress: 30,
+        createdAt: "2026-06-08T00:00:00Z",
+        updatedAt: "2026-06-08T00:00:00Z",
+        lastOpenedAt: null,
+      },
+    ]);
+    deleteLearningContent.mockRejectedValueOnce(new Error("数据库繁忙"));
+
+    renderHomePage();
+    await screen.findByText("Rust 入门");
+    await userEvent.click(screen.getByRole("button", { name: "删除 Rust 入门" }));
+    const dialog = screen.getByRole("dialog", { name: "删除学习内容" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
+
+    expect(await within(dialog).findByText("删除学习内容失败：数据库繁忙")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "删除学习内容" })).toBeInTheDocument();
+    expect(screen.getByText("Rust 入门")).toBeInTheDocument();
   });
 
   it("edits learning content basic fields from the home row", async () => {

@@ -15,6 +15,12 @@ pub enum AppError {
     SourceFileMissing,
     #[error("资料不存在")]
     MaterialNotFound,
+    #[error("资料名称不能为空")]
+    EmptyMaterialName,
+    #[error("资料名称不能包含路径")]
+    InvalidMaterialName,
+    #[error("资料路径超出 App 管理目录")]
+    MaterialPathOutsideLibrary,
     #[error("笔记标题不能为空")]
     EmptyNoteTitle,
     #[error("笔记不存在")]

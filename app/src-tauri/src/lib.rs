@@ -46,8 +46,11 @@ pub fn run() {
             commands::update_note,
             commands::delete_note,
             commands::preview_material_file,
-            commands::get_reading_state,
-            commands::save_reading_state,
+            commands::get_material_reading_state,
+            commands::save_material_reading_state,
+            commands::get_material_library_stats,
+            commands::cleanup_material_library,
+            commands::rename_material_item,
         ])
         .run(tauri::generate_context!())
         .expect("error while running StudySeq");

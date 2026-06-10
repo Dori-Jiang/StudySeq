@@ -5,7 +5,6 @@ import { BrowserRouter, Route, Routes, useLocation } from "react-router";
 import { AppFrame } from "./AppFrame";
 import { HomePage } from "./pages/HomePage";
 import { StudyDetailPage } from "./pages/StudyDetailPage";
-import { StudyReaderPage } from "./pages/StudyReaderPage";
 import "./styles.css";
 
 function AppRoutes() {
@@ -17,7 +16,6 @@ function AppRoutes() {
         <Routes location={location}>
           <Route path="/" element={<HomePage />} />
           <Route path="/studies/:studyId" element={<StudyDetailPage />} />
-          <Route path="/studies/:studyId/read" element={<StudyReaderPage />} />
         </Routes>
       </div>
     </AppFrame>

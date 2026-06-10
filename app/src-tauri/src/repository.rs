@@ -9,8 +9,9 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::models::{
-    CreateLearningContentInput, LearningContent, LearningDetail, MaterialItem, MaterialPreview,
-    MaterialPreviewKind, Note, ReadingState, StudyStatus,
+    CreateLearningContentInput, LearningContent, LearningDetail, MaterialItem,
+    MaterialLibraryCleanupReport, MaterialLibraryStats, MaterialPreview, MaterialPreviewKind,
+    MaterialReadingState, Note, StudyStatus,
 };
 
 pub struct LearningContentRepository {
@@ -169,6 +170,14 @@ impl LearningContentRepository {
     }
 
     pub fn delete_learning_content(&self, id: &str) -> Result<(), AppError> {
+        let materials = self.list_materials(id)?;
+        for material in materials {
+            self.delete_material_item(&material.id)?;
+        }
+        self.connection.execute(
+            "DELETE FROM notes WHERE learning_content_id = ?1",
+            params![id],
+        )?;
         self.connection
             .execute("DELETE FROM learning_contents WHERE id = ?1", params![id])?;
         Ok(())
@@ -253,13 +262,69 @@ impl LearningContentRepository {
             params![material_id],
         )?;
         self.connection.execute(
-            "UPDATE reading_states
-             SET current_material_id = NULL, updated_at = ?1
-             WHERE current_material_id = ?2",
-            params![Utc::now().to_rfc3339(), material_id],
+            "DELETE FROM material_reading_states WHERE material_id = ?1",
+            params![material_id],
         )?;
 
         Ok(())
+    }
+
+    pub fn rename_material_item(
+        &self,
+        material_id: &str,
+        name: &str,
+    ) -> Result<MaterialItem, AppError> {
+        let Some(material) = self.get_material(material_id)? else {
+            return Err(AppError::MaterialNotFound);
+        };
+        let requested_name = validate_material_file_name(name)?;
+        let source_path = PathBuf::from(&material.stored_path);
+        let Some(parent_dir) = source_path.parent() else {
+            return Err(AppError::MaterialNotFound);
+        };
+        let existing_names = self
+            .list_materials(&material.learning_content_id)?
+            .into_iter()
+            .filter(|current| current.id != material.id)
+            .map(|current| current.name)
+            .collect::<Vec<_>>();
+        let display_name = next_duplicate_name(requested_name, |candidate| {
+            existing_names.iter().any(|existing| existing == candidate)
+        });
+        let target_path = next_available_path(parent_dir, &display_name);
+        if source_path != target_path {
+            std::fs::rename(&source_path, &target_path)?;
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let metadata = std::fs::metadata(&target_path)?;
+        let update_result = self.connection.execute(
+            "UPDATE material_items
+             SET name = ?1, stored_path = ?2, size_bytes = ?3, updated_at = ?4
+             WHERE id = ?5",
+            params![
+                display_name,
+                target_path.to_string_lossy().to_string(),
+                metadata.len() as i64,
+                now,
+                material.id,
+            ],
+        );
+
+        if let Err(error) = update_result {
+            if source_path != target_path {
+                let _ = std::fs::rename(&target_path, &source_path);
+            }
+            return Err(AppError::Database(error));
+        }
+
+        Ok(MaterialItem {
+            name: display_name,
+            stored_path: target_path.to_string_lossy().to_string(),
+            size_bytes: metadata.len() as i64,
+            updated_at: now,
+            ..material
+        })
     }
 
     pub fn create_note(
@@ -342,13 +407,6 @@ impl LearningContentRepository {
 
         self.connection
             .execute("DELETE FROM notes WHERE id = ?1", params![note_id])?;
-        self.connection.execute(
-            "UPDATE reading_states
-             SET current_note_id = NULL, updated_at = ?1
-             WHERE current_note_id = ?2",
-            params![Utc::now().to_rfc3339(), note_id],
-        )?;
-
         Ok(())
     }
 
@@ -400,23 +458,22 @@ impl LearningContentRepository {
         }
     }
 
-    pub fn get_reading_state(
+    pub fn get_material_reading_state(
         &self,
-        learning_content_id: &str,
-    ) -> Result<Option<ReadingState>, AppError> {
+        material_id: &str,
+    ) -> Result<Option<MaterialReadingState>, AppError> {
         self.connection
             .query_row(
-                "SELECT learning_content_id, current_material_id, current_note_id, split_ratio, updated_at
-                 FROM reading_states
-                 WHERE learning_content_id = ?1",
-                params![learning_content_id],
+                "SELECT material_id, page_number, scale, updated_at
+                 FROM material_reading_states
+                 WHERE material_id = ?1",
+                params![material_id],
                 |row| {
-                    Ok(ReadingState {
-                        learning_content_id: row.get(0)?,
-                        current_material_id: row.get(1)?,
-                        current_note_id: row.get(2)?,
-                        split_ratio: row.get(3)?,
-                        updated_at: row.get(4)?,
+                    Ok(MaterialReadingState {
+                        material_id: row.get(0)?,
+                        page_number: row.get(1)?,
+                        scale: row.get(2)?,
+                        updated_at: row.get(3)?,
                     })
                 },
             )
@@ -424,43 +481,136 @@ impl LearningContentRepository {
             .map_err(AppError::from)
     }
 
-    pub fn save_reading_state(
+    pub fn save_material_reading_state(
         &self,
-        learning_content_id: &str,
-        current_material_id: Option<&str>,
-        current_note_id: Option<&str>,
-        split_ratio: i64,
-    ) -> Result<ReadingState, AppError> {
-        if self.get_learning_content(learning_content_id)?.is_none() {
-            return Err(AppError::LearningContentNotFound);
-        }
-
-        let split_ratio = split_ratio.clamp(30, 70);
+        material_id: &str,
+        page_number: i64,
+        scale: f64,
+    ) -> Result<MaterialReadingState, AppError> {
+        let page_number = page_number.max(1);
+        let scale = scale.clamp(0.6, 2.4);
         let now = Utc::now().to_rfc3339();
         self.connection.execute(
-            "INSERT INTO reading_states (
-                learning_content_id, current_material_id, current_note_id, split_ratio, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5)
-            ON CONFLICT(learning_content_id) DO UPDATE SET
-                current_material_id = excluded.current_material_id,
-                current_note_id = excluded.current_note_id,
-                split_ratio = excluded.split_ratio,
+            "INSERT INTO material_reading_states (
+                material_id, page_number, scale, updated_at
+            ) VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(material_id) DO UPDATE SET
+                page_number = excluded.page_number,
+                scale = excluded.scale,
                 updated_at = excluded.updated_at",
-            params![
-                learning_content_id,
-                current_material_id,
-                current_note_id,
-                split_ratio,
-                now,
-            ],
+            params![material_id, page_number, scale, now],
         )?;
 
-        Ok(ReadingState {
-            learning_content_id: learning_content_id.to_string(),
-            current_material_id: current_material_id.map(ToString::to_string),
-            current_note_id: current_note_id.map(ToString::to_string),
-            split_ratio,
+        Ok(MaterialReadingState {
+            material_id: material_id.to_string(),
+            page_number,
+            scale,
             updated_at: now,
+        })
+    }
+
+    pub fn get_material_library_stats(
+        &self,
+        material_library_dir: impl AsRef<Path>,
+    ) -> Result<MaterialLibraryStats, AppError> {
+        let materials = self.list_all_materials()?;
+        let referenced_paths = materials
+            .iter()
+            .map(|material| PathBuf::from(&material.stored_path))
+            .collect::<Vec<_>>();
+        let referenced_bytes = materials
+            .iter()
+            .map(|material| material.size_bytes)
+            .sum::<i64>();
+        let mut actual_referenced_bytes = 0;
+        let mut missing_file_count = 0;
+        for path in &referenced_paths {
+            match std::fs::metadata(path) {
+                Ok(metadata) if metadata.is_file() => {
+                    actual_referenced_bytes += metadata.len() as i64;
+                }
+                _ => {
+                    missing_file_count += 1;
+                }
+            }
+        }
+
+        let library_scan = scan_material_library(material_library_dir.as_ref(), &referenced_paths)?;
+
+        Ok(MaterialLibraryStats {
+            material_count: materials.len() as i64,
+            referenced_bytes,
+            actual_referenced_bytes,
+            library_bytes: library_scan.library_bytes,
+            missing_file_count,
+            orphan_file_count: library_scan.orphan_files.len() as i64,
+            orphan_bytes: library_scan.orphan_bytes,
+            updated_at: Utc::now().to_rfc3339(),
+        })
+    }
+
+    pub fn cleanup_material_library(
+        &self,
+        material_library_dir: impl AsRef<Path>,
+    ) -> Result<MaterialLibraryCleanupReport, AppError> {
+        let material_library_dir = material_library_dir.as_ref();
+        let materials = self.list_all_materials()?;
+        let referenced_paths = materials
+            .iter()
+            .map(|material| PathBuf::from(&material.stored_path))
+            .collect::<Vec<_>>();
+        let library_scan = scan_material_library(material_library_dir, &referenced_paths)?;
+        let mut deleted_orphan_file_count = 0;
+        let mut deleted_bytes = 0;
+        let mut failed_paths = Vec::new();
+
+        for orphan in library_scan.orphan_files {
+            if let Ok(metadata) = std::fs::metadata(&orphan) {
+                let size = metadata.len() as i64;
+                match std::fs::remove_file(&orphan) {
+                    Ok(()) => {
+                        deleted_orphan_file_count += 1;
+                        deleted_bytes += size;
+                    }
+                    Err(_) => failed_paths.push(orphan.to_string_lossy().to_string()),
+                }
+            }
+        }
+
+        let orphan_materials = self.list_orphan_materials()?;
+        let mut deleted_orphan_database_record_count = 0;
+        for material in orphan_materials {
+            let stored_path = PathBuf::from(&material.stored_path);
+            if is_path_inside_directory(&stored_path, material_library_dir)? {
+                if let Ok(metadata) = std::fs::metadata(&stored_path) {
+                    let size = metadata.len() as i64;
+                    match std::fs::remove_file(&stored_path) {
+                        Ok(()) => {
+                            deleted_orphan_file_count += 1;
+                            deleted_bytes += size;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(_) => failed_paths.push(stored_path.to_string_lossy().to_string()),
+                    }
+                }
+            }
+            self.connection.execute(
+                "DELETE FROM material_reading_states WHERE material_id = ?1",
+                params![material.id],
+            )?;
+            self.connection.execute(
+                "DELETE FROM material_items WHERE id = ?1",
+                params![material.id],
+            )?;
+            deleted_orphan_database_record_count += 1;
+        }
+
+        Ok(MaterialLibraryCleanupReport {
+            deleted_orphan_file_count,
+            deleted_orphan_database_record_count,
+            deleted_bytes,
+            failed_paths,
+            updated_at: Utc::now().to_rfc3339(),
         })
     }
 
@@ -475,6 +625,15 @@ impl LearningContentRepository {
     pub fn debug_count_notes(&self) -> Result<i64, AppError> {
         self.connection
             .query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))
+            .map_err(AppError::from)
+    }
+
+    #[cfg(test)]
+    pub fn debug_count_material_reading_states(&self) -> Result<i64, AppError> {
+        self.connection
+            .query_row("SELECT COUNT(*) FROM material_reading_states", [], |row| {
+                row.get(0)
+            })
             .map_err(AppError::from)
     }
 
@@ -551,6 +710,57 @@ impl LearningContentRepository {
             )
             .optional()
             .map_err(AppError::from)
+    }
+
+    fn list_all_materials(&self) -> Result<Vec<MaterialItem>, AppError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, learning_content_id, name, original_path, stored_path, mime_type, size_bytes, created_at, updated_at
+             FROM material_items
+             ORDER BY created_at ASC",
+        )?;
+
+        let rows = statement.query_map([], |row| {
+            Ok(MaterialItem {
+                id: row.get(0)?,
+                learning_content_id: row.get(1)?,
+                name: row.get(2)?,
+                original_path: row.get(3)?,
+                stored_path: row.get(4)?,
+                mime_type: row.get(5)?,
+                size_bytes: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    }
+
+    fn list_orphan_materials(&self) -> Result<Vec<MaterialItem>, AppError> {
+        let mut statement = self.connection.prepare(
+            "SELECT material_items.id, material_items.learning_content_id, material_items.name, material_items.original_path,
+                    material_items.stored_path, material_items.mime_type, material_items.size_bytes,
+                    material_items.created_at, material_items.updated_at
+             FROM material_items
+             LEFT JOIN learning_contents ON learning_contents.id = material_items.learning_content_id
+             WHERE learning_contents.id IS NULL",
+        )?;
+
+        let rows = statement.query_map([], |row| {
+            Ok(MaterialItem {
+                id: row.get(0)?,
+                learning_content_id: row.get(1)?,
+                name: row.get(2)?,
+                original_path: row.get(3)?,
+                stored_path: row.get(4)?,
+                mime_type: row.get(5)?,
+                size_bytes: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
     }
 
     fn list_notes(&self, learning_content_id: &str) -> Result<Vec<Note>, AppError> {
@@ -649,15 +859,33 @@ impl LearningContentRepository {
                 updated_at TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS reading_states (
-                learning_content_id TEXT PRIMARY KEY,
-                current_material_id TEXT,
-                current_note_id TEXT,
-                split_ratio INTEGER NOT NULL DEFAULT 55,
-                updated_at TEXT NOT NULL
-            );
             ",
         )?;
+
+        let user_version: i64 = self
+            .connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if user_version < 1 {
+            self.connection.pragma_update(None, "user_version", 1)?;
+        }
+        if user_version < 2 {
+            self.connection.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS material_reading_states (
+                    material_id TEXT PRIMARY KEY,
+                    page_number INTEGER NOT NULL DEFAULT 1,
+                    scale REAL NOT NULL DEFAULT 1.0,
+                    updated_at TEXT NOT NULL
+                );
+                ",
+            )?;
+            self.connection.pragma_update(None, "user_version", 2)?;
+        }
+        if user_version < 3 {
+            self.connection
+                .execute_batch("DROP TABLE IF EXISTS reading_states;")?;
+            self.connection.pragma_update(None, "user_version", 3)?;
+        }
 
         Ok(())
     }
@@ -696,6 +924,117 @@ fn next_duplicate_name(name: &str, exists: impl Fn(&str) -> bool) -> String {
     }
 
     unreachable!("duplicate name loop is unbounded");
+}
+
+struct MaterialLibraryScan {
+    library_bytes: i64,
+    orphan_bytes: i64,
+    orphan_files: Vec<PathBuf>,
+}
+
+fn validate_material_file_name(name: &str) -> Result<&str, AppError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::EmptyMaterialName);
+    }
+
+    let path = Path::new(name);
+    if path.components().count() != 1
+        || path.file_name().and_then(|value| value.to_str()) != Some(name)
+    {
+        return Err(AppError::InvalidMaterialName);
+    }
+
+    Ok(name)
+}
+
+fn scan_material_library(
+    material_library_dir: &Path,
+    referenced_paths: &[PathBuf],
+) -> Result<MaterialLibraryScan, AppError> {
+    if !material_library_dir.exists() {
+        return Ok(MaterialLibraryScan {
+            library_bytes: 0,
+            orphan_bytes: 0,
+            orphan_files: Vec::new(),
+        });
+    }
+
+    let referenced_canonical_paths = referenced_paths
+        .iter()
+        .filter_map(|path| path.canonicalize().ok())
+        .collect::<Vec<_>>();
+    let mut scan = MaterialLibraryScan {
+        library_bytes: 0,
+        orphan_bytes: 0,
+        orphan_files: Vec::new(),
+    };
+    scan_directory_for_materials(
+        material_library_dir,
+        material_library_dir,
+        &referenced_canonical_paths,
+        &mut scan,
+    )?;
+
+    Ok(scan)
+}
+
+fn scan_directory_for_materials(
+    current_dir: &Path,
+    material_library_dir: &Path,
+    referenced_canonical_paths: &[PathBuf],
+    scan: &mut MaterialLibraryScan,
+) -> Result<(), AppError> {
+    for entry in std::fs::read_dir(current_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = entry.metadata()?;
+        if metadata.is_dir() {
+            scan_directory_for_materials(
+                &path,
+                material_library_dir,
+                referenced_canonical_paths,
+                scan,
+            )?;
+            continue;
+        }
+
+        if !metadata.is_file() {
+            continue;
+        }
+
+        if !is_path_inside_directory(&path, material_library_dir)? {
+            continue;
+        }
+
+        let size = metadata.len() as i64;
+        scan.library_bytes += size;
+        let canonical_path = path.canonicalize()?;
+        if !referenced_canonical_paths
+            .iter()
+            .any(|referenced_path| referenced_path == &canonical_path)
+        {
+            scan.orphan_bytes += size;
+            scan.orphan_files.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn is_path_inside_directory(path: &Path, directory: &Path) -> Result<bool, AppError> {
+    let canonical_path = match path.canonicalize() {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(AppError::Io(error)),
+    };
+    let canonical_directory = match directory.canonicalize() {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(AppError::Io(error)),
+    };
+
+    Ok(canonical_path.starts_with(canonical_directory))
 }
 
 fn guess_mime_type(path: &Path) -> Option<String> {
@@ -965,7 +1304,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_learning_content_does_not_cascade_materials_or_notes_yet() {
+    fn delete_learning_content_cascades_materials_notes_and_reading_states() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
             .expect("open db");
@@ -980,14 +1319,18 @@ mod tests {
                 progress: None,
             })
             .expect("create learning content");
-        repository
+        let material = repository
             .import_material_file(&learning_content.id, &source_file, &material_library_dir)
             .expect("import material");
+        let stored_path = material.stored_path.clone();
+        repository
+            .save_material_reading_state(&material.id, 2, 1.4)
+            .expect("save material reading state");
         repository
             .create_note(
                 &learning_content.id,
                 "保留笔记".to_string(),
-                "后续再处理级联".to_string(),
+                "删除学习内容时同步删除".to_string(),
             )
             .expect("create note");
 
@@ -1001,9 +1344,17 @@ mod tests {
             .is_none());
         assert_eq!(
             repository.debug_count_materials().expect("count materials"),
-            1
+            0
         );
-        assert_eq!(repository.debug_count_notes().expect("count notes"), 1);
+        assert_eq!(repository.debug_count_notes().expect("count notes"), 0);
+        assert_eq!(
+            repository
+                .debug_count_material_reading_states()
+                .expect("count material reading states"),
+            0
+        );
+        assert!(!std::path::Path::new(&stored_path).exists());
+        assert!(source_file.exists());
     }
 
     #[test]
@@ -1086,25 +1437,19 @@ mod tests {
     }
 
     #[test]
-    fn updates_plain_text_note_and_restores_reading_state_after_reopening_database() {
+    fn updates_plain_text_note_after_reopening_database() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let database_path = temp_dir.path().join("studyseq.sqlite");
-        let material_library_dir = temp_dir.path().join("materials");
-        let source_file = temp_dir.path().join("source.txt");
-        std::fs::write(&source_file, "hello").expect("write source file");
 
         let repository = LearningContentRepository::open(&database_path).expect("open db");
         let learning_content = repository
             .create(CreateLearningContentInput {
-                name: "阅读状态".to_string(),
+                name: "笔记更新".to_string(),
                 deadline: None,
                 estimated_hours: None,
                 progress: None,
             })
             .expect("create learning content");
-        let material = repository
-            .import_material_file(&learning_content.id, &source_file, &material_library_dir)
-            .expect("import material");
         let note = repository
             .create_note(
                 &learning_content.id,
@@ -1116,14 +1461,6 @@ mod tests {
         let updated_note = repository
             .update_note(&note.id, "新标题".to_string(), "新正文".to_string())
             .expect("update note");
-        repository
-            .save_reading_state(
-                &learning_content.id,
-                Some(&material.id),
-                Some(&updated_note.id),
-                62,
-            )
-            .expect("save reading state");
         drop(repository);
 
         let reopened_repository =
@@ -1132,100 +1469,242 @@ mod tests {
             .get_detail(&learning_content.id)
             .expect("get detail")
             .expect("detail exists");
-        let reading_state = reopened_repository
-            .get_reading_state(&learning_content.id)
-            .expect("get reading state")
-            .expect("reading state exists");
 
         assert_eq!(detail.notes[0].title, "新标题");
         assert_eq!(detail.notes[0].body, "新正文");
-        assert_eq!(
-            reading_state.current_material_id.as_deref(),
-            Some(material.id.as_str())
-        );
-        assert_eq!(
-            reading_state.current_note_id.as_deref(),
-            Some(updated_note.id.as_str())
-        );
-        assert_eq!(reading_state.split_ratio, 62);
+        assert_eq!(detail.notes[0].id, updated_note.id);
     }
 
     #[test]
-    fn deleting_material_clears_reading_state_material_reference() {
+    fn migrates_v1_database_and_persists_pdf_reading_state_by_material() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let database_path = temp_dir.path().join("studyseq.sqlite");
+        {
+            let connection = rusqlite::Connection::open(&database_path).expect("open raw db");
+            connection
+                .execute_batch(
+                    "
+                    CREATE TABLE learning_contents (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        deadline TEXT,
+                        estimated_hours REAL DEFAULT 0,
+                        progress INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        last_opened_at TEXT
+                    );
+
+                    CREATE TABLE material_items (
+                        id TEXT PRIMARY KEY,
+                        learning_content_id TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        original_path TEXT NOT NULL,
+                        stored_path TEXT NOT NULL,
+                        mime_type TEXT,
+                        size_bytes INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE notes (
+                        id TEXT PRIMARY KEY,
+                        learning_content_id TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        body TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE reading_states (
+                        learning_content_id TEXT PRIMARY KEY,
+                        current_material_id TEXT,
+                        current_note_id TEXT,
+                        split_ratio INTEGER NOT NULL DEFAULT 55,
+                        updated_at TEXT NOT NULL
+                    );
+                    ",
+                )
+                .expect("create v1 schema");
+        }
+
+        let repository = LearningContentRepository::open(&database_path).expect("migrate db");
+
+        repository
+            .save_material_reading_state("material-a", 3, 1.4)
+            .expect("save material a state");
+        repository
+            .save_material_reading_state("material-b", 1, 1.0)
+            .expect("save material b state");
+        drop(repository);
+
+        let reopened_repository =
+            LearningContentRepository::open(&database_path).expect("reopen migrated db");
+        let material_a_state = reopened_repository
+            .get_material_reading_state("material-a")
+            .expect("get material a state")
+            .expect("material a state exists");
+        let material_b_state = reopened_repository
+            .get_material_reading_state("material-b")
+            .expect("get material b state")
+            .expect("material b state exists");
+        let reading_states_table_count: i64 = reopened_repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'reading_states'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query old reading states table");
+
+        assert_eq!(material_a_state.material_id, "material-a");
+        assert_eq!(material_a_state.page_number, 3);
+        assert_eq!(material_a_state.scale, 1.4);
+        assert_eq!(material_b_state.page_number, 1);
+        assert_eq!(material_b_state.scale, 1.0);
+        assert_eq!(reading_states_table_count, 0);
+    }
+
+    #[test]
+    fn material_library_stats_counts_references_missing_files_and_orphans() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let first_source = temp_dir.path().join("first.pdf");
+        let second_source = temp_dir.path().join("second.txt");
+        std::fs::write(&first_source, b"pdf").expect("write first");
+        std::fs::write(&second_source, b"text").expect("write second");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "资料统计".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let first_material = repository
+            .import_material_file(&learning_content.id, &first_source, &material_library_dir)
+            .expect("import first");
+        let second_material = repository
+            .import_material_file(&learning_content.id, &second_source, &material_library_dir)
+            .expect("import second");
+        std::fs::remove_file(&second_material.stored_path).expect("remove referenced file");
+        let orphan_path = material_library_dir
+            .join(&learning_content.id)
+            .join("orphan.tmp");
+        std::fs::write(&orphan_path, b"orphan").expect("write orphan");
+
+        let stats = repository
+            .get_material_library_stats(&material_library_dir)
+            .expect("get stats");
+
+        assert_eq!(stats.material_count, 2);
+        assert_eq!(
+            stats.referenced_bytes,
+            first_material.size_bytes + second_material.size_bytes
+        );
+        assert_eq!(stats.actual_referenced_bytes, first_material.size_bytes);
+        assert_eq!(stats.missing_file_count, 1);
+        assert_eq!(stats.orphan_file_count, 1);
+        assert_eq!(stats.orphan_bytes, 6);
+        assert!(stats.library_bytes >= first_material.size_bytes + 6);
+    }
+
+    #[test]
+    fn cleanup_material_library_removes_orphan_files_and_orphan_database_records_only() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
             .expect("open db");
         let material_library_dir = temp_dir.path().join("materials");
         let source_file = temp_dir.path().join("source.txt");
-        std::fs::write(&source_file, "hello").expect("write source file");
-        let learning_content = repository
-            .create(CreateLearningContentInput {
-                name: "资料阅读状态".to_string(),
-                deadline: None,
-                estimated_hours: None,
-                progress: None,
-            })
-            .expect("create learning content");
-        let material = repository
-            .import_material_file(&learning_content.id, &source_file, &material_library_dir)
-            .expect("import material");
-        let note = repository
-            .create_note(
-                &learning_content.id,
-                "保留笔记".to_string(),
-                "正文".to_string(),
+        std::fs::write(&source_file, b"kept").expect("write source");
+        let orphan_content_id = "deleted-learning-content";
+        let orphan_dir = material_library_dir.join(orphan_content_id);
+        std::fs::create_dir_all(&orphan_dir).expect("create orphan dir");
+        let orphan_material_path = orphan_dir.join("kept.txt");
+        std::fs::write(&orphan_material_path, b"kept").expect("write orphan material copy");
+        let orphan_file = orphan_dir.join("orphan.tmp");
+        std::fs::write(&orphan_file, b"orphan").expect("write orphan");
+        repository
+            .connection
+            .execute(
+                "INSERT INTO material_items (
+                    id, learning_content_id, name, original_path, stored_path, mime_type, size_bytes, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    "orphan-material",
+                    orphan_content_id,
+                    "kept.txt",
+                    source_file.to_string_lossy().to_string(),
+                    orphan_material_path.to_string_lossy().to_string(),
+                    "text/plain",
+                    4,
+                    "2026-06-10T00:00:00Z",
+                    "2026-06-10T00:00:00Z",
+                ],
             )
-            .expect("create note");
-        repository
-            .save_reading_state(&learning_content.id, Some(&material.id), Some(&note.id), 60)
-            .expect("save reading state");
+            .expect("insert orphan material");
 
-        repository
-            .delete_material_item(&material.id)
-            .expect("delete material");
+        let report = repository
+            .cleanup_material_library(&material_library_dir)
+            .expect("cleanup library");
 
-        let reading_state = repository
-            .get_reading_state(&learning_content.id)
-            .expect("get reading state")
-            .expect("reading state exists");
-        assert_eq!(reading_state.current_material_id, None);
+        assert_eq!(report.deleted_orphan_file_count, 2);
+        assert!(report.deleted_orphan_database_record_count >= 1);
+        assert!(!orphan_file.exists());
+        assert!(!orphan_material_path.exists());
         assert_eq!(
-            reading_state.current_note_id.as_deref(),
-            Some(note.id.as_str())
+            repository.debug_count_materials().expect("count materials"),
+            0
         );
+        assert!(source_file.exists());
     }
 
     #[test]
-    fn deleting_note_clears_reading_state_note_reference() {
+    fn renames_material_with_duplicate_suffix_and_keeps_preview_working() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
             .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let first_source = temp_dir.path().join("first.txt");
+        let second_source = temp_dir.path().join("second.txt");
+        std::fs::write(&first_source, "first").expect("write first");
+        std::fs::write(&second_source, "second").expect("write second");
         let learning_content = repository
             .create(CreateLearningContentInput {
-                name: "笔记阅读状态".to_string(),
+                name: "资料重命名".to_string(),
                 deadline: None,
                 estimated_hours: None,
                 progress: None,
             })
             .expect("create learning content");
-        let note = repository
-            .create_note(
-                &learning_content.id,
-                "待删笔记".to_string(),
-                "正文".to_string(),
-            )
-            .expect("create note");
-        repository
-            .save_reading_state(&learning_content.id, None, Some(&note.id), 60)
-            .expect("save reading state");
+        let first_material = repository
+            .import_material_file(&learning_content.id, &first_source, &material_library_dir)
+            .expect("import first");
+        let second_material = repository
+            .import_material_file(&learning_content.id, &second_source, &material_library_dir)
+            .expect("import second");
 
-        repository.delete_note(&note.id).expect("delete note");
+        let renamed = repository
+            .rename_material_item(&second_material.id, "资料.txt")
+            .expect("rename material");
 
-        let reading_state = repository
-            .get_reading_state(&learning_content.id)
-            .expect("get reading state")
-            .expect("reading state exists");
-        assert_eq!(reading_state.current_material_id, None);
-        assert_eq!(reading_state.current_note_id, None);
+        assert_eq!(renamed.name, "资料.txt");
+        assert!(renamed.stored_path.ends_with("资料.txt"));
+        assert!(std::path::Path::new(&renamed.stored_path).exists());
+        assert!(!std::path::Path::new(&second_material.stored_path).exists());
+
+        let renamed_again = repository
+            .rename_material_item(&renamed.id, &first_material.name)
+            .expect("rename duplicate material");
+        assert_eq!(renamed_again.name, "first (1).txt");
+        assert!(std::path::Path::new(&renamed_again.stored_path).exists());
+
+        let preview = repository
+            .preview_material_file(&renamed_again.id)
+            .expect("preview renamed");
+        assert_eq!(preview.text.as_deref(), Some("second"));
     }
 }

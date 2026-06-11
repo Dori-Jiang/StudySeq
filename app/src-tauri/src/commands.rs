@@ -265,6 +265,7 @@ fn import_material_file_in_repository(
             &input.learning_content_id,
             input.source_path,
             material_library_dir,
+            input.parent_id.as_deref(),
         )
         .map_err(ApiError::from)
 }
@@ -439,6 +440,7 @@ mod tests {
             ImportMaterialFileInput {
                 learning_content_id: content.id.clone(),
                 source_path: source_file.to_string_lossy().to_string(),
+                parent_id: None,
             },
             &material_library_dir,
         )
@@ -491,11 +493,12 @@ mod tests {
             ImportMaterialFileInput {
                 learning_content_id: content.id.clone(),
                 source_path: source_file.to_string_lossy().to_string(),
+                parent_id: None,
             },
             &material_library_dir,
         )
         .expect("import material");
-        let stored_path = material.stored_path.clone();
+        let stored_path = material.stored_path.clone().expect("stored path");
 
         delete_material_item_in_repository(&repository, &material.id).expect("delete material");
 
@@ -529,6 +532,7 @@ mod tests {
             ImportMaterialFileInput {
                 learning_content_id: content.id.clone(),
                 source_path: source_file.to_string_lossy().to_string(),
+                parent_id: None,
             },
             &material_library_dir,
         )

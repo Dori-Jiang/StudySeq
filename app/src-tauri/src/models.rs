@@ -44,18 +44,49 @@ pub struct UpdateLearningContentInput {
     pub progress: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaterialKind {
+    File,
+    Folder,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MaterialItem {
     pub id: String,
     pub learning_content_id: String,
+    pub parent_id: Option<String>,
+    pub kind: MaterialKind,
     pub name: String,
-    pub original_path: String,
-    pub stored_path: String,
+    pub original_path: Option<String>,
+    pub stored_path: Option<String>,
     pub mime_type: Option<String>,
     pub size_bytes: i64,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateMaterialFolderInput {
+    pub learning_content_id: String,
+    pub parent_id: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveMaterialItemInput {
+    pub material_id: String,
+    pub new_parent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterialSubtreeCount {
+    pub file_count: i64,
+    pub folder_count: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -150,6 +181,8 @@ pub struct MaterialPreview {
 pub struct ImportMaterialFileInput {
     pub learning_content_id: String,
     pub source_path: String,
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

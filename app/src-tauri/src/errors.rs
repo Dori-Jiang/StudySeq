@@ -21,6 +21,10 @@ pub enum AppError {
     InvalidMaterialName,
     #[error("资料路径超出 App 管理目录")]
     MaterialPathOutsideLibrary,
+    #[error("文件夹不存在")]
+    FolderNotFound,
+    #[error("无法移动到该位置")]
+    InvalidMoveTarget,
     #[error("笔记标题不能为空")]
     EmptyNoteTitle,
     #[error("笔记不存在")]

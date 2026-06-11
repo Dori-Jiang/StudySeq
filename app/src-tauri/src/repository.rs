@@ -9,9 +9,9 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::models::{
-    CreateLearningContentInput, LearningContent, LearningDetail, MaterialItem,
+    CreateLearningContentInput, LearningContent, LearningDetail, MaterialItem, MaterialKind,
     MaterialLibraryCleanupReport, MaterialLibraryStats, MaterialPreview, MaterialPreviewKind,
-    MaterialReadingState, Note, StudyStatus,
+    MaterialReadingState, MaterialSubtreeCount, Note, StudyStatus,
 };
 
 pub struct LearningContentRepository {
@@ -170,10 +170,31 @@ impl LearningContentRepository {
     }
 
     pub fn delete_learning_content(&self, id: &str) -> Result<(), AppError> {
+        // 按表批量删除而不是逐项递归，避免文件夹子树被重复删除报 MaterialNotFound
         let materials = self.list_materials(id)?;
-        for material in materials {
-            self.delete_material_item(&material.id)?;
+        for material in &materials {
+            if material.kind != MaterialKind::File {
+                continue;
+            }
+            let Some(stored_path) = material.stored_path.as_deref() else {
+                continue;
+            };
+            match std::fs::remove_file(stored_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(AppError::Io(error)),
+            }
         }
+        self.connection.execute(
+            "DELETE FROM material_reading_states WHERE material_id IN (
+                SELECT id FROM material_items WHERE learning_content_id = ?1
+            )",
+            params![id],
+        )?;
+        self.connection.execute(
+            "DELETE FROM material_items WHERE learning_content_id = ?1",
+            params![id],
+        )?;
         self.connection.execute(
             "DELETE FROM notes WHERE learning_content_id = ?1",
             params![id],
@@ -188,10 +209,12 @@ impl LearningContentRepository {
         learning_content_id: &str,
         source_path: impl AsRef<Path>,
         material_library_dir: impl AsRef<Path>,
+        parent_id: Option<&str>,
     ) -> Result<MaterialItem, AppError> {
         if self.get_learning_content(learning_content_id)?.is_none() {
             return Err(AppError::LearningContentNotFound);
         }
+        self.ensure_folder_in_content(learning_content_id, parent_id)?;
 
         let source_path = source_path.as_ref();
         if !source_path.exists() {
@@ -204,7 +227,8 @@ impl LearningContentRepository {
             .ok_or(AppError::SourceFileMissing)?;
         let material_dir = material_library_dir.as_ref().join(learning_content_id);
         std::fs::create_dir_all(&material_dir)?;
-        let display_name = self.next_material_name(learning_content_id, original_name)?;
+        let display_name =
+            self.next_sibling_material_name(learning_content_id, parent_id, original_name, None)?;
         let stored_path = next_available_path(&material_dir, &display_name);
         std::fs::copy(source_path, &stored_path)?;
 
@@ -213,37 +237,130 @@ impl LearningContentRepository {
         let material = MaterialItem {
             id: Uuid::new_v4().to_string(),
             learning_content_id: learning_content_id.to_string(),
-            name: stored_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or(display_name.as_str())
-                .to_string(),
-            original_path: source_path.to_string_lossy().to_string(),
-            stored_path: stored_path.to_string_lossy().to_string(),
+            parent_id: parent_id.map(|value| value.to_string()),
+            kind: MaterialKind::File,
+            name: display_name,
+            original_path: Some(source_path.to_string_lossy().to_string()),
+            stored_path: Some(stored_path.to_string_lossy().to_string()),
             mime_type: guess_mime_type(source_path),
             size_bytes: metadata.len() as i64,
             created_at: now.clone(),
             updated_at: now,
         };
 
-        self.connection.execute(
-            "INSERT INTO material_items (
-                id, learning_content_id, name, original_path, stored_path, mime_type, size_bytes, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                material.id,
-                material.learning_content_id,
-                material.name,
-                material.original_path,
-                material.stored_path,
-                material.mime_type,
-                material.size_bytes,
-                material.created_at,
-                material.updated_at,
-            ],
-        )?;
+        self.insert_material_item(&material)?;
 
         Ok(material)
+    }
+
+    pub fn create_material_folder(
+        &self,
+        learning_content_id: &str,
+        parent_id: Option<&str>,
+        name: &str,
+    ) -> Result<MaterialItem, AppError> {
+        if self.get_learning_content(learning_content_id)?.is_none() {
+            return Err(AppError::LearningContentNotFound);
+        }
+        self.ensure_folder_in_content(learning_content_id, parent_id)?;
+
+        let requested_name = validate_material_file_name(name)?;
+        let display_name =
+            self.next_sibling_material_name(learning_content_id, parent_id, requested_name, None)?;
+
+        let now = Utc::now().to_rfc3339();
+        let folder = MaterialItem {
+            id: Uuid::new_v4().to_string(),
+            learning_content_id: learning_content_id.to_string(),
+            parent_id: parent_id.map(|value| value.to_string()),
+            kind: MaterialKind::Folder,
+            name: display_name,
+            original_path: None,
+            stored_path: None,
+            mime_type: None,
+            size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+
+        self.insert_material_item(&folder)?;
+
+        Ok(folder)
+    }
+
+    pub fn move_material_item(
+        &self,
+        material_id: &str,
+        new_parent_id: Option<&str>,
+    ) -> Result<MaterialItem, AppError> {
+        let Some(material) = self.get_material(material_id)? else {
+            return Err(AppError::MaterialNotFound);
+        };
+
+        if let Some(target_id) = new_parent_id {
+            let Some(target) = self.get_material(target_id)? else {
+                return Err(AppError::FolderNotFound);
+            };
+            if target.kind != MaterialKind::Folder
+                || target.learning_content_id != material.learning_content_id
+            {
+                return Err(AppError::InvalidMoveTarget);
+            }
+            // 禁止把文件夹移入自身或其后代：从目标沿 parent 链上溯
+            if material.kind == MaterialKind::Folder {
+                let mut cursor = Some(target.id.clone());
+                while let Some(current_id) = cursor {
+                    if current_id == material.id {
+                        return Err(AppError::InvalidMoveTarget);
+                    }
+                    cursor = self
+                        .get_material(&current_id)?
+                        .and_then(|item| item.parent_id);
+                }
+            }
+        }
+
+        let display_name = self.next_sibling_material_name(
+            &material.learning_content_id,
+            new_parent_id,
+            &material.name,
+            Some(&material.id),
+        )?;
+        let now = Utc::now().to_rfc3339();
+        self.connection.execute(
+            "UPDATE material_items SET parent_id = ?1, name = ?2, updated_at = ?3 WHERE id = ?4",
+            params![new_parent_id, display_name, now, material.id],
+        )?;
+
+        Ok(MaterialItem {
+            parent_id: new_parent_id.map(|value| value.to_string()),
+            name: display_name,
+            updated_at: now,
+            ..material
+        })
+    }
+
+    pub fn count_material_subtree(
+        &self,
+        material_id: &str,
+    ) -> Result<MaterialSubtreeCount, AppError> {
+        let Some(material) = self.get_material(material_id)? else {
+            return Err(AppError::MaterialNotFound);
+        };
+
+        let subtree = self.collect_material_subtree(&material)?;
+        let mut count = MaterialSubtreeCount {
+            file_count: 0,
+            folder_count: 0,
+        };
+        for item in subtree.iter().filter(|item| item.id != material.id) {
+            match item.kind {
+                MaterialKind::File => count.file_count += 1,
+                MaterialKind::Folder => count.folder_count += 1,
+            }
+        }
+
+        Ok(count)
     }
 
     pub fn delete_material_item(&self, material_id: &str) -> Result<(), AppError> {
@@ -251,20 +368,30 @@ impl LearningContentRepository {
             return Err(AppError::MaterialNotFound);
         };
 
-        match std::fs::remove_file(&material.stored_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(AppError::Io(error)),
+        // 文件夹是纯逻辑层级：先递归收集子树，文件行删磁盘副本，所有行删记录与阅读状态
+        let subtree = self.collect_material_subtree(&material)?;
+        for item in &subtree {
+            if item.kind != MaterialKind::File {
+                continue;
+            }
+            let Some(stored_path) = item.stored_path.as_deref() else {
+                continue;
+            };
+            match std::fs::remove_file(stored_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(AppError::Io(error)),
+            }
         }
 
-        self.connection.execute(
-            "DELETE FROM material_items WHERE id = ?1",
-            params![material_id],
-        )?;
-        self.connection.execute(
-            "DELETE FROM material_reading_states WHERE material_id = ?1",
-            params![material_id],
-        )?;
+        for item in &subtree {
+            self.connection
+                .execute("DELETE FROM material_items WHERE id = ?1", params![item.id])?;
+            self.connection.execute(
+                "DELETE FROM material_reading_states WHERE material_id = ?1",
+                params![item.id],
+            )?;
+        }
 
         Ok(())
     }
@@ -278,19 +405,34 @@ impl LearningContentRepository {
             return Err(AppError::MaterialNotFound);
         };
         let requested_name = validate_material_file_name(name)?;
-        let source_path = PathBuf::from(&material.stored_path);
+        let display_name = self.next_sibling_material_name(
+            &material.learning_content_id,
+            material.parent_id.as_deref(),
+            requested_name,
+            Some(&material.id),
+        )?;
+
+        // 文件夹无磁盘实体，纯 DB 改名
+        if material.kind == MaterialKind::Folder {
+            let now = Utc::now().to_rfc3339();
+            self.connection.execute(
+                "UPDATE material_items SET name = ?1, updated_at = ?2 WHERE id = ?3",
+                params![display_name, now, material.id],
+            )?;
+            return Ok(MaterialItem {
+                name: display_name,
+                updated_at: now,
+                ..material
+            });
+        }
+
+        let Some(stored_path) = material.stored_path.as_deref() else {
+            return Err(AppError::MaterialNotFound);
+        };
+        let source_path = PathBuf::from(stored_path);
         let Some(parent_dir) = source_path.parent() else {
             return Err(AppError::MaterialNotFound);
         };
-        let existing_names = self
-            .list_materials(&material.learning_content_id)?
-            .into_iter()
-            .filter(|current| current.id != material.id)
-            .map(|current| current.name)
-            .collect::<Vec<_>>();
-        let display_name = next_duplicate_name(requested_name, |candidate| {
-            existing_names.iter().any(|existing| existing == candidate)
-        });
         let target_path = next_available_path(parent_dir, &display_name);
         if source_path != target_path {
             std::fs::rename(&source_path, &target_path)?;
@@ -320,7 +462,7 @@ impl LearningContentRepository {
 
         Ok(MaterialItem {
             name: display_name,
-            stored_path: target_path.to_string_lossy().to_string(),
+            stored_path: Some(target_path.to_string_lossy().to_string()),
             size_bytes: metadata.len() as i64,
             updated_at: now,
             ..material
@@ -415,12 +557,23 @@ impl LearningContentRepository {
             return Err(AppError::MaterialNotFound);
         };
 
-        let mime_type = resolve_preview_mime(material.mime_type.as_deref(), &material.stored_path);
+        let Some(stored_path) = material.stored_path.clone() else {
+            // 文件夹等无磁盘实体的行没有可预览内容
+            return Ok(MaterialPreview {
+                material_id: material.id,
+                kind: MaterialPreviewKind::Unsupported,
+                mime_type: None,
+                text: None,
+                data_url: None,
+                encoding: None,
+            });
+        };
+        let mime_type = resolve_preview_mime(material.mime_type.as_deref(), &stored_path);
         let kind = preview_kind(mime_type.as_deref());
 
         match kind {
             MaterialPreviewKind::Text => {
-                let bytes = std::fs::read(&material.stored_path)?;
+                let bytes = std::fs::read(&stored_path)?;
                 let (text, encoding) = decode_text(&bytes);
                 Ok(MaterialPreview {
                     material_id: material.id,
@@ -432,7 +585,7 @@ impl LearningContentRepository {
                 })
             }
             MaterialPreviewKind::Image | MaterialPreviewKind::Pdf => {
-                let bytes = std::fs::read(&material.stored_path)?;
+                let bytes = std::fs::read(&stored_path)?;
                 let mime = mime_type
                     .clone()
                     .unwrap_or_else(|| "application/octet-stream".to_string());
@@ -516,11 +669,16 @@ impl LearningContentRepository {
         material_library_dir: impl AsRef<Path>,
     ) -> Result<MaterialLibraryStats, AppError> {
         let materials = self.list_all_materials()?;
-        let referenced_paths = materials
+        // folder 行没有磁盘实体，统计只看文件行
+        let file_materials = materials
             .iter()
-            .map(|material| PathBuf::from(&material.stored_path))
+            .filter(|material| material.kind == MaterialKind::File)
             .collect::<Vec<_>>();
-        let referenced_bytes = materials
+        let referenced_paths = file_materials
+            .iter()
+            .filter_map(|material| material.stored_path.as_deref().map(PathBuf::from))
+            .collect::<Vec<_>>();
+        let referenced_bytes = file_materials
             .iter()
             .map(|material| material.size_bytes)
             .sum::<i64>();
@@ -540,7 +698,7 @@ impl LearningContentRepository {
         let library_scan = scan_material_library(material_library_dir.as_ref(), &referenced_paths)?;
 
         Ok(MaterialLibraryStats {
-            material_count: materials.len() as i64,
+            material_count: file_materials.len() as i64,
             referenced_bytes,
             actual_referenced_bytes,
             library_bytes: library_scan.library_bytes,
@@ -559,7 +717,8 @@ impl LearningContentRepository {
         let materials = self.list_all_materials()?;
         let referenced_paths = materials
             .iter()
-            .map(|material| PathBuf::from(&material.stored_path))
+            .filter(|material| material.kind == MaterialKind::File)
+            .filter_map(|material| material.stored_path.as_deref().map(PathBuf::from))
             .collect::<Vec<_>>();
         let library_scan = scan_material_library(material_library_dir, &referenced_paths)?;
         let mut deleted_orphan_file_count = 0;
@@ -582,17 +741,20 @@ impl LearningContentRepository {
         let orphan_materials = self.list_orphan_materials()?;
         let mut deleted_orphan_database_record_count = 0;
         for material in orphan_materials {
-            let stored_path = PathBuf::from(&material.stored_path);
-            if is_path_inside_directory(&stored_path, material_library_dir)? {
-                if let Ok(metadata) = std::fs::metadata(&stored_path) {
-                    let size = metadata.len() as i64;
-                    match std::fs::remove_file(&stored_path) {
-                        Ok(()) => {
-                            deleted_orphan_file_count += 1;
-                            deleted_bytes += size;
+            // 孤儿 folder 行没有磁盘实体，只删记录
+            if let Some(stored_path) = material.stored_path.as_deref() {
+                let stored_path = PathBuf::from(stored_path);
+                if is_path_inside_directory(&stored_path, material_library_dir)? {
+                    if let Ok(metadata) = std::fs::metadata(&stored_path) {
+                        let size = metadata.len() as i64;
+                        match std::fs::remove_file(&stored_path) {
+                            Ok(()) => {
+                                deleted_orphan_file_count += 1;
+                                deleted_bytes += size;
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(_) => failed_paths.push(stored_path.to_string_lossy().to_string()),
                         }
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(_) => failed_paths.push(stored_path.to_string_lossy().to_string()),
                     }
                 }
             }
@@ -666,25 +828,14 @@ impl LearningContentRepository {
 
     fn list_materials(&self, learning_content_id: &str) -> Result<Vec<MaterialItem>, AppError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, learning_content_id, name, original_path, stored_path, mime_type, size_bytes, created_at, updated_at
+            "SELECT id, learning_content_id, parent_id, kind, name, original_path, stored_path,
+                    mime_type, size_bytes, created_at, updated_at
              FROM material_items
              WHERE learning_content_id = ?1
              ORDER BY created_at ASC",
         )?;
 
-        let rows = statement.query_map(params![learning_content_id], |row| {
-            Ok(MaterialItem {
-                id: row.get(0)?,
-                learning_content_id: row.get(1)?,
-                name: row.get(2)?,
-                original_path: row.get(3)?,
-                stored_path: row.get(4)?,
-                mime_type: row.get(5)?,
-                size_bytes: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-            })
-        })?;
+        let rows = statement.query_map(params![learning_content_id], material_item_from_row)?;
 
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
     }
@@ -692,23 +843,12 @@ impl LearningContentRepository {
     fn get_material(&self, material_id: &str) -> Result<Option<MaterialItem>, AppError> {
         self.connection
             .query_row(
-                "SELECT id, learning_content_id, name, original_path, stored_path, mime_type, size_bytes, created_at, updated_at
+                "SELECT id, learning_content_id, parent_id, kind, name, original_path, stored_path,
+                        mime_type, size_bytes, created_at, updated_at
                  FROM material_items
                  WHERE id = ?1",
                 params![material_id],
-                |row| {
-                    Ok(MaterialItem {
-                        id: row.get(0)?,
-                        learning_content_id: row.get(1)?,
-                        name: row.get(2)?,
-                        original_path: row.get(3)?,
-                        stored_path: row.get(4)?,
-                        mime_type: row.get(5)?,
-                        size_bytes: row.get(6)?,
-                        created_at: row.get(7)?,
-                        updated_at: row.get(8)?,
-                    })
-                },
+                material_item_from_row,
             )
             .optional()
             .map_err(AppError::from)
@@ -716,31 +856,21 @@ impl LearningContentRepository {
 
     fn list_all_materials(&self) -> Result<Vec<MaterialItem>, AppError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, learning_content_id, name, original_path, stored_path, mime_type, size_bytes, created_at, updated_at
+            "SELECT id, learning_content_id, parent_id, kind, name, original_path, stored_path,
+                    mime_type, size_bytes, created_at, updated_at
              FROM material_items
              ORDER BY created_at ASC",
         )?;
 
-        let rows = statement.query_map([], |row| {
-            Ok(MaterialItem {
-                id: row.get(0)?,
-                learning_content_id: row.get(1)?,
-                name: row.get(2)?,
-                original_path: row.get(3)?,
-                stored_path: row.get(4)?,
-                mime_type: row.get(5)?,
-                size_bytes: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-            })
-        })?;
+        let rows = statement.query_map([], material_item_from_row)?;
 
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
     }
 
     fn list_orphan_materials(&self) -> Result<Vec<MaterialItem>, AppError> {
         let mut statement = self.connection.prepare(
-            "SELECT material_items.id, material_items.learning_content_id, material_items.name, material_items.original_path,
+            "SELECT material_items.id, material_items.learning_content_id, material_items.parent_id,
+                    material_items.kind, material_items.name, material_items.original_path,
                     material_items.stored_path, material_items.mime_type, material_items.size_bytes,
                     material_items.created_at, material_items.updated_at
              FROM material_items
@@ -748,19 +878,7 @@ impl LearningContentRepository {
              WHERE learning_contents.id IS NULL",
         )?;
 
-        let rows = statement.query_map([], |row| {
-            Ok(MaterialItem {
-                id: row.get(0)?,
-                learning_content_id: row.get(1)?,
-                name: row.get(2)?,
-                original_path: row.get(3)?,
-                stored_path: row.get(4)?,
-                mime_type: row.get(5)?,
-                size_bytes: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-            })
-        })?;
+        let rows = statement.query_map([], material_item_from_row)?;
 
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
     }
@@ -809,20 +927,93 @@ impl LearningContentRepository {
             .map_err(AppError::from)
     }
 
-    fn next_material_name(
+    /// 同级兄弟节点（文件与文件夹同池）范围内判重，重名追加 ` (n)` 后缀。
+    fn next_sibling_material_name(
         &self,
         learning_content_id: &str,
+        parent_id: Option<&str>,
         original_name: &str,
+        exclude_id: Option<&str>,
     ) -> Result<String, AppError> {
-        let existing_names = self
-            .list_materials(learning_content_id)?
-            .into_iter()
-            .map(|material| material.name)
-            .collect::<Vec<_>>();
+        let mut statement = self.connection.prepare(
+            "SELECT name FROM material_items
+             WHERE learning_content_id = ?1 AND parent_id IS ?2 AND id IS NOT ?3",
+        )?;
+        let existing_names = statement
+            .query_map(params![learning_content_id, parent_id, exclude_id], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(next_duplicate_name(original_name, |candidate| {
             existing_names.iter().any(|name| name == candidate)
         }))
+    }
+
+    /// 校验 parent_id（若有）必须存在、是文件夹且属于同一学习内容。
+    fn ensure_folder_in_content(
+        &self,
+        learning_content_id: &str,
+        parent_id: Option<&str>,
+    ) -> Result<(), AppError> {
+        let Some(parent_id) = parent_id else {
+            return Ok(());
+        };
+        let Some(parent) = self.get_material(parent_id)? else {
+            return Err(AppError::FolderNotFound);
+        };
+        if parent.kind != MaterialKind::Folder || parent.learning_content_id != learning_content_id
+        {
+            return Err(AppError::FolderNotFound);
+        }
+        Ok(())
+    }
+
+    fn insert_material_item(&self, material: &MaterialItem) -> Result<(), AppError> {
+        self.connection.execute(
+            "INSERT INTO material_items (
+                id, learning_content_id, parent_id, kind, name,
+                original_path, stored_path, mime_type, size_bytes, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                material.id,
+                material.learning_content_id,
+                material.parent_id,
+                material_kind_to_str(&material.kind),
+                material.name,
+                material.original_path,
+                material.stored_path,
+                material.mime_type,
+                material.size_bytes,
+                material.created_at,
+                material.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 返回以 root 为根的整棵子树（含 root 自身），文件行直接返回单元素。
+    fn collect_material_subtree(&self, root: &MaterialItem) -> Result<Vec<MaterialItem>, AppError> {
+        if root.kind == MaterialKind::File {
+            return Ok(vec![root.clone()]);
+        }
+
+        let all = self.list_materials(&root.learning_content_id)?;
+        let mut subtree = vec![root.clone()];
+        let mut frontier = vec![root.id.clone()];
+        while let Some(current_id) = frontier.pop() {
+            for item in all
+                .iter()
+                .filter(|item| item.parent_id.as_deref() == Some(current_id.as_str()))
+            {
+                if item.kind == MaterialKind::Folder {
+                    frontier.push(item.id.clone());
+                }
+                subtree.push(item.clone());
+            }
+        }
+
+        Ok(subtree)
     }
 
     fn migrate(&self) -> Result<(), AppError> {
@@ -843,9 +1034,11 @@ impl LearningContentRepository {
             CREATE TABLE IF NOT EXISTS material_items (
                 id TEXT PRIMARY KEY,
                 learning_content_id TEXT NOT NULL,
+                parent_id TEXT,
+                kind TEXT NOT NULL DEFAULT 'file',
                 name TEXT NOT NULL,
-                original_path TEXT NOT NULL,
-                stored_path TEXT NOT NULL,
+                original_path TEXT,
+                stored_path TEXT,
                 mime_type TEXT,
                 size_bytes INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -888,8 +1081,86 @@ impl LearningContentRepository {
                 .execute_batch("DROP TABLE IF EXISTS reading_states;")?;
             self.connection.pragma_update(None, "user_version", 3)?;
         }
+        if user_version < 4 {
+            // 旧库 material_items 缺 parent_id/kind 且路径列 NOT NULL，SQLite 不能
+            // ALTER 去掉 NOT NULL，必须单事务表重建；新库建表语句已是新 schema，跳过重建。
+            if !self.material_items_has_column("parent_id")? {
+                self.connection.execute_batch(
+                    "
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE material_items_new (
+                        id TEXT PRIMARY KEY,
+                        learning_content_id TEXT NOT NULL,
+                        parent_id TEXT,
+                        kind TEXT NOT NULL DEFAULT 'file',
+                        name TEXT NOT NULL,
+                        original_path TEXT,
+                        stored_path TEXT,
+                        mime_type TEXT,
+                        size_bytes INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                    INSERT INTO material_items_new (
+                        id, learning_content_id, parent_id, kind, name,
+                        original_path, stored_path, mime_type, size_bytes, created_at, updated_at
+                    )
+                    SELECT id, learning_content_id, NULL, 'file', name,
+                           original_path, stored_path, mime_type, size_bytes, created_at, updated_at
+                    FROM material_items;
+                    DROP TABLE material_items;
+                    ALTER TABLE material_items_new RENAME TO material_items;
+                    COMMIT;
+                    ",
+                )?;
+            }
+            self.connection.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_material_items_scope
+                 ON material_items(learning_content_id, parent_id);",
+            )?;
+            self.connection.pragma_update(None, "user_version", 4)?;
+        }
 
         Ok(())
+    }
+
+    fn material_items_has_column(&self, column: &str) -> Result<bool, AppError> {
+        let count: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('material_items') WHERE name = ?1",
+            params![column],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+}
+
+fn material_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MaterialItem> {
+    Ok(MaterialItem {
+        id: row.get(0)?,
+        learning_content_id: row.get(1)?,
+        parent_id: row.get(2)?,
+        kind: material_kind_from_str(row.get::<_, String>(3)?.as_str()),
+        name: row.get(4)?,
+        original_path: row.get(5)?,
+        stored_path: row.get(6)?,
+        mime_type: row.get(7)?,
+        size_bytes: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+fn material_kind_to_str(kind: &MaterialKind) -> &'static str {
+    match kind {
+        MaterialKind::File => "file",
+        MaterialKind::Folder => "folder",
+    }
+}
+
+fn material_kind_from_str(value: &str) -> MaterialKind {
+    match value {
+        "folder" => MaterialKind::Folder,
+        _ => MaterialKind::File,
     }
 }
 
@@ -1263,7 +1534,12 @@ mod tests {
             .expect("create learning content");
 
         let material = repository
-            .import_material_file(&learning_content.id, &source_file, &material_library_dir)
+            .import_material_file(
+                &learning_content.id,
+                &source_file,
+                &material_library_dir,
+                None,
+            )
             .expect("import material");
         let note = repository
             .create_note(
@@ -1285,7 +1561,13 @@ mod tests {
         assert_eq!(detail.materials.len(), 1);
         assert_eq!(detail.materials[0].id, material.id);
         assert_eq!(detail.materials[0].name, "source.txt");
-        assert!(std::path::Path::new(&detail.materials[0].stored_path).exists());
+        assert!(std::path::Path::new(
+            detail.materials[0]
+                .stored_path
+                .as_deref()
+                .expect("stored path")
+        )
+        .exists());
         assert_eq!(detail.notes.len(), 1);
         assert_eq!(detail.notes[0].id, note.id);
         assert_eq!(detail.notes[0].title, "第一条笔记");
@@ -1314,16 +1596,29 @@ mod tests {
             .expect("create learning content");
 
         let first = repository
-            .import_material_file(&learning_content.id, &first_source, &material_library_dir)
+            .import_material_file(
+                &learning_content.id,
+                &first_source,
+                &material_library_dir,
+                None,
+            )
             .expect("import first");
         let second = repository
-            .import_material_file(&learning_content.id, &second_source, &material_library_dir)
+            .import_material_file(
+                &learning_content.id,
+                &second_source,
+                &material_library_dir,
+                None,
+            )
             .expect("import second");
 
         assert_eq!(first.name, "资料.txt");
         assert_eq!(second.name, "资料 (1).txt");
         assert_ne!(first.stored_path, second.stored_path);
-        assert!(std::path::Path::new(&second.stored_path).exists());
+        assert!(
+            std::path::Path::new(second.stored_path.as_deref().expect("second stored path"))
+                .exists()
+        );
     }
 
     #[test]
@@ -1343,9 +1638,14 @@ mod tests {
             })
             .expect("create learning content");
         let material = repository
-            .import_material_file(&learning_content.id, &source_file, &material_library_dir)
+            .import_material_file(
+                &learning_content.id,
+                &source_file,
+                &material_library_dir,
+                None,
+            )
             .expect("import material");
-        let stored_path = material.stored_path.clone();
+        let stored_path = material.stored_path.clone().expect("stored path");
         repository
             .save_material_reading_state(&material.id, 2, 1.4)
             .expect("save material reading state");
@@ -1398,7 +1698,12 @@ mod tests {
             })
             .expect("create learning content");
         let material = repository
-            .import_material_file(&learning_content.id, &source_file, &material_library_dir)
+            .import_material_file(
+                &learning_content.id,
+                &source_file,
+                &material_library_dir,
+                None,
+            )
             .expect("import material");
 
         let preview = repository
@@ -1429,10 +1734,15 @@ mod tests {
             })
             .expect("create learning content");
         let image = repository
-            .import_material_file(&learning_content.id, &image_file, &material_library_dir)
+            .import_material_file(
+                &learning_content.id,
+                &image_file,
+                &material_library_dir,
+                None,
+            )
             .expect("import image");
         let pdf = repository
-            .import_material_file(&learning_content.id, &pdf_file, &material_library_dir)
+            .import_material_file(&learning_content.id, &pdf_file, &material_library_dir, None)
             .expect("import pdf");
 
         let image_preview = repository
@@ -1590,6 +1900,120 @@ mod tests {
     }
 
     #[test]
+    fn migrates_v3_database_to_v4_tree_model_keeping_materials_at_root() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let database_path = temp_dir.path().join("studyseq.sqlite");
+        {
+            let connection = rusqlite::Connection::open(&database_path).expect("open raw db");
+            connection
+                .execute_batch(
+                    "
+                    CREATE TABLE learning_contents (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        deadline TEXT,
+                        estimated_hours REAL DEFAULT 0,
+                        progress INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        last_opened_at TEXT
+                    );
+
+                    CREATE TABLE material_items (
+                        id TEXT PRIMARY KEY,
+                        learning_content_id TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        original_path TEXT NOT NULL,
+                        stored_path TEXT NOT NULL,
+                        mime_type TEXT,
+                        size_bytes INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE notes (
+                        id TEXT PRIMARY KEY,
+                        learning_content_id TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        body TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE material_reading_states (
+                        material_id TEXT PRIMARY KEY,
+                        page_number INTEGER NOT NULL DEFAULT 1,
+                        scale REAL NOT NULL DEFAULT 1.0,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    INSERT INTO learning_contents (id, name, status, created_at, updated_at)
+                    VALUES ('lc-1', '旧库内容', 'planned', '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z');
+
+                    INSERT INTO material_items (
+                        id, learning_content_id, name, original_path, stored_path, mime_type, size_bytes, created_at, updated_at
+                    ) VALUES (
+                        'mat-1', 'lc-1', '旧资料.pdf', 'D:\\src\\旧资料.pdf', 'C:\\lib\\旧资料.pdf', 'application/pdf', 9,
+                        '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z'
+                    );
+
+                    PRAGMA user_version = 3;
+                    ",
+                )
+                .expect("create v3 schema with data");
+        }
+
+        let repository = LearningContentRepository::open(&database_path).expect("migrate to v4");
+
+        let user_version: i64 = repository
+            .connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("read user version");
+        let materials = repository.list_materials("lc-1").expect("list materials");
+
+        assert_eq!(user_version, 4);
+        assert_eq!(materials.len(), 1);
+        assert_eq!(materials[0].id, "mat-1");
+        assert_eq!(materials[0].name, "旧资料.pdf");
+        assert_eq!(materials[0].parent_id, None);
+        assert_eq!(materials[0].kind, crate::models::MaterialKind::File);
+        assert_eq!(
+            materials[0].stored_path.as_deref(),
+            Some("C:\\lib\\旧资料.pdf")
+        );
+        assert_eq!(
+            materials[0].original_path.as_deref(),
+            Some("D:\\src\\旧资料.pdf")
+        );
+        assert_eq!(materials[0].mime_type.as_deref(), Some("application/pdf"));
+        assert_eq!(materials[0].size_bytes, 9);
+    }
+
+    #[test]
+    fn fresh_database_initializes_v4_tree_schema() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+
+        let user_version: i64 = repository
+            .connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("read user version");
+        let parent_id_column_count: i64 = repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('material_items') WHERE name = 'parent_id'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check parent_id column");
+
+        assert_eq!(user_version, 4);
+        assert_eq!(parent_id_column_count, 1);
+    }
+
+    #[test]
     fn material_library_stats_counts_references_missing_files_and_orphans() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
@@ -1608,12 +2032,28 @@ mod tests {
             })
             .expect("create learning content");
         let first_material = repository
-            .import_material_file(&learning_content.id, &first_source, &material_library_dir)
+            .import_material_file(
+                &learning_content.id,
+                &first_source,
+                &material_library_dir,
+                None,
+            )
             .expect("import first");
         let second_material = repository
-            .import_material_file(&learning_content.id, &second_source, &material_library_dir)
+            .import_material_file(
+                &learning_content.id,
+                &second_source,
+                &material_library_dir,
+                None,
+            )
             .expect("import second");
-        std::fs::remove_file(&second_material.stored_path).expect("remove referenced file");
+        std::fs::remove_file(
+            second_material
+                .stored_path
+                .as_deref()
+                .expect("second stored path"),
+        )
+        .expect("remove referenced file");
         let orphan_path = material_library_dir
             .join(&learning_content.id)
             .join("orphan.tmp");
@@ -1704,26 +2144,49 @@ mod tests {
             })
             .expect("create learning content");
         let first_material = repository
-            .import_material_file(&learning_content.id, &first_source, &material_library_dir)
+            .import_material_file(
+                &learning_content.id,
+                &first_source,
+                &material_library_dir,
+                None,
+            )
             .expect("import first");
         let second_material = repository
-            .import_material_file(&learning_content.id, &second_source, &material_library_dir)
+            .import_material_file(
+                &learning_content.id,
+                &second_source,
+                &material_library_dir,
+                None,
+            )
             .expect("import second");
 
         let renamed = repository
             .rename_material_item(&second_material.id, "资料.txt")
             .expect("rename material");
 
+        let renamed_stored_path = renamed.stored_path.as_deref().expect("renamed stored path");
         assert_eq!(renamed.name, "资料.txt");
-        assert!(renamed.stored_path.ends_with("资料.txt"));
-        assert!(std::path::Path::new(&renamed.stored_path).exists());
-        assert!(!std::path::Path::new(&second_material.stored_path).exists());
+        assert!(renamed_stored_path.ends_with("资料.txt"));
+        assert!(std::path::Path::new(renamed_stored_path).exists());
+        assert!(!std::path::Path::new(
+            second_material
+                .stored_path
+                .as_deref()
+                .expect("second stored path")
+        )
+        .exists());
 
         let renamed_again = repository
             .rename_material_item(&renamed.id, &first_material.name)
             .expect("rename duplicate material");
         assert_eq!(renamed_again.name, "first (1).txt");
-        assert!(std::path::Path::new(&renamed_again.stored_path).exists());
+        assert!(std::path::Path::new(
+            renamed_again
+                .stored_path
+                .as_deref()
+                .expect("renamed again stored path")
+        )
+        .exists());
 
         let preview = repository
             .preview_material_file(&renamed_again.id)
@@ -1751,10 +2214,20 @@ mod tests {
             .expect("create learning content");
 
         let mp4 = repository
-            .import_material_file(&learning_content.id, &mp4_source, &material_library_dir)
+            .import_material_file(
+                &learning_content.id,
+                &mp4_source,
+                &material_library_dir,
+                None,
+            )
             .expect("import mp4");
         let webm = repository
-            .import_material_file(&learning_content.id, &webm_source, &material_library_dir)
+            .import_material_file(
+                &learning_content.id,
+                &webm_source,
+                &material_library_dir,
+                None,
+            )
             .expect("import webm");
 
         assert_eq!(mp4.mime_type.as_deref(), Some("video/mp4"));
@@ -1778,10 +2251,16 @@ mod tests {
             })
             .expect("create learning content");
         let material = repository
-            .import_material_file(&learning_content.id, &mp4_source, &material_library_dir)
+            .import_material_file(
+                &learning_content.id,
+                &mp4_source,
+                &material_library_dir,
+                None,
+            )
             .expect("import mp4");
         // 删除磁盘副本来证明视频预览不读文件字节：流式播放由前端走 asset 协议
-        std::fs::remove_file(&material.stored_path).expect("remove stored copy");
+        std::fs::remove_file(material.stored_path.as_deref().expect("stored path"))
+            .expect("remove stored copy");
 
         let preview = repository
             .preview_material_file(&material.id)
@@ -1811,9 +2290,15 @@ mod tests {
             })
             .expect("create learning content");
         let material = repository
-            .import_material_file(&learning_content.id, &mkv_source, &material_library_dir)
+            .import_material_file(
+                &learning_content.id,
+                &mkv_source,
+                &material_library_dir,
+                None,
+            )
             .expect("import mkv");
-        std::fs::remove_file(&material.stored_path).expect("remove stored copy");
+        std::fs::remove_file(material.stored_path.as_deref().expect("stored path"))
+            .expect("remove stored copy");
 
         let preview = repository
             .preview_material_file(&material.id)
@@ -1829,6 +2314,431 @@ mod tests {
             .expect("mkv mime")
             .starts_with("video/"));
         assert!(preview.data_url.is_none());
+    }
+
+    fn create_content(repository: &LearningContentRepository, name: &str) -> LearningContent {
+        repository
+            .create(CreateLearningContentInput {
+                name: name.to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content")
+    }
+
+    fn write_source(temp_dir: &tempfile::TempDir, name: &str) -> PathBuf {
+        let path = temp_dir.path().join(name);
+        std::fs::write(&path, b"content").expect("write source");
+        path
+    }
+
+    #[test]
+    fn creates_nested_material_folders() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let content = create_content(&repository, "嵌套文件夹");
+
+        let parent = repository
+            .create_material_folder(&content.id, None, "第一章")
+            .expect("create parent folder");
+        let child = repository
+            .create_material_folder(&content.id, Some(&parent.id), "习题")
+            .expect("create child folder");
+
+        assert_eq!(parent.kind, MaterialKind::Folder);
+        assert_eq!(parent.parent_id, None);
+        assert_eq!(parent.stored_path, None);
+        assert_eq!(child.parent_id.as_deref(), Some(parent.id.as_str()));
+
+        let error = repository
+            .create_material_folder(&content.id, Some("missing-folder"), "无效")
+            .expect_err("missing parent should fail");
+        assert!(matches!(error, AppError::FolderNotFound));
+    }
+
+    #[test]
+    fn sibling_names_share_one_pool_and_different_folders_allow_same_name() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let content = create_content(&repository, "同名规则");
+        let source = write_source(&temp_dir, "资料");
+
+        let folder = repository
+            .create_material_folder(&content.id, None, "资料")
+            .expect("create folder");
+        // 同级文件与文件夹同池判重：导入同名文件应追加后缀
+        let file = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import file");
+        // 不同父级允许同名
+        let nested_folder = repository
+            .create_material_folder(&content.id, Some(&folder.id), "资料")
+            .expect("create nested same-name folder");
+        let sibling_folder = repository
+            .create_material_folder(&content.id, None, "资料")
+            .expect("create same-name sibling folder");
+
+        assert_eq!(folder.name, "资料");
+        assert_eq!(file.name, "资料 (1)");
+        assert_eq!(nested_folder.name, "资料");
+        assert_eq!(sibling_folder.name, "资料 (2)");
+    }
+
+    #[test]
+    fn imports_material_into_folder_and_deduplicates_within_folder() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let content = create_content(&repository, "文件夹导入");
+        let first_source = write_source(&temp_dir, "讲义.txt");
+        let second_source = temp_dir.path().join("nested").join("讲义.txt");
+        std::fs::create_dir_all(second_source.parent().expect("parent")).expect("nested dir");
+        std::fs::write(&second_source, b"second").expect("write second");
+
+        let folder = repository
+            .create_material_folder(&content.id, None, "第一章")
+            .expect("create folder");
+        let first = repository
+            .import_material_file(
+                &content.id,
+                &first_source,
+                &material_library_dir,
+                Some(&folder.id),
+            )
+            .expect("import into folder");
+        let second = repository
+            .import_material_file(
+                &content.id,
+                &second_source,
+                &material_library_dir,
+                Some(&folder.id),
+            )
+            .expect("import duplicate into folder");
+
+        assert_eq!(first.parent_id.as_deref(), Some(folder.id.as_str()));
+        assert_eq!(first.name, "讲义.txt");
+        assert_eq!(second.name, "讲义 (1).txt");
+
+        // 导入目标必须是同一学习内容下的文件夹
+        let other_content = create_content(&repository, "另一个内容");
+        let error = repository
+            .import_material_file(
+                &other_content.id,
+                &first_source,
+                &material_library_dir,
+                Some(&folder.id),
+            )
+            .expect_err("cross content folder should fail");
+        assert!(matches!(error, AppError::FolderNotFound));
+    }
+
+    #[test]
+    fn moves_material_between_root_and_folder_with_dedup() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let content = create_content(&repository, "移动资料");
+        let source = write_source(&temp_dir, "笔记.txt");
+        let duplicate_source = temp_dir.path().join("nested").join("笔记.txt");
+        std::fs::create_dir_all(duplicate_source.parent().expect("parent")).expect("nested dir");
+        std::fs::write(&duplicate_source, b"dup").expect("write dup");
+
+        let folder = repository
+            .create_material_folder(&content.id, None, "第一章")
+            .expect("create folder");
+        let file = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import at root");
+        let occupied = repository
+            .import_material_file(
+                &content.id,
+                &duplicate_source,
+                &material_library_dir,
+                Some(&folder.id),
+            )
+            .expect("import duplicate inside folder");
+
+        let moved = repository
+            .move_material_item(&file.id, Some(&folder.id))
+            .expect("move into folder");
+        assert_eq!(moved.parent_id.as_deref(), Some(folder.id.as_str()));
+        // 目标内已有同名文件，移动后追加后缀
+        assert_eq!(occupied.name, "笔记.txt");
+        assert_eq!(moved.name, "笔记 (1).txt");
+
+        let moved_back = repository
+            .move_material_item(&moved.id, None)
+            .expect("move back to root");
+        assert_eq!(moved_back.parent_id, None);
+    }
+
+    #[test]
+    fn move_rejects_invalid_targets() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let content = create_content(&repository, "移动校验");
+        let other_content = create_content(&repository, "另一个内容");
+        let source = write_source(&temp_dir, "文件.txt");
+
+        let outer = repository
+            .create_material_folder(&content.id, None, "外层")
+            .expect("create outer");
+        let inner = repository
+            .create_material_folder(&content.id, Some(&outer.id), "内层")
+            .expect("create inner");
+        let file = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import file");
+        let other_folder = repository
+            .create_material_folder(&other_content.id, None, "他处")
+            .expect("create other folder");
+
+        // 文件夹不能移入自身
+        assert!(matches!(
+            repository
+                .move_material_item(&outer.id, Some(&outer.id))
+                .expect_err("move into self"),
+            AppError::InvalidMoveTarget
+        ));
+        // 文件夹不能移入其后代
+        assert!(matches!(
+            repository
+                .move_material_item(&outer.id, Some(&inner.id))
+                .expect_err("move into descendant"),
+            AppError::InvalidMoveTarget
+        ));
+        // 不能跨学习内容移动
+        assert!(matches!(
+            repository
+                .move_material_item(&file.id, Some(&other_folder.id))
+                .expect_err("move across contents"),
+            AppError::InvalidMoveTarget
+        ));
+        // 目标必须是文件夹
+        assert!(matches!(
+            repository
+                .move_material_item(&outer.id, Some(&file.id))
+                .expect_err("move into file"),
+            AppError::InvalidMoveTarget
+        ));
+        // 目标不存在
+        assert!(matches!(
+            repository
+                .move_material_item(&file.id, Some("missing"))
+                .expect_err("move into missing"),
+            AppError::FolderNotFound
+        ));
+    }
+
+    #[test]
+    fn deletes_folder_recursively_cleaning_disk_records_and_reading_states() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let content = create_content(&repository, "递归删除");
+        let outer_source = write_source(&temp_dir, "外层文件.pdf");
+        let inner_source = write_source(&temp_dir, "内层文件.txt");
+        let root_source = write_source(&temp_dir, "根文件.txt");
+
+        let outer = repository
+            .create_material_folder(&content.id, None, "外层")
+            .expect("create outer");
+        let inner = repository
+            .create_material_folder(&content.id, Some(&outer.id), "内层")
+            .expect("create inner");
+        let outer_file = repository
+            .import_material_file(
+                &content.id,
+                &outer_source,
+                &material_library_dir,
+                Some(&outer.id),
+            )
+            .expect("import outer file");
+        let inner_file = repository
+            .import_material_file(
+                &content.id,
+                &inner_source,
+                &material_library_dir,
+                Some(&inner.id),
+            )
+            .expect("import inner file");
+        let root_file = repository
+            .import_material_file(&content.id, &root_source, &material_library_dir, None)
+            .expect("import root file");
+        repository
+            .save_material_reading_state(&outer_file.id, 3, 1.2)
+            .expect("save reading state");
+
+        let count = repository
+            .count_material_subtree(&outer.id)
+            .expect("count subtree");
+        assert_eq!(count.file_count, 2);
+        assert_eq!(count.folder_count, 1);
+
+        repository
+            .delete_material_item(&outer.id)
+            .expect("delete folder recursively");
+
+        let materials = repository.list_materials(&content.id).expect("list");
+        assert_eq!(materials.len(), 1);
+        assert_eq!(materials[0].id, root_file.id);
+        assert!(
+            !std::path::Path::new(outer_file.stored_path.as_deref().expect("outer stored"))
+                .exists()
+        );
+        assert!(
+            !std::path::Path::new(inner_file.stored_path.as_deref().expect("inner stored"))
+                .exists()
+        );
+        assert_eq!(
+            repository
+                .debug_count_material_reading_states()
+                .expect("count reading states"),
+            0
+        );
+        // 用户原始来源文件不受影响
+        assert!(outer_source.exists());
+        assert!(inner_source.exists());
+    }
+
+    #[test]
+    fn delete_learning_content_with_nested_folders_leaves_no_residue() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let content = create_content(&repository, "级联删除含文件夹");
+        let source = write_source(&temp_dir, "文件.txt");
+
+        let outer = repository
+            .create_material_folder(&content.id, None, "外层")
+            .expect("create outer");
+        let inner = repository
+            .create_material_folder(&content.id, Some(&outer.id), "内层")
+            .expect("create inner");
+        let file = repository
+            .import_material_file(&content.id, &source, &material_library_dir, Some(&inner.id))
+            .expect("import file");
+        repository
+            .save_material_reading_state(&file.id, 2, 1.0)
+            .expect("save reading state");
+
+        repository
+            .delete_learning_content(&content.id)
+            .expect("delete learning content with folders");
+
+        assert_eq!(
+            repository.debug_count_materials().expect("count materials"),
+            0
+        );
+        assert_eq!(
+            repository
+                .debug_count_material_reading_states()
+                .expect("count reading states"),
+            0
+        );
+        assert!(!std::path::Path::new(file.stored_path.as_deref().expect("stored")).exists());
+        assert!(source.exists());
+    }
+
+    #[test]
+    fn stats_count_files_inside_folders_and_ignore_folder_rows() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let content = create_content(&repository, "文件夹统计");
+        let source = write_source(&temp_dir, "文件.txt");
+
+        let folder = repository
+            .create_material_folder(&content.id, None, "第一章")
+            .expect("create folder");
+        let file = repository
+            .import_material_file(
+                &content.id,
+                &source,
+                &material_library_dir,
+                Some(&folder.id),
+            )
+            .expect("import into folder");
+
+        let stats = repository
+            .get_material_library_stats(&material_library_dir)
+            .expect("get stats");
+
+        // folder 行不计入资料数，也不产生 missing
+        assert_eq!(stats.material_count, 1);
+        assert_eq!(stats.referenced_bytes, file.size_bytes);
+        assert_eq!(stats.missing_file_count, 0);
+        assert_eq!(stats.orphan_file_count, 0);
+    }
+
+    #[test]
+    fn cleanup_removes_orphan_folder_records_without_disk_operations() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        std::fs::create_dir_all(&material_library_dir).expect("create library dir");
+        repository
+            .connection
+            .execute(
+                "INSERT INTO material_items (
+                    id, learning_content_id, parent_id, kind, name,
+                    original_path, stored_path, mime_type, size_bytes, created_at, updated_at
+                ) VALUES (?1, ?2, NULL, 'folder', ?3, NULL, NULL, NULL, 0, ?4, ?4)",
+                params![
+                    "orphan-folder",
+                    "deleted-content",
+                    "孤儿文件夹",
+                    "2026-06-10T00:00:00Z",
+                ],
+            )
+            .expect("insert orphan folder row");
+
+        let report = repository
+            .cleanup_material_library(&material_library_dir)
+            .expect("cleanup");
+
+        assert_eq!(report.deleted_orphan_database_record_count, 1);
+        assert_eq!(report.deleted_orphan_file_count, 0);
+        assert_eq!(
+            repository.debug_count_materials().expect("count materials"),
+            0
+        );
+    }
+
+    #[test]
+    fn renames_folder_in_database_only_with_sibling_dedup() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let content = create_content(&repository, "文件夹重命名");
+
+        let first = repository
+            .create_material_folder(&content.id, None, "第一章")
+            .expect("create first");
+        let second = repository
+            .create_material_folder(&content.id, None, "第二章")
+            .expect("create second");
+
+        let renamed = repository
+            .rename_material_item(&second.id, "第一章")
+            .expect("rename folder");
+
+        assert_eq!(renamed.kind, MaterialKind::Folder);
+        assert_eq!(renamed.name, "第一章 (1)");
+        assert_eq!(renamed.stored_path, None);
+        assert_eq!(first.name, "第一章");
     }
 
     #[test]
@@ -1862,7 +2772,12 @@ mod tests {
             })
             .expect("create learning content");
         let material = repository
-            .import_material_file(&learning_content.id, &mp4_source, &material_library_dir)
+            .import_material_file(
+                &learning_content.id,
+                &mp4_source,
+                &material_library_dir,
+                None,
+            )
             .expect("import mp4");
         // 模拟 V1.1 及更早版本导入的存量记录：mime 落库为 application/octet-stream
         repository

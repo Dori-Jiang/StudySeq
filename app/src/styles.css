@@ -1048,6 +1048,14 @@ button:disabled {
   background: #fbfdff;
 }
 
+.video-preview {
+  width: 100%;
+  max-height: 620px;
+  border: 1px solid #edf3fa;
+  border-radius: 8px;
+  background: #0c1420;
+}
+
 .note-form {
   display: grid;
   gap: 12px;

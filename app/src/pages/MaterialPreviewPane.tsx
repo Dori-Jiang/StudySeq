@@ -1,6 +1,7 @@
 import type { MaterialItem, MaterialPreview } from "../shared/types";
 
 import { PdfPreview } from "./pdf/PdfPreview";
+import { UNSUPPORTED_VIDEO_MESSAGE, VideoPreview } from "./VideoPreview";
 
 export function MaterialPreviewPane({
   material,
@@ -38,6 +39,15 @@ export function MaterialPreviewPane({
         onStateChange={onPdfStateChange}
       />
     );
+  }
+
+  if (preview.kind === "video") {
+    return <VideoPreview key={material.id} storedPath={material.storedPath} />;
+  }
+
+  const isUnsupportedVideo = preview.mimeType?.startsWith("video/") ?? false;
+  if (isUnsupportedVideo) {
+    return <p className="empty-state">{UNSUPPORTED_VIDEO_MESSAGE}</p>;
   }
 
   return <p className="empty-state">暂不支持预览这种资料</p>;

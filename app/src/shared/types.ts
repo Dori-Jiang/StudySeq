@@ -92,7 +92,7 @@ export type LearningDetail = {
   notes: Note[];
 };
 
-export type MaterialPreviewKind = "text" | "image" | "pdf" | "unsupported";
+export type MaterialPreviewKind = "text" | "image" | "pdf" | "video" | "unsupported";
 
 export type MaterialPreview = {
   materialId: string;

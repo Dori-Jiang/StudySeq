@@ -3,7 +3,7 @@ import { useState } from "react";
 import type { MaterialItem } from "../../shared/types";
 import { MaterialTile } from "./MaterialTile";
 import { MoveMaterialDialog } from "./MoveMaterialDialog";
-import { buildBreadcrumb, hasAncestorIn, listChildren } from "./materialTree";
+import { buildBreadcrumb, collectSubtreeIds, listChildren } from "./materialTree";
 
 type MaterialExplorerProps = {
   materials: MaterialItem[];
@@ -35,10 +35,14 @@ export function MaterialExplorer({
   );
   const effectiveFolderId = currentFolder ? currentFolder.id : null;
 
-  const pendingIdSet = new Set(pendingDeletedMaterialIds);
-  // 被标记删除的项连同其整棵子树一起从可见列表隐藏
+  // 被标记删除的项连同其整棵子树一起隐藏：一次性求出待删子树合集
+  const pendingSubtreeIds = new Set(
+    pendingDeletedMaterialIds.flatMap((materialId) => [
+      ...collectSubtreeIds(materials, materialId),
+    ]),
+  );
   const visibleChildren = listChildren(materials, effectiveFolderId).filter(
-    (material) => !hasAncestorIn(material, materials, pendingIdSet),
+    (material) => !pendingSubtreeIds.has(material.id),
   );
   const breadcrumb = buildBreadcrumb(materials, effectiveFolderId);
 
@@ -115,6 +119,7 @@ export function MaterialExplorer({
         <MoveMaterialDialog
           material={movingMaterial}
           materials={materials}
+          disabledFolderIds={pendingSubtreeIds}
           onClose={() => setMovingMaterial(null)}
           onMove={(newParentId) => {
             void handleMove(newParentId);

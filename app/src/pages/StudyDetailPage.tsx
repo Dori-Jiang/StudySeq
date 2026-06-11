@@ -145,29 +145,34 @@ export function StudyDetailPage() {
   async function handleImportMaterial(parentId: string | null) {
     if (!studyId) return;
 
-    const selected = await open({
-      multiple: false,
-      directory: false,
-    });
-    if (typeof selected !== "string") return;
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+      });
+      if (typeof selected !== "string") return;
 
-    const imported = await importMaterialFile({
-      learningContentId: studyId,
-      sourcePath: selected,
-      parentId,
-    });
+      const imported = await importMaterialFile({
+        learningContentId: studyId,
+        sourcePath: selected,
+        parentId,
+      });
 
-    setDetail((currentDetail) =>
-      currentDetail
-        ? {
-            ...currentDetail,
-            materials: [...currentDetail.materials, imported],
-          }
-        : currentDetail,
-    );
-    setPendingDeletedMaterialIds((currentIds) =>
-      currentIds.filter((materialId) => materialId !== imported.id),
-    );
+      setDetail((currentDetail) =>
+        currentDetail
+          ? {
+              ...currentDetail,
+              materials: [...currentDetail.materials, imported],
+            }
+          : currentDetail,
+      );
+      setPendingDeletedMaterialIds((currentIds) =>
+        currentIds.filter((materialId) => materialId !== imported.id),
+      );
+      setError(null);
+    } catch (importError: unknown) {
+      setError(toMessage(importError));
+    }
   }
 
   async function handleCreateFolder(parentId: string | null) {
@@ -359,7 +364,18 @@ export function StudyDetailPage() {
   async function handleSaveMaterialDeletes() {
     if (!detail || pendingDeletedMaterialIds.length === 0) return;
 
-    const idsToDelete = [...pendingDeletedMaterialIds];
+    // 被其它待删祖先覆盖的项由后端递归删除，不单独发请求，
+    // 避免并行删除竞态导致误报失败和待删标记残留
+    const coveredIds = new Set(
+      pendingDeletedMaterialIds.flatMap((materialId) =>
+        [...collectSubtreeIds(detail.materials, materialId)].filter(
+          (subtreeId) => subtreeId !== materialId,
+        ),
+      ),
+    );
+    const idsToDelete = pendingDeletedMaterialIds.filter(
+      (materialId) => !coveredIds.has(materialId),
+    );
     const deleteResults = await Promise.allSettled(
       idsToDelete.map(async (materialId) => {
         await deleteMaterialItem(materialId);

@@ -797,6 +797,80 @@ describe("StudyDetailPage", () => {
       });
     });
 
+    it("祖先文件夹与其子项同时标记删除时，只对祖先发删除请求且保存后子树移除", async () => {
+      getLearningDetail.mockResolvedValueOnce({
+        ...baseDetail,
+        materials: [folderItem, nestedFile, baseDetail.materials[0]],
+      });
+      countMaterialSubtree.mockResolvedValueOnce({ fileCount: 1, folderCount: 0 });
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      deleteMaterialItem.mockResolvedValue(undefined);
+
+      renderDetailPage();
+      await screen.findByText("第一章");
+
+      // 进入文件夹标记删除子项
+      await userEvent.click(screen.getByRole("button", { name: "打开文件夹：第一章" }));
+      const fileActions = await screen.findByRole("group", { name: "资料操作：章节资料.txt" });
+      await userEvent.click(within(fileActions).getByRole("button", { name: "删除" }));
+      // 返回根目录标记删除祖先文件夹
+      await userEvent.click(screen.getByRole("button", { name: "根目录" }));
+      const folderActions = await screen.findByRole("group", { name: "资料操作：第一章" });
+      await userEvent.click(within(folderActions).getByRole("button", { name: "删除" }));
+
+      await userEvent.click(await screen.findByRole("button", { name: "保存资料删除" }));
+
+      await waitFor(() => {
+        expect(deleteMaterialItem).toHaveBeenCalledTimes(1);
+      });
+      expect(deleteMaterialItem).toHaveBeenCalledWith("folder-1");
+      // 保存成功后子树移除、待删栏消失、无失败提示
+      await waitFor(() => {
+        expect(screen.queryByText(/已标记删除/)).not.toBeInTheDocument();
+      });
+      expect(screen.queryByText("第一章")).not.toBeInTheDocument();
+      expect(screen.queryByText(/删除失败/)).not.toBeInTheDocument();
+      expect(screen.getByText("资料.txt")).toBeInTheDocument();
+    });
+
+    it("移动对话框禁用已标记删除的文件夹目标", async () => {
+      const otherFolder = { ...folderItem, id: "folder-other", name: "他处" };
+      getLearningDetail.mockResolvedValueOnce({
+        ...baseDetail,
+        materials: [folderItem, otherFolder, baseDetail.materials[0]],
+      });
+      countMaterialSubtree.mockResolvedValueOnce({ fileCount: 0, folderCount: 0 });
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+
+      renderDetailPage();
+      await screen.findByText("他处");
+
+      const otherActions = screen.getByRole("group", { name: "资料操作：他处" });
+      await userEvent.click(within(otherActions).getByRole("button", { name: "删除" }));
+      await waitFor(() => {
+        expect(screen.queryByText("他处")).not.toBeInTheDocument();
+      });
+
+      const fileActions = screen.getByRole("group", { name: "资料操作：资料.txt" });
+      await userEvent.click(within(fileActions).getByRole("button", { name: "移动到" }));
+      const moveDialog = await screen.findByRole("dialog");
+
+      expect(within(moveDialog).getByRole("button", { name: "他处" })).toBeDisabled();
+      expect(within(moveDialog).getByRole("button", { name: "第一章" })).toBeEnabled();
+    });
+
+    it("导入资料失败时显示错误信息", async () => {
+      getLearningDetail.mockResolvedValueOnce(baseDetail);
+      open.mockResolvedValueOnce("C:/source/坏文件.txt");
+      importMaterialFile.mockRejectedValueOnce({ message: "资料文件不存在" });
+
+      renderDetailPage();
+      await screen.findByText("资料.txt");
+      await userEvent.click(screen.getByRole("button", { name: "导入资料" }));
+
+      expect(await screen.findByText("资料文件不存在")).toBeInTheDocument();
+    });
+
     it("文件夹标记删除时确认文案含数量，且整棵子树从列表隐藏", async () => {
       getLearningDetail.mockResolvedValueOnce({
         ...baseDetail,

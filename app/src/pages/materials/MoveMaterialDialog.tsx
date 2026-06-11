@@ -4,11 +4,14 @@ import { collectSubtreeIds } from "./materialTree";
 type MoveMaterialDialogProps = {
   material: MaterialItem;
   materials: MaterialItem[];
+  /** 不可作为目标的文件夹（如已标记删除的子树），避免移入后被静默连带删除 */
+  disabledFolderIds: Set<string>;
   onClose: () => void;
   onMove: (newParentId: string | null) => void;
 };
 
 export function MoveMaterialDialog({
+  disabledFolderIds,
   material,
   materials,
   onClose,
@@ -37,7 +40,11 @@ export function MoveMaterialDialog({
             <li key={folder.id}>
               <button
                 type="button"
-                disabled={forbiddenIds.has(folder.id) || material.parentId === folder.id}
+                disabled={
+                  forbiddenIds.has(folder.id) ||
+                  disabledFolderIds.has(folder.id) ||
+                  material.parentId === folder.id
+                }
                 onClick={() => onMove(folder.id)}
               >
                 {folder.name}

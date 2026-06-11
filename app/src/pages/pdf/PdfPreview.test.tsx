@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -77,6 +77,41 @@ describe("PdfPreview 目录接线", () => {
     await user.click(screen.getByRole("button", { name: "目录" }));
 
     expect(await screen.findByText("该 PDF 没有目录")).toBeInTheDocument();
+  });
+
+  it("阅读区变窄时 PDF 页面按适应宽度缩小", async () => {
+    let resizeCallback: ResizeObserverCallback | null = null;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          resizeCallback = callback;
+        }
+
+        observe() {}
+
+        unobserve() {}
+
+        disconnect() {}
+      },
+    );
+    pdfGetOutlineMock.mockResolvedValue(null);
+
+    try {
+      render(<PdfPreview dataUrl={uniqueDataUrl()} />);
+
+      act(() => {
+        resizeCallback?.(
+          [{ contentRect: { width: 456 } } as ResizeObserverEntry],
+          {} as ResizeObserver,
+        );
+      });
+
+      // 456px 阅读区减去页面舞台 56px 内边距 → 页面宽 400px（100% = 适应宽度）
+      expect(screen.getByLabelText("A4 PDF 页面").style.width).toBe("400px");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("再次点击目录按钮收起面板", async () => {

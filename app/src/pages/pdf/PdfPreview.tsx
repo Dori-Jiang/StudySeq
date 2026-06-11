@@ -9,6 +9,7 @@ import {
 import {
   PDF_BASE_HEIGHT,
   PDF_BASE_WIDTH,
+  PDF_MAX_RENDER_SCALE,
   PDF_ZOOM_RENDER_DEBOUNCE_MS,
   PDF_RENDER_SCALE_FACTOR,
   clampPageNumber,
@@ -28,6 +29,11 @@ import type {
 import { PdfOutlinePanel } from "./PdfOutlinePanel";
 import { loadPdfOutline } from "./pdfOutline";
 import type { PdfOutlineNode } from "./pdfOutline";
+
+// 页面舞台左右各 28px 内边距（styles.css 的 .pdf-page-stage）
+const PDF_STAGE_HORIZONTAL_PADDING = 56;
+// 阅读区极窄时保底的页面显示宽度
+const PDF_MIN_FIT_WIDTH = 160;
 
 export function PdfPreview({
   dataUrl,
@@ -57,6 +63,12 @@ export function PdfPreview({
   const lastPrefetchedPageRef = useRef<number | null>(null);
   const [isOutlineOpen, setIsOutlineOpen] = useState(false);
   const [outlineNodes, setOutlineNodes] = useState<PdfOutlineNode[] | null>(null);
+  // 适应宽度基准：100% 缩放时页面铺满阅读区可用宽度；环境不支持测量时退回 A4 固定宽
+  const [fitWidth, setFitWidth] = useState(PDF_BASE_WIDTH);
+
+  const sheetWidth = fitWidth * scale;
+  const sheetHeight = sheetWidth * (PDF_BASE_HEIGHT / PDF_BASE_WIDTH);
+  const displayScale = sheetWidth / PDF_BASE_WIDTH;
 
   useEffect(() => {
     const nextScale = clampScale(initialScale ?? 1);
@@ -158,12 +170,30 @@ export function PdfPreview({
   }, [dataUrl, pageNumber, renderScale]);
 
   useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || typeof ResizeObserver === "undefined") return;
+
+    function applyFitWidth(viewportWidth: number) {
+      if (viewportWidth <= 0) return;
+      setFitWidth(Math.max(viewportWidth - PDF_STAGE_HORIZONTAL_PADDING, PDF_MIN_FIT_WIDTH));
+    }
+
+    applyFitWidth(viewport.clientWidth);
+    const observer = new ResizeObserver((entries) => {
+      applyFitWidth(entries[0]?.contentRect.width ?? viewport.clientWidth);
+    });
+    observer.observe(viewport);
+
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     const timeoutId = window.setTimeout(() => {
-      setRenderScale(scale);
+      setRenderScale(Math.min(displayScale, PDF_MAX_RENDER_SCALE));
     }, PDF_ZOOM_RENDER_DEBOUNCE_MS);
 
     return () => window.clearTimeout(timeoutId);
-  }, [scale]);
+  }, [displayScale]);
 
   useEffect(() => {
     onStateChange?.({ pageNumber, scale });
@@ -276,8 +306,8 @@ export function PdfPreview({
               aria-label="A4 PDF 页面"
               className="pdf-page-sheet"
               style={{
-                width: `${PDF_BASE_WIDTH * scale}px`,
-                height: `${PDF_BASE_HEIGHT * scale}px`,
+                width: `${sheetWidth}px`,
+                height: `${sheetHeight}px`,
               }}
             >
               <canvas className="pdf-preview" ref={canvasRef} aria-label="PDF 预览" />

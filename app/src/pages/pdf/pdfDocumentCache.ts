@@ -3,6 +3,8 @@ export const PDF_BASE_HEIGHT = 1123;
 export const PDF_MIN_SCALE = 0.6;
 export const PDF_MAX_SCALE = 2.4;
 export const PDF_RENDER_SCALE_FACTOR = 1.35;
+// 渲染分辨率上限：避免宽阅读区 × 高倍缩放时离屏 canvas 过大占用内存
+export const PDF_MAX_RENDER_SCALE = 3;
 export const PDF_ZOOM_RENDER_DEBOUNCE_MS = 150;
 const PDF_DOCUMENT_CACHE_LIMIT = 3;
 const PDF_RENDERED_PAGE_CACHE_LIMIT = 6;

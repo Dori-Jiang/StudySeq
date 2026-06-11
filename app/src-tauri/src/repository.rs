@@ -397,6 +397,7 @@ impl LearningContentRepository {
         &self,
         material_id: &str,
         name: &str,
+        material_library_dir: impl AsRef<Path>,
     ) -> Result<MaterialItem, AppError> {
         let Some(material) = self.get_material(material_id)? else {
             return Err(AppError::MaterialNotFound);
@@ -427,6 +428,10 @@ impl LearningContentRepository {
             return Err(AppError::MaterialNotFound);
         };
         let source_path = PathBuf::from(stored_path);
+        // 与删除链路同一标准：来自 DB 的 stored_path 触发文件系统变更前必须确认在资料库目录内
+        if !is_path_inside_directory(&source_path, material_library_dir.as_ref())? {
+            return Err(AppError::MaterialPathOutsideLibrary);
+        }
         let Some(parent_dir) = source_path.parent() else {
             return Err(AppError::MaterialNotFound);
         };
@@ -2194,7 +2199,7 @@ mod tests {
             .expect("import second");
 
         let renamed = repository
-            .rename_material_item(&second_material.id, "资料.txt")
+            .rename_material_item(&second_material.id, "资料.txt", &material_library_dir)
             .expect("rename material");
 
         let renamed_stored_path = renamed.stored_path.as_deref().expect("renamed stored path");
@@ -2210,7 +2215,7 @@ mod tests {
         .exists());
 
         let renamed_again = repository
-            .rename_material_item(&renamed.id, &first_material.name)
+            .rename_material_item(&renamed.id, &first_material.name, &material_library_dir)
             .expect("rename duplicate material");
         assert_eq!(renamed_again.name, "first (1).txt");
         assert!(std::path::Path::new(
@@ -2765,13 +2770,47 @@ mod tests {
             .expect("create second");
 
         let renamed = repository
-            .rename_material_item(&second.id, "第一章")
+            .rename_material_item(&second.id, "第一章", temp_dir.path().join("materials"))
             .expect("rename folder");
 
         assert_eq!(renamed.kind, MaterialKind::Folder);
         assert_eq!(renamed.name, "第一章 (1)");
         assert_eq!(renamed.stored_path, None);
         assert_eq!(first.name, "第一章");
+    }
+
+    #[test]
+    fn rename_refuses_to_touch_files_outside_material_library() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("原始文件.txt");
+        std::fs::write(&source_file, b"user original").expect("write source");
+        let content = create_content(&repository, "重命名越界防护");
+        let material = repository
+            .import_material_file(&content.id, &source_file, &material_library_dir, None)
+            .expect("import material");
+        // 模拟损坏/被篡改的记录：stored_path 指向库外的用户原始文件
+        repository
+            .connection
+            .execute(
+                "UPDATE material_items SET stored_path = ?1 WHERE id = ?2",
+                params![source_file.to_string_lossy().to_string(), material.id],
+            )
+            .expect("corrupt stored path");
+
+        let error = repository
+            .rename_material_item(&material.id, "改名.txt", &material_library_dir)
+            .expect_err("rename outside library should fail");
+
+        assert!(matches!(error, AppError::MaterialPathOutsideLibrary));
+        // 用户原始文件原地未动
+        assert!(source_file.exists());
+        assert_eq!(
+            std::fs::read(&source_file).expect("read source"),
+            b"user original"
+        );
     }
 
     #[test]

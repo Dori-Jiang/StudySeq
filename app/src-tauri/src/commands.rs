@@ -202,8 +202,9 @@ pub fn rename_material_item(
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
+    let material_library_dir = state.material_library_dir.clone();
 
-    rename_material_item_in_repository(&repository, input)
+    rename_material_item_in_repository(&repository, input, &material_library_dir)
 }
 
 #[tauri::command]
@@ -389,9 +390,10 @@ fn cleanup_material_library_in_repository(
 fn rename_material_item_in_repository(
     repository: &LearningContentRepository,
     input: RenameMaterialItemInput,
+    material_library_dir: &std::path::Path,
 ) -> Result<MaterialItem, ApiError> {
     repository
-        .rename_material_item(&input.material_id, &input.name)
+        .rename_material_item(&input.material_id, &input.name, material_library_dir)
         .map_err(ApiError::from)
 }
 
@@ -638,6 +640,7 @@ mod tests {
                 material_id: material.id.clone(),
                 name: "重命名.pdf".to_string(),
             },
+            &material_library_dir,
         )
         .expect("rename material");
         let cleanup = cleanup_material_library_in_repository(&repository, &material_library_dir)

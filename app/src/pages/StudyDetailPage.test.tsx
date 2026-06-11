@@ -49,6 +49,9 @@ const saveMaterialReadingState = vi.mocked(learningContentApi.saveMaterialReadin
 const getMaterialLibraryStats = vi.mocked(learningContentApi.getMaterialLibraryStats);
 const cleanupMaterialLibrary = vi.mocked(learningContentApi.cleanupMaterialLibrary);
 const renameMaterialItem = vi.mocked(learningContentApi.renameMaterialItem);
+const createMaterialFolder = vi.mocked(learningContentApi.createMaterialFolder);
+const moveMaterialItem = vi.mocked(learningContentApi.moveMaterialItem);
+const countMaterialSubtree = vi.mocked(learningContentApi.countMaterialSubtree);
 const open = vi.mocked(dialog.open);
 
 const baseDetail = {
@@ -105,6 +108,9 @@ describe("StudyDetailPage", () => {
     getMaterialLibraryStats.mockReset();
     cleanupMaterialLibrary.mockReset();
     renameMaterialItem.mockReset();
+    createMaterialFolder.mockReset();
+    moveMaterialItem.mockReset();
+    countMaterialSubtree.mockReset();
     pdfGetDocumentMock.mockClear();
     pdfGetPageMock.mockClear();
     pdfRenderMock.mockClear();
@@ -163,6 +169,7 @@ describe("StudyDetailPage", () => {
       expect(importMaterialFile).toHaveBeenCalledWith({
         learningContentId: "study-1",
         sourcePath: "C:/source/资料.txt",
+        parentId: null,
       });
     });
     expect(await screen.findByText("资料.txt")).toBeInTheDocument();
@@ -666,6 +673,155 @@ describe("StudyDetailPage", () => {
       });
     });
     expect(screen.getByText("更新后的笔记")).toBeInTheDocument();
+  });
+
+  describe("资料资源管理器", () => {
+    const folderItem = {
+      ...baseDetail.materials[0],
+      id: "folder-1",
+      kind: "folder" as const,
+      name: "第一章",
+      originalPath: null,
+      storedPath: null,
+      mimeType: null,
+      sizeBytes: 0,
+    };
+    const nestedFile = {
+      ...baseDetail.materials[0],
+      id: "mat-nested",
+      name: "章节资料.txt",
+      parentId: "folder-1",
+    };
+
+    it("大图标平铺渲染当前层，进入文件夹后面包屑可返回根目录", async () => {
+      getLearningDetail.mockResolvedValueOnce({
+        ...baseDetail,
+        materials: [folderItem, nestedFile, baseDetail.materials[0]],
+      });
+
+      renderDetailPage();
+      await screen.findByText("第一章");
+
+      // 根层只显示根级项，文件夹子项不可见
+      expect(screen.getByText("资料.txt")).toBeInTheDocument();
+      expect(screen.queryByText("章节资料.txt")).not.toBeInTheDocument();
+      expect(document.querySelector(".material-tile-grid")).not.toBeNull();
+
+      await userEvent.click(screen.getByRole("button", { name: "打开文件夹：第一章" }));
+      expect(await screen.findByText("章节资料.txt")).toBeInTheDocument();
+      expect(screen.queryByText("资料.txt")).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: "根目录" }));
+      expect(await screen.findByText("资料.txt")).toBeInTheDocument();
+    });
+
+    it("在文件夹内导入资料归属当前文件夹", async () => {
+      getLearningDetail.mockResolvedValueOnce({ ...baseDetail, materials: [folderItem] });
+      open.mockResolvedValueOnce("C:/source/新文件.txt");
+      importMaterialFile.mockResolvedValueOnce({
+        ...nestedFile,
+        id: "mat-new",
+        name: "新文件.txt",
+      });
+
+      renderDetailPage();
+      await screen.findByText("第一章");
+      await userEvent.click(screen.getByRole("button", { name: "打开文件夹：第一章" }));
+      await userEvent.click(screen.getByRole("button", { name: "导入资料" }));
+
+      await waitFor(() => {
+        expect(importMaterialFile).toHaveBeenCalledWith({
+          learningContentId: "study-1",
+          sourcePath: "C:/source/新文件.txt",
+          parentId: "folder-1",
+        });
+      });
+      expect(await screen.findByText("新文件.txt")).toBeInTheDocument();
+    });
+
+    it("新建文件夹调用 API 并显示在当前层", async () => {
+      getLearningDetail.mockResolvedValueOnce(baseDetail);
+      vi.spyOn(window, "prompt").mockReturnValue("新章节");
+      createMaterialFolder.mockResolvedValueOnce({
+        ...folderItem,
+        id: "folder-new",
+        name: "新章节",
+      });
+
+      renderDetailPage();
+      await screen.findByText("资料.txt");
+      await userEvent.click(screen.getByRole("button", { name: "新建文件夹" }));
+
+      await waitFor(() => {
+        expect(createMaterialFolder).toHaveBeenCalledWith({
+          learningContentId: "study-1",
+          parentId: null,
+          name: "新章节",
+        });
+      });
+      expect(await screen.findByText("新章节")).toBeInTheDocument();
+    });
+
+    it("移动对话框禁选自身与后代，选择有效目标后调用移动", async () => {
+      const childFolder = {
+        ...folderItem,
+        id: "folder-child",
+        name: "子文件夹",
+        parentId: "folder-1",
+      };
+      const otherFolder = { ...folderItem, id: "folder-other", name: "他处" };
+      getLearningDetail.mockResolvedValueOnce({
+        ...baseDetail,
+        materials: [folderItem, childFolder, otherFolder],
+      });
+      moveMaterialItem.mockResolvedValueOnce({ ...folderItem, parentId: "folder-other" });
+
+      renderDetailPage();
+      await screen.findByText("第一章");
+      const actions = screen.getByRole("group", { name: "资料操作：第一章" });
+      await userEvent.click(within(actions).getByRole("button", { name: "移动到" }));
+
+      const moveDialog = await screen.findByRole("dialog");
+      expect(within(moveDialog).getByRole("button", { name: "第一章" })).toBeDisabled();
+      expect(within(moveDialog).getByRole("button", { name: "子文件夹" })).toBeDisabled();
+      expect(within(moveDialog).getByRole("button", { name: "根目录" })).toBeDisabled();
+      expect(within(moveDialog).getByRole("button", { name: "他处" })).toBeEnabled();
+
+      await userEvent.click(within(moveDialog).getByRole("button", { name: "他处" }));
+
+      await waitFor(() => {
+        expect(moveMaterialItem).toHaveBeenCalledWith({
+          materialId: "folder-1",
+          newParentId: "folder-other",
+        });
+      });
+    });
+
+    it("文件夹标记删除时确认文案含数量，且整棵子树从列表隐藏", async () => {
+      getLearningDetail.mockResolvedValueOnce({
+        ...baseDetail,
+        materials: [folderItem, nestedFile, baseDetail.materials[0]],
+      });
+      countMaterialSubtree.mockResolvedValueOnce({ fileCount: 1, folderCount: 0 });
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+      renderDetailPage();
+      await screen.findByText("第一章");
+      const actions = screen.getByRole("group", { name: "资料操作：第一章" });
+      await userEvent.click(within(actions).getByRole("button", { name: "删除" }));
+
+      await waitFor(() => {
+        expect(confirmSpy).toHaveBeenCalledWith(
+          expect.stringContaining("1 个文件、0 个子文件夹"),
+        );
+      });
+      expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("不影响原始文件"));
+      await waitFor(() => {
+        expect(screen.queryByText("第一章")).not.toBeInTheDocument();
+      });
+      // 根级文件不受影响
+      expect(screen.getByText("资料.txt")).toBeInTheDocument();
+    });
   });
 });
 

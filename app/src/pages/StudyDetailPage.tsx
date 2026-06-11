@@ -10,6 +10,8 @@ import {
 import { Link, useParams } from "react-router";
 
 import {
+  countMaterialSubtree,
+  createMaterialFolder,
   createNote,
   cleanupMaterialLibrary,
   deleteMaterialItem,
@@ -18,12 +20,18 @@ import {
   getMaterialReadingState,
   getMaterialLibraryStats,
   importMaterialFile,
+  moveMaterialItem,
   previewMaterialFile,
   renameMaterialItem,
   saveMaterialReadingState,
   updateNote,
 } from "../shared/api/learningContentApi";
 import { MaterialPreviewPane } from "./MaterialPreviewPane";
+import { MaterialDeletionBar } from "./materials/MaterialDeletionBar";
+import { MaterialExplorer } from "./materials/MaterialExplorer";
+import { MaterialLibraryStatsPanel } from "./materials/MaterialLibraryStatsPanel";
+import { formatBytes } from "./materials/format";
+import { collectSubtreeIds } from "./materials/materialTree";
 import type {
   LearningDetail,
   MaterialItem,
@@ -134,7 +142,7 @@ export function StudyDetailPage() {
     };
   }, []);
 
-  async function handleImportMaterial() {
+  async function handleImportMaterial(parentId: string | null) {
     if (!studyId) return;
 
     const selected = await open({
@@ -146,6 +154,7 @@ export function StudyDetailPage() {
     const imported = await importMaterialFile({
       learningContentId: studyId,
       sourcePath: selected,
+      parentId,
     });
 
     setDetail((currentDetail) =>
@@ -159,6 +168,59 @@ export function StudyDetailPage() {
     setPendingDeletedMaterialIds((currentIds) =>
       currentIds.filter((materialId) => materialId !== imported.id),
     );
+  }
+
+  async function handleCreateFolder(parentId: string | null) {
+    if (!studyId) return;
+
+    const name = window.prompt("输入文件夹名称", "新建文件夹");
+    if (name === null) return;
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      setError("文件夹名称不能为空");
+      return;
+    }
+
+    try {
+      const folder = await createMaterialFolder({
+        learningContentId: studyId,
+        parentId,
+        name: trimmedName,
+      });
+      setDetail((currentDetail) =>
+        currentDetail
+          ? {
+              ...currentDetail,
+              materials: [...currentDetail.materials, folder],
+            }
+          : currentDetail,
+      );
+      setError(null);
+    } catch (createError: unknown) {
+      setError(toMessage(createError));
+    }
+  }
+
+  async function handleMoveMaterial(material: MaterialItem, newParentId: string | null) {
+    try {
+      const moved = await moveMaterialItem({
+        materialId: material.id,
+        newParentId,
+      });
+      setDetail((currentDetail) =>
+        currentDetail
+          ? {
+              ...currentDetail,
+              materials: currentDetail.materials.map((currentMaterial) =>
+                currentMaterial.id === moved.id ? moved : currentMaterial,
+              ),
+            }
+          : currentDetail,
+      );
+      setError(null);
+    } catch (moveError: unknown) {
+      setError(toMessage(moveError));
+    }
   }
 
   async function handleOpenMaterial(material: MaterialItem) {
@@ -262,8 +324,21 @@ export function StudyDetailPage() {
     setError(null);
   }
 
-  function handleStageDeleteMaterial(material: MaterialItem) {
-    if (!window.confirm(`确定删除资料「${material.name}」吗？保存后将无法撤回。`)) {
+  async function handleStageDeleteMaterial(material: MaterialItem) {
+    let confirmMessage = `确定删除资料「${material.name}」吗？保存后将无法撤回。`;
+    if (material.kind === "folder") {
+      try {
+        const count = await countMaterialSubtree(material.id);
+        confirmMessage =
+          `将删除文件夹「${material.name}」及其中 ${count.fileCount + count.folderCount} 个资料` +
+          `（${count.fileCount} 个文件、${count.folderCount} 个子文件夹）。` +
+          `仅删除 App 管理副本，不影响原始文件。确定删除吗？保存后将无法撤回。`;
+      } catch (countError: unknown) {
+        setError(toMessage(countError));
+        return;
+      }
+    }
+    if (!window.confirm(confirmMessage)) {
       return;
     }
 
@@ -295,16 +370,19 @@ export function StudyDetailPage() {
       result.status === "fulfilled" ? [result.value] : [],
     );
     const failedIds = idsToDelete.filter((materialId) => !deletedIds.includes(materialId));
-    setDetail((currentDetail) =>
-      currentDetail
-        ? {
-            ...currentDetail,
-            materials: currentDetail.materials.filter(
-              (material) => !deletedIds.includes(material.id),
-            ),
-          }
-        : currentDetail,
-    );
+    setDetail((currentDetail) => {
+      if (!currentDetail) return currentDetail;
+      // 文件夹由后端递归删除，前端同步移除整棵子树
+      const removedIds = new Set(
+        deletedIds.flatMap((deletedId) => [
+          ...collectSubtreeIds(currentDetail.materials, deletedId),
+        ]),
+      );
+      return {
+        ...currentDetail,
+        materials: currentDetail.materials.filter((material) => !removedIds.has(material.id)),
+      };
+    });
     setPendingDeletedMaterialIds(failedIds);
     if (failedIds.length > 0) {
       const failedNames = failedIds
@@ -500,16 +578,22 @@ export function StudyDetailPage() {
             <>
               <div className="panel-title-row">
                 <h2>资料</h2>
-                <button type="button" onClick={handleImportMaterial}>
-                  导入资料
-                </button>
               </div>
-              <MaterialList
+              <MaterialExplorer
                 materials={detail.materials}
                 pendingDeletedMaterialIds={pendingDeletedMaterialIds}
-                onOpen={handleOpenMaterial}
+                onCreateFolder={(parentId) => {
+                  void handleCreateFolder(parentId);
+                }}
+                onImport={(parentId) => {
+                  void handleImportMaterial(parentId);
+                }}
+                onMove={handleMoveMaterial}
+                onOpenFile={handleOpenMaterial}
                 onRename={handleRenameMaterial}
-                onStageDelete={handleStageDeleteMaterial}
+                onStageDelete={(material) => {
+                  void handleStageDeleteMaterial(material);
+                }}
               />
               <MaterialLibraryStatsPanel
                 stats={materialLibraryStats}
@@ -581,100 +665,6 @@ export function StudyDetailPage() {
   );
 }
 
-function MaterialList({
-  materials,
-  onOpen,
-  onRename,
-  onStageDelete,
-  pendingDeletedMaterialIds,
-}: {
-  materials: MaterialItem[];
-  onOpen: (material: MaterialItem) => void;
-  onRename?: (material: MaterialItem) => void;
-  onStageDelete?: (material: MaterialItem) => void;
-  pendingDeletedMaterialIds?: string[];
-}) {
-  const visibleMaterials = materials.filter(
-    (material) => !pendingDeletedMaterialIds?.includes(material.id),
-  );
-
-  if (visibleMaterials.length === 0) {
-    return <p className="empty-state">还没有资料</p>;
-  }
-
-  return (
-    <div className="material-list">
-      {visibleMaterials.map((material) => (
-        <article className="material-item" key={material.id}>
-          <span className="file-icon">{iconForMime(material.mimeType)}</span>
-          <button
-            className="material-open-button"
-            type="button"
-            aria-label={`打开资料：${material.name}`}
-            onClick={() => onOpen(material)}
-          >
-            <h3>{material.name}</h3>
-            <p>{formatBytes(material.sizeBytes)}</p>
-          </button>
-          <div
-            aria-label={`资料操作：${material.name}`}
-            className="material-actions material-actions-inline"
-            role="group"
-          >
-            {onRename ? (
-              <button type="button" onClick={() => onRename(material)}>
-                重命名
-              </button>
-            ) : null}
-            {onStageDelete ? (
-              <button type="button" onClick={() => onStageDelete(material)}>
-                删除
-              </button>
-            ) : null}
-          </div>
-        </article>
-      ))}
-    </div>
-  );
-}
-
-function MaterialLibraryStatsPanel({
-  message,
-  onCleanup,
-  onRefresh,
-  stats,
-}: {
-  message: string | null;
-  onCleanup: () => void;
-  onRefresh: () => void;
-  stats: MaterialLibraryStats | null;
-}) {
-  return (
-    <section className="material-library-panel" aria-label="资料库统计">
-      <div className="material-library-actions">
-        <button type="button" onClick={onRefresh}>
-          刷新资料库统计
-        </button>
-        <button type="button" onClick={onCleanup}>
-          清理无引用资料
-        </button>
-      </div>
-      {stats ? (
-        <div className="material-library-stats">
-          <span>{`资料数量 ${stats.materialCount}`}</span>
-          <span>{`记录大小 ${formatBytes(stats.referencedBytes)}`}</span>
-          <span>{`磁盘占用 ${formatBytes(stats.libraryBytes)}`}</span>
-          <span>{`缺失文件 ${stats.missingFileCount}`}</span>
-          <span>{`无引用文件 ${stats.orphanFileCount}`}</span>
-        </div>
-      ) : (
-        <p className="muted-text">资料库统计低频刷新，可手动刷新。</p>
-      )}
-      {message ? <p className="muted-text">{message}</p> : null}
-    </section>
-  );
-}
-
 function MaterialInlineReader({
   material,
   onPdfStateChange,
@@ -729,44 +719,6 @@ function ChevronLeftIcon() {
   );
 }
 
-function MaterialDeletionBar({
-  materials,
-  onSave,
-  onUndo,
-  pendingDeletedMaterialIds,
-}: {
-  materials: MaterialItem[];
-  onSave: () => void;
-  onUndo: (materialId: string) => void;
-  pendingDeletedMaterialIds: string[];
-}) {
-  if (pendingDeletedMaterialIds.length === 0) return null;
-
-  return (
-    <aside className="pending-delete-bar">
-      <p>已标记删除 {pendingDeletedMaterialIds.length} 个资料</p>
-      <div className="material-actions">
-        {pendingDeletedMaterialIds.map((materialId) => {
-          const material = materials.find((currentMaterial) => currentMaterial.id === materialId);
-          return (
-            <button
-              aria-label={`撤回删除 ${material?.name ?? materialId}`}
-              key={materialId}
-              type="button"
-              onClick={() => onUndo(materialId)}
-            >
-              撤回
-            </button>
-          );
-        })}
-        <button type="button" onClick={onSave}>
-          保存资料删除
-        </button>
-      </div>
-    </aside>
-  );
-}
-
 function NoteSelector({
   notes,
   onDelete,
@@ -811,28 +763,6 @@ function NoteSelector({
       ) : null}
     </div>
   );
-}
-
-function iconForMime(mimeType: string | null) {
-  if (!mimeType) return "FILE";
-  if (mimeType.startsWith("image/")) return "IMG";
-  if (mimeType === "application/pdf") return "PDF";
-  if (mimeType === "text/plain") return "TXT";
-  return "FILE";
-}
-
-function formatBytes(sizeBytes: number) {
-  const units = ["B", "KB", "MB", "GB"];
-  let value = sizeBytes;
-  let unitIndex = 0;
-
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-
-  if (unitIndex === 0) return `${value} ${units[unitIndex]}`;
-  return `${value.toFixed(1)} ${units[unitIndex]}`;
 }
 
 function formatHours(hours: number) {

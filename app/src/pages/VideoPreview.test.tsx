@@ -1,5 +1,5 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
 import { MaterialPreviewPane } from "./MaterialPreviewPane";
 import { VideoPreview } from "./VideoPreview";
@@ -9,7 +9,13 @@ vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: vi.fn((path: string) => `asset://localhost/${encodeURIComponent(path)}`),
 }));
 
-afterEach(cleanup);
+function fireVideoError(video: Element, code: number | null) {
+  Object.defineProperty(video, "error", {
+    configurable: true,
+    value: code === null ? null : { code },
+  });
+  fireEvent.error(video);
+}
 
 function buildMaterial(overrides: Partial<MaterialItem> = {}): MaterialItem {
   return {
@@ -52,12 +58,38 @@ describe("VideoPreview", () => {
   it("解码失败时显示视频格式不支持提示", () => {
     render(<VideoPreview storedPath={"C:\\appdata\\materials\\lc-1\\hevc.mp4"} />);
 
-    fireEvent.error(screen.getByLabelText("视频播放器"));
+    fireVideoError(screen.getByLabelText("视频播放器"), 4);
 
     expect(
       screen.getByText("暂不支持该视频格式（当前仅支持 MP4 / WebM）"),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("视频播放器")).not.toBeInTheDocument();
+  });
+
+  it("非解码类错误显示加载失败提示而非格式提示", () => {
+    render(<VideoPreview storedPath={"C:\\appdata\\materials\\lc-1\\missing.mp4"} />);
+
+    fireVideoError(screen.getByLabelText("视频播放器"), 2);
+
+    expect(screen.getByText("视频加载失败，请确认资料文件完整")).toBeInTheDocument();
+    expect(
+      screen.queryByText("暂不支持该视频格式（当前仅支持 MP4 / WebM）"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("卸载时暂停并释放视频资源", () => {
+    const pauseSpy = vi.spyOn(HTMLMediaElement.prototype, "pause");
+    const loadSpy = vi.spyOn(HTMLMediaElement.prototype, "load");
+    const { unmount } = render(
+      <VideoPreview storedPath={"C:\\appdata\\materials\\lc-1\\课程视频.mp4"} />,
+    );
+    const video = screen.getByLabelText("视频播放器");
+
+    unmount();
+
+    expect(pauseSpy).toHaveBeenCalled();
+    expect(loadSpy).toHaveBeenCalled();
+    expect(video.getAttribute("src")).toBeNull();
   });
 });
 
@@ -95,5 +127,31 @@ describe("MaterialPreviewPane 视频分支", () => {
     );
 
     expect(screen.getByText("暂不支持预览这种资料")).toBeInTheDocument();
+  });
+
+  it("资料 A 播放失败后切换到资料 B 重新显示播放器", () => {
+    const { rerender } = render(
+      <MaterialPreviewPane material={buildMaterial()} preview={buildPreview()} />,
+    );
+    fireVideoError(screen.getByLabelText("视频播放器"), 4);
+    expect(
+      screen.getByText("暂不支持该视频格式（当前仅支持 MP4 / WebM）"),
+    ).toBeInTheDocument();
+
+    rerender(
+      <MaterialPreviewPane
+        material={buildMaterial({
+          id: "material-2",
+          name: "另一个视频.mp4",
+          storedPath: "C:\\appdata\\materials\\lc-1\\另一个视频.mp4",
+        })}
+        preview={buildPreview({ materialId: "material-2" })}
+      />,
+    );
+
+    expect(screen.getByLabelText("视频播放器")).toBeInTheDocument();
+    expect(
+      screen.queryByText("暂不支持该视频格式（当前仅支持 MP4 / WebM）"),
+    ).not.toBeInTheDocument();
   });
 });

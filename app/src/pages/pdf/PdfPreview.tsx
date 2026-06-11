@@ -25,6 +25,9 @@ import type {
   PdfRenderTask,
   RenderedPdfPage,
 } from "./pdfDocumentCache";
+import { PdfOutlinePanel } from "./PdfOutlinePanel";
+import { loadPdfOutline } from "./pdfOutline";
+import type { PdfOutlineNode } from "./pdfOutline";
 
 export function PdfPreview({
   dataUrl,
@@ -52,6 +55,8 @@ export function PdfPreview({
   const pageCacheRef = useRef<Map<number, Promise<PdfPageProxy>>>(new Map());
   const renderedPageCacheRef = useRef<Map<string, Promise<RenderedPdfPage>>>(new Map());
   const lastPrefetchedPageRef = useRef<number | null>(null);
+  const [isOutlineOpen, setIsOutlineOpen] = useState(false);
+  const [outlineNodes, setOutlineNodes] = useState<PdfOutlineNode[] | null>(null);
 
   useEffect(() => {
     const nextScale = clampScale(initialScale ?? 1);
@@ -61,7 +66,27 @@ export function PdfPreview({
     setPageNumber(Math.max(1, initialPageNumber ?? 1));
     setScale(nextScale);
     setRenderScale(nextScale);
+    setIsOutlineOpen(false);
+    setOutlineNodes(null);
   }, [dataUrl, initialPageNumber, initialScale]);
+
+  useEffect(() => {
+    if (!isOutlineOpen || outlineNodes !== null) return;
+
+    let isCancelled = false;
+    loadPdfDocument(dataUrl)
+      .then((document) => loadPdfOutline(document))
+      .then((nodes) => {
+        if (!isCancelled) setOutlineNodes(nodes);
+      })
+      .catch(() => {
+        if (!isCancelled) setOutlineNodes([]);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [dataUrl, isOutlineOpen, outlineNodes]);
 
   useEffect(() => {
     renderedPageCacheRef.current.clear();
@@ -193,9 +218,20 @@ export function PdfPreview({
     document.body.classList.add("is-panning-pdf");
   }
 
+  function handleOutlineJump(targetPageNumber: number) {
+    setPageNumber(clampPageNumber(targetPageNumber, pageCount));
+  }
+
   return (
     <div className="pdf-viewer">
       <div className="pdf-toolbar" aria-label="PDF 控制">
+        <button
+          type="button"
+          aria-pressed={isOutlineOpen}
+          onClick={() => setIsOutlineOpen((isOpen) => !isOpen)}
+        >
+          目录
+        </button>
         <button
           type="button"
           disabled={pageNumber <= 1}
@@ -219,23 +255,33 @@ export function PdfPreview({
           放大
         </button>
       </div>
-      <div
-        aria-label="PDF 阅读区域"
-        className="pdf-scroll-viewport"
-        ref={viewportRef}
-        onPointerDown={handlePanStart}
-        onWheel={handleWheel}
-      >
-        <div className="pdf-page-stage">
-          <div
-            aria-label="A4 PDF 页面"
-            className="pdf-page-sheet"
-            style={{
-              width: `${PDF_BASE_WIDTH * scale}px`,
-              height: `${PDF_BASE_HEIGHT * scale}px`,
-            }}
-          >
-            <canvas className="pdf-preview" ref={canvasRef} aria-label="PDF 预览" />
+      <div className="pdf-content">
+        {isOutlineOpen &&
+          (outlineNodes === null ? (
+            <div className="pdf-outline-panel" aria-label="PDF 目录">
+              <p className="empty-state">正在加载目录</p>
+            </div>
+          ) : (
+            <PdfOutlinePanel nodes={outlineNodes} onJump={handleOutlineJump} />
+          ))}
+        <div
+          aria-label="PDF 阅读区域"
+          className="pdf-scroll-viewport"
+          ref={viewportRef}
+          onPointerDown={handlePanStart}
+          onWheel={handleWheel}
+        >
+          <div className="pdf-page-stage">
+            <div
+              aria-label="A4 PDF 页面"
+              className="pdf-page-sheet"
+              style={{
+                width: `${PDF_BASE_WIDTH * scale}px`,
+                height: `${PDF_BASE_HEIGHT * scale}px`,
+              }}
+            >
+              <canvas className="pdf-preview" ref={canvasRef} aria-label="PDF 预览" />
+            </div>
           </div>
         </div>
       </div>

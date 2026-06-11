@@ -1136,7 +1136,65 @@ textarea {
   gap: 12px;
 }
 
+.pdf-content {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.pdf-outline-panel {
+  flex: 0 0 232px;
+  height: min(72vh, 820px);
+  overflow: auto;
+  padding: 12px 8px;
+  border: 1px solid #dbe8f5;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.pdf-outline-list {
+  margin: 0;
+  padding-left: 14px;
+  list-style: none;
+}
+
+.pdf-outline-panel > .pdf-outline-list {
+  padding-left: 4px;
+}
+
+.pdf-outline-item {
+  margin: 2px 0;
+}
+
+.pdf-outline-entry {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #2f4760;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pdf-outline-entry:hover {
+  background: #eef5fc;
+}
+
+.pdf-outline-entry:disabled {
+  color: #9fb1c4;
+  cursor: default;
+}
+
+.pdf-outline-entry:disabled:hover {
+  background: transparent;
+}
+
 .pdf-scroll-viewport {
+  flex: 1;
+  min-width: 0;
   height: min(72vh, 820px);
   overflow: auto;
   border: 1px solid #dbe8f5;

@@ -105,7 +105,15 @@
 - V1.2 技术设计已完成，文件为 `product/docs/studyseq-v1.2-technical-design.md`，阶段划分 A1-A3（PDF 目录）、B1-B2（视频）、C1-C4（文件夹）。
 - V1.2 功能一（PDF 目录）已完成：PdfPreview 拆分到 `app/src/pages/pdf/`（PdfPreview.tsx + pdfDocumentCache.ts）；`pdfOutline.ts` 解析大纲（坏 dest 单节点降级、500 节点/8 层上限、同层并行解析）；`PdfOutlinePanel.tsx` 树形目录面板（工具栏"目录"按钮开关、默认收起、空状态文案、null 页码禁用）；跳转走现有 `setPageNumber`，与页码/缩放防抖保存链路零改动兼容。
 - 本阶段已验证：前端 62 个 Vitest 测试全绿（新增 20 个：大纲解析 12 + 面板 4 + 接线 4）、`tsc --noEmit` 通过、`vite build` 通过；code-reviewer 审查结论"通过"，遗留非阻塞优化项：pdf 文档缓存淘汰时未调用 destroy()（拆分前既有行为）。
-- V1.2 下一步：B1（Rust 视频识别，TDD）→ B2（asset 协议 + VideoPreview 组件，第一步先用数百 MB 真实 MP4 spike 验证拖动）。
+- V1.2 功能二（视频播放）已完成：`MaterialPreviewKind` 增 `Video`；mp4/webm 判为可播，mkv/avi/flv/wmv/mov/rmvb 映射 `video/*` 但显示"暂不支持该视频格式"专属文案；`preview_material_file` 重构为先判类型再按需读字节，Video/Unsupported 不读文件（注意行为变化：Unsupported 预览不再隐式校验文件存在性）；存量 octet-stream 视频记录预览时按扩展名兜底，不做数据迁移；视频经 Tauri 内建 asset 协议流式播放，scope 只读限定 `$APPDATA/materials/**`；`VideoPreview.tsx` 用 convertFileSrc + 原生 video 控件，onError 按 MediaError code 分流文案（解码/格式 vs 加载失败），卸载时释放资源，换资料靠 `key={material.id}` 重挂载重置状态。
+- V1.2 功能三（资料文件夹）已完成：v4 表重建迁移（`parent_id`、`kind`、路径列转可空，单事务，失败自动回滚 v3；存量资料保留根目录；`pragma_table_info` 列检查保证幂等）；新增 `create_material_folder` / `move_material_item` / `count_material_subtree` command；文件夹是纯逻辑层级，磁盘仍物理平铺；重名判定收窄为同级兄弟节点（文件与文件夹同池）；移动禁止移入自身/后代/跨学习内容/非文件夹；删除文件夹后端递归（文件删 App 副本与阅读状态，文件夹只删记录）；前端资料区升级为 `app/src/pages/materials/` 资源管理器组件族（MaterialExplorer 面包屑导航 + 大图标网格 + 当前层导入/新建文件夹、MaterialTile、MoveMaterialDialog 禁选后代、materialTree 防环纯函数）；文件夹标记删除时整棵子树从可见列表隐藏，确认文案含子树数量与"仅删 App 副本"口径；StudyDetailPage 回落到 719 行。
+- V1.2 安全加固（C1 审查修复）：删除资料/学习内容前用 `is_path_inside_directory` 校验磁盘副本在 App 资料库目录内，目录外路径只删记录不碰文件；级联删除与子树删除的 DB 段用 `unchecked_transaction` 单事务提交、叶子先删；子树收集与移动上溯加 visited 防环；`kind` 列加 CHECK 约束、未知 kind 保守归 Folder；连接加 busy_timeout(5s)。注意：rusqlite bundled 默认启用外键强制，`parent_id` 故意不声明 REFERENCES（否则所有删除路径都要求严格叶先序），完整性由 repository 层校验维持。
+- V1.2 审查闭环（全部 CRITICAL/HIGH 已修复提交）：B1 rust-reviewer 通过；B2 typescript-reviewer 报 cleanup effect 时序 bug 已修；C1 rust-reviewer 报删除缺目录校验（CRITICAL）+ database-reviewer 报删除无事务（HIGH）已修；C2+C3 typescript-reviewer 报 3 个 HIGH（祖先与后代同时标记删除的并行竞态、移动对话框可选入待删文件夹绕过确认、导入无错误处理）已修；security-reviewer 报 rename 缺目录校验（HIGH）已修并启用 `MaterialPathOutsideLibrary` 错误，顺手移除了未使用的 tauri-plugin-fs 插件与 fs:default 权限（减攻击面）。
+- V1.2 审查遗留项（非阻塞，记入 V1.3 备选）：① CSP 仍为 null，security-reviewer 推荐值已给出（default-src 'self' + media-src asset: http://asset.localhost 等），加 CSP 需手测验证 PDF/图片/视频预览不被破坏，故未随本版收口；② preview_material_file 读取 stored_path 无目录校验（只读，纵深防御缺口）；③ ApiError 透传底层错误原文（遗留）；④ 打开文件阅读后返回资料列表会回到根目录而非原文件夹（currentFolderId 在 explorer 卸载时丢失）；⑤ 保存笔记/删笔记两处无 try/catch；⑥ cleanup 孤儿记录删除未包事务（可重入收敛）；⑦ 清理确认文案与实际行为不完全一致（"缺失资料记录"实际只删孤儿记录）。
+- 本阶段已验证：前端 86 个 Vitest 测试全绿（视频 8 + 树工具 10 + 资源管理器 5 等）、`tsc --noEmit`、`vite build`；Rust 38 个测试全绿、`cargo fmt --check`、`cargo clippy -- -D warnings`；`npm.cmd run tauri -- build --debug` 通过。
+- V1.2 发包版本号已统一为 `1.2.0`（package.json / tauri.conf.json / Cargo.toml）。注意 Windows PowerShell 5.1 改这些文件时不要用 `Set-Content -Encoding utf8`（会写 BOM，Tauri 解析 tauri.conf.json 会失败），用无 BOM 的 UTF8Encoding。
+- V1.2 留给用户的手测清单：① 数百 MB 真实 MP4 拖动进度（asset 协议 Range 验证，技术设计的高风险项）；② WebM 播放、MKV 显示专属提示、中文文件名视频；③ 用 V1.1 真实库副本验证旧库升级（资料保留在根目录、阅读进度保留）；④ 建夹/嵌套/移动/重命名/递归删除全流程；⑤ 删除学习内容含多层文件夹无残留；⑥ 断网全流程。
+- V1.2 下一步：等用户手测反馈后做 release 正式发包（`npm.cmd run tauri -- build`）。
 
 ## 已准备依赖
 

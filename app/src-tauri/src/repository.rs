@@ -25,6 +25,7 @@ impl LearningContentRepository {
         }
 
         let connection = Connection::open(path)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
         let repository = Self { connection };
         repository.migrate()?;
         Ok(repository)
@@ -169,38 +170,32 @@ impl LearningContentRepository {
         }))
     }
 
-    pub fn delete_learning_content(&self, id: &str) -> Result<(), AppError> {
+    pub fn delete_learning_content(
+        &self,
+        id: &str,
+        material_library_dir: impl AsRef<Path>,
+    ) -> Result<(), AppError> {
         // 按表批量删除而不是逐项递归，避免文件夹子树被重复删除报 MaterialNotFound
         let materials = self.list_materials(id)?;
-        for material in &materials {
-            if material.kind != MaterialKind::File {
-                continue;
-            }
-            let Some(stored_path) = material.stored_path.as_deref() else {
-                continue;
-            };
-            match std::fs::remove_file(stored_path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(AppError::Io(error)),
-            }
-        }
-        self.connection.execute(
+        self.remove_material_file_copies(&materials, material_library_dir.as_ref())?;
+        // DB 删除段单事务提交，避免中途崩溃留下悬空记录
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
             "DELETE FROM material_reading_states WHERE material_id IN (
                 SELECT id FROM material_items WHERE learning_content_id = ?1
             )",
             params![id],
         )?;
-        self.connection.execute(
+        transaction.execute(
             "DELETE FROM material_items WHERE learning_content_id = ?1",
             params![id],
         )?;
-        self.connection.execute(
+        transaction.execute(
             "DELETE FROM notes WHERE learning_content_id = ?1",
             params![id],
         )?;
-        self.connection
-            .execute("DELETE FROM learning_contents WHERE id = ?1", params![id])?;
+        transaction.execute("DELETE FROM learning_contents WHERE id = ?1", params![id])?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -253,6 +248,8 @@ impl LearningContentRepository {
         Ok(material)
     }
 
+    /// 在指定学习内容的指定父级（None 为根）下创建逻辑文件夹。
+    /// 文件夹不在磁盘创建对应目录；同级重名自动追加 ` (n)` 后缀。
     pub fn create_material_folder(
         &self,
         learning_content_id: &str,
@@ -288,6 +285,9 @@ impl LearningContentRepository {
         Ok(folder)
     }
 
+    /// 把资料或文件夹移动到新父级（None 为根）。
+    /// 目标必须是同一学习内容下的文件夹；禁止把文件夹移入自身或其后代；
+    /// 目标内重名自动追加后缀。纯 DB 操作，不移动磁盘文件。
     pub fn move_material_item(
         &self,
         material_id: &str,
@@ -306,11 +306,13 @@ impl LearningContentRepository {
             {
                 return Err(AppError::InvalidMoveTarget);
             }
-            // 禁止把文件夹移入自身或其后代：从目标沿 parent 链上溯
+            // 禁止把文件夹移入自身或其后代：从目标沿 parent 链上溯。
+            // visited 集合防御损坏数据中的 parent 环。
             if material.kind == MaterialKind::Folder {
+                let mut visited = std::collections::HashSet::new();
                 let mut cursor = Some(target.id.clone());
                 while let Some(current_id) = cursor {
-                    if current_id == material.id {
+                    if current_id == material.id || !visited.insert(current_id.clone()) {
                         return Err(AppError::InvalidMoveTarget);
                     }
                     cursor = self
@@ -340,6 +342,7 @@ impl LearningContentRepository {
         })
     }
 
+    /// 统计子树内的文件数与文件夹数，不含根节点自身（供删除确认文案使用）。
     pub fn count_material_subtree(
         &self,
         material_id: &str,
@@ -363,35 +366,29 @@ impl LearningContentRepository {
         Ok(count)
     }
 
-    pub fn delete_material_item(&self, material_id: &str) -> Result<(), AppError> {
+    pub fn delete_material_item(
+        &self,
+        material_id: &str,
+        material_library_dir: impl AsRef<Path>,
+    ) -> Result<(), AppError> {
         let Some(material) = self.get_material(material_id)? else {
             return Err(AppError::MaterialNotFound);
         };
 
         // 文件夹是纯逻辑层级：先递归收集子树，文件行删磁盘副本，所有行删记录与阅读状态
         let subtree = self.collect_material_subtree(&material)?;
-        for item in &subtree {
-            if item.kind != MaterialKind::File {
-                continue;
-            }
-            let Some(stored_path) = item.stored_path.as_deref() else {
-                continue;
-            };
-            match std::fs::remove_file(stored_path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(AppError::Io(error)),
-            }
-        }
+        self.remove_material_file_copies(&subtree, material_library_dir.as_ref())?;
 
+        // DB 删除段单事务提交，避免中途崩溃留下悬空的子树记录
+        let transaction = self.connection.unchecked_transaction()?;
         for item in &subtree {
-            self.connection
-                .execute("DELETE FROM material_items WHERE id = ?1", params![item.id])?;
-            self.connection.execute(
+            transaction.execute("DELETE FROM material_items WHERE id = ?1", params![item.id])?;
+            transaction.execute(
                 "DELETE FROM material_reading_states WHERE material_id = ?1",
                 params![item.id],
             )?;
         }
+        transaction.commit()?;
 
         Ok(())
     }
@@ -992,13 +989,42 @@ impl LearningContentRepository {
         Ok(())
     }
 
+    /// 删除一组资料行的 App 管理磁盘副本。
+    /// 只删除位于资料库目录内的文件，绝不触碰用户原始文件或目录外路径；
+    /// 已不存在的文件视为成功（删除操作可重试收敛）。
+    fn remove_material_file_copies(
+        &self,
+        materials: &[MaterialItem],
+        material_library_dir: &Path,
+    ) -> Result<(), AppError> {
+        for item in materials {
+            if item.kind != MaterialKind::File {
+                continue;
+            }
+            let Some(stored_path) = item.stored_path.as_deref() else {
+                continue;
+            };
+            if !is_path_inside_directory(Path::new(stored_path), material_library_dir)? {
+                continue;
+            }
+            match std::fs::remove_file(stored_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(AppError::Io(error)),
+            }
+        }
+        Ok(())
+    }
+
     /// 返回以 root 为根的整棵子树（含 root 自身），文件行直接返回单元素。
+    /// 用 visited 集合防御损坏数据中的 parent 环。
     fn collect_material_subtree(&self, root: &MaterialItem) -> Result<Vec<MaterialItem>, AppError> {
         if root.kind == MaterialKind::File {
             return Ok(vec![root.clone()]);
         }
 
         let all = self.list_materials(&root.learning_content_id)?;
+        let mut visited = std::collections::HashSet::from([root.id.clone()]);
         let mut subtree = vec![root.clone()];
         let mut frontier = vec![root.id.clone()];
         while let Some(current_id) = frontier.pop() {
@@ -1006,6 +1032,9 @@ impl LearningContentRepository {
                 .iter()
                 .filter(|item| item.parent_id.as_deref() == Some(current_id.as_str()))
             {
+                if !visited.insert(item.id.clone()) {
+                    continue;
+                }
                 if item.kind == MaterialKind::Folder {
                     frontier.push(item.id.clone());
                 }
@@ -1035,7 +1064,7 @@ impl LearningContentRepository {
                 id TEXT PRIMARY KEY,
                 learning_content_id TEXT NOT NULL,
                 parent_id TEXT,
-                kind TEXT NOT NULL DEFAULT 'file',
+                kind TEXT NOT NULL DEFAULT 'file' CHECK (kind IN ('file', 'folder')),
                 name TEXT NOT NULL,
                 original_path TEXT,
                 stored_path TEXT,
@@ -1159,8 +1188,9 @@ fn material_kind_to_str(kind: &MaterialKind) -> &'static str {
 
 fn material_kind_from_str(value: &str) -> MaterialKind {
     match value {
-        "folder" => MaterialKind::Folder,
-        _ => MaterialKind::File,
+        "file" => MaterialKind::File,
+        // 未知值保守归 Folder：只删记录、不触发磁盘删除（schema 有 CHECK 兜底，此处属纵深防御）
+        _ => MaterialKind::Folder,
     }
 }
 
@@ -1658,7 +1688,7 @@ mod tests {
             .expect("create note");
 
         repository
-            .delete_learning_content(&learning_content.id)
+            .delete_learning_content(&learning_content.id, &material_library_dir)
             .expect("delete learning content");
 
         assert!(repository
@@ -1957,6 +1987,9 @@ mod tests {
                         'mat-1', 'lc-1', '旧资料.pdf', 'D:\\src\\旧资料.pdf', 'C:\\lib\\旧资料.pdf', 'application/pdf', 9,
                         '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z'
                     );
+
+                    INSERT INTO material_reading_states (material_id, page_number, scale, updated_at)
+                    VALUES ('mat-1', 7, 1.6, '2026-06-01T00:00:00Z');
 
                     PRAGMA user_version = 3;
                     ",
@@ -2585,7 +2618,7 @@ mod tests {
         assert_eq!(count.folder_count, 1);
 
         repository
-            .delete_material_item(&outer.id)
+            .delete_material_item(&outer.id, &material_library_dir)
             .expect("delete folder recursively");
 
         let materials = repository.list_materials(&content.id).expect("list");
@@ -2633,7 +2666,7 @@ mod tests {
             .expect("save reading state");
 
         repository
-            .delete_learning_content(&content.id)
+            .delete_learning_content(&content.id, &material_library_dir)
             .expect("delete learning content with folders");
 
         assert_eq!(

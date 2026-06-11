@@ -68,8 +68,9 @@ pub fn delete_learning_content(state: State<'_, AppState>, id: String) -> Result
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
+    let material_library_dir = state.material_library_dir.clone();
 
-    delete_learning_content_in_repository(&repository, &id)
+    delete_learning_content_in_repository(&repository, &id, &material_library_dir)
 }
 
 #[tauri::command]
@@ -78,8 +79,9 @@ pub fn delete_material_item(state: State<'_, AppState>, id: String) -> Result<()
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
+    let material_library_dir = state.material_library_dir.clone();
 
-    delete_material_item_in_repository(&repository, &id)
+    delete_material_item_in_repository(&repository, &id, &material_library_dir)
 }
 
 #[tauri::command]
@@ -282,17 +284,21 @@ fn get_learning_detail_from_repository(
 fn delete_learning_content_in_repository(
     repository: &LearningContentRepository,
     id: &str,
+    material_library_dir: &std::path::Path,
 ) -> Result<(), ApiError> {
     repository
-        .delete_learning_content(id)
+        .delete_learning_content(id, material_library_dir)
         .map_err(ApiError::from)
 }
 
 fn delete_material_item_in_repository(
     repository: &LearningContentRepository,
     id: &str,
+    material_library_dir: &std::path::Path,
 ) -> Result<(), ApiError> {
-    repository.delete_material_item(id).map_err(ApiError::from)
+    repository
+        .delete_material_item(id, material_library_dir)
+        .map_err(ApiError::from)
 }
 
 fn import_material_file_in_repository(
@@ -532,7 +538,7 @@ mod tests {
         assert_eq!(detail.materials.len(), 1);
         assert_eq!(detail.notes.len(), 1);
 
-        delete_learning_content_in_repository(&repository, &content.id)
+        delete_learning_content_in_repository(&repository, &content.id, &material_library_dir)
             .expect("delete learning content");
         assert!(
             get_learning_detail_from_repository(&repository, &content.id)
@@ -571,7 +577,8 @@ mod tests {
         .expect("import material");
         let stored_path = material.stored_path.clone().expect("stored path");
 
-        delete_material_item_in_repository(&repository, &material.id).expect("delete material");
+        delete_material_item_in_repository(&repository, &material.id, &material_library_dir)
+            .expect("delete material");
 
         let detail = get_learning_detail_from_repository(&repository, &content.id)
             .expect("get detail")
@@ -696,7 +703,7 @@ mod tests {
         assert_eq!(count.file_count, 1);
         assert_eq!(count.folder_count, 0);
 
-        delete_material_item_in_repository(&repository, &folder.id)
+        delete_material_item_in_repository(&repository, &folder.id, &material_library_dir)
             .expect("delete folder recursively");
         let detail = get_learning_detail_from_repository(&repository, &content.id)
             .expect("get detail")

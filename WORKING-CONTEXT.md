@@ -98,7 +98,10 @@
 - 已运行 `npm.cmd run tauri -- build`，正式 V1.1 release 包已生成：`app/src-tauri/target/release/studyseq.exe`、`app/src-tauri/target/release/bundle/msi/StudySeq_1.1.0_x64_en-US.msi`、`app/src-tauri/target/release/bundle/nsis/StudySeq_1.1.0_x64-setup.exe`。
 - 用户已完成 V1.1 真实 App 手工测试，反馈“没什么问题了”。
 - 下一步：如需要发布到远端，推送当前 V1.1 提交和后续 tag；当前先完成本地提交与本地 release 发包。
-- 后续增强项：PDF 搜索/目录、阅读页滚动位置保存、Office 资料预览、视频资料预览、资料文件夹、笔记分组。
+- 当前已进入 V1.2 开发线程，工作分支为 `claude-version`（项目从 Codex 迁移到 Claude Code 协作）；`.claude/settings.json` 复用 `.codex/hooks/*.ps1`，`.claude/agents/` 有 8 个适配本项目的子代理。
+- V1.2 范围已经用户评审定稿（2026-06-12），PRD 见 `product/docs/studyseq-v1.2-prd.md`：做 PDF 目录（大纲）、视频播放（MP4/WebM，依托 WebView 原生解码、流式加载）、资料文件夹（资源管理器式大图标资料区，需迁移落地 `parent_id`）。
+- V1.2 明确不做：阅读页滚动位置保存（内嵌阅读为翻页式、价值有限）、PDF 全文搜索、Office 预览、需自带解码器的视频格式、笔记分组。
+- V1.2 实现顺序：PDF 目录 → 视频播放 → 资料文件夹（无迁移低风险在前，结构性改动在后）。
 
 ## 已准备依赖
 

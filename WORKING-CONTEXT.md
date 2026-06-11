@@ -102,6 +102,10 @@
 - V1.2 范围已经用户评审定稿（2026-06-12），PRD 见 `product/docs/studyseq-v1.2-prd.md`：做 PDF 目录（大纲）、视频播放（MP4/WebM，依托 WebView 原生解码、流式加载）、资料文件夹（资源管理器式大图标资料区，需迁移落地 `parent_id`）。
 - V1.2 明确不做：阅读页滚动位置保存（内嵌阅读为翻页式、价值有限）、PDF 全文搜索、Office 预览、需自带解码器的视频格式、笔记分组。
 - V1.2 实现顺序：PDF 目录 → 视频播放 → 资料文件夹（无迁移低风险在前，结构性改动在后）。
+- V1.2 技术设计已完成，文件为 `product/docs/studyseq-v1.2-technical-design.md`，阶段划分 A1-A3（PDF 目录）、B1-B2（视频）、C1-C4（文件夹）。
+- V1.2 功能一（PDF 目录）已完成：PdfPreview 拆分到 `app/src/pages/pdf/`（PdfPreview.tsx + pdfDocumentCache.ts）；`pdfOutline.ts` 解析大纲（坏 dest 单节点降级、500 节点/8 层上限、同层并行解析）；`PdfOutlinePanel.tsx` 树形目录面板（工具栏"目录"按钮开关、默认收起、空状态文案、null 页码禁用）；跳转走现有 `setPageNumber`，与页码/缩放防抖保存链路零改动兼容。
+- 本阶段已验证：前端 62 个 Vitest 测试全绿（新增 20 个：大纲解析 12 + 面板 4 + 接线 4）、`tsc --noEmit` 通过、`vite build` 通过；code-reviewer 审查结论"通过"，遗留非阻塞优化项：pdf 文档缓存淘汰时未调用 destroy()（拆分前既有行为）。
+- V1.2 下一步：B1（Rust 视频识别，TDD）→ B2（asset 协议 + VideoPreview 组件，第一步先用数百 MB 真实 MP4 spike 验证拖动）。
 
 ## 已准备依赖
 

@@ -130,6 +130,7 @@ pub enum MaterialPreviewKind {
     Text,
     Image,
     Pdf,
+    Video,
     Unsupported,
 }
 

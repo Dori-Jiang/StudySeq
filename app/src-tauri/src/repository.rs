@@ -415,12 +415,12 @@ impl LearningContentRepository {
             return Err(AppError::MaterialNotFound);
         };
 
-        let bytes = std::fs::read(&material.stored_path)?;
-        let mime_type = material.mime_type.clone();
+        let mime_type = resolve_preview_mime(material.mime_type.as_deref(), &material.stored_path);
         let kind = preview_kind(mime_type.as_deref());
 
         match kind {
             MaterialPreviewKind::Text => {
+                let bytes = std::fs::read(&material.stored_path)?;
                 let (text, encoding) = decode_text(&bytes);
                 Ok(MaterialPreview {
                     material_id: material.id,
@@ -432,6 +432,7 @@ impl LearningContentRepository {
                 })
             }
             MaterialPreviewKind::Image | MaterialPreviewKind::Pdf => {
+                let bytes = std::fs::read(&material.stored_path)?;
                 let mime = mime_type
                     .clone()
                     .unwrap_or_else(|| "application/octet-stream".to_string());
@@ -447,7 +448,8 @@ impl LearningContentRepository {
                     encoding: None,
                 })
             }
-            MaterialPreviewKind::Unsupported => Ok(MaterialPreview {
+            // 视频走前端 asset 协议流式播放，不支持格式不需要内容：都不读文件字节
+            MaterialPreviewKind::Video | MaterialPreviewKind::Unsupported => Ok(MaterialPreview {
                 material_id: material.id,
                 kind,
                 mime_type,
@@ -1046,6 +1048,16 @@ fn guess_mime_type(path: &Path) -> Option<String> {
         "gif" => "image/gif",
         "webp" => "image/webp",
         "pdf" => "application/pdf",
+        // 可内嵌播放的视频格式
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        // 暂不支持播放的视频格式：标记 video/* 供前端显示专属提示
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "flv" => "video/x-flv",
+        "wmv" => "video/x-ms-wmv",
+        "mov" => "video/quicktime",
+        "rmvb" | "rm" => "video/vnd.rn-realvideo",
         _ => "application/octet-stream",
     };
 
@@ -1056,8 +1068,19 @@ fn preview_kind(mime_type: Option<&str>) -> MaterialPreviewKind {
     match mime_type {
         Some("text/plain") => MaterialPreviewKind::Text,
         Some("application/pdf") => MaterialPreviewKind::Pdf,
+        Some("video/mp4") | Some("video/webm") => MaterialPreviewKind::Video,
         Some(value) if value.starts_with("image/") => MaterialPreviewKind::Image,
         _ => MaterialPreviewKind::Unsupported,
+    }
+}
+
+/// 存量记录兜底：V1.1 及更早版本导入的视频 mime 落库为 application/octet-stream，
+/// 预览时按 App 副本扩展名重新猜测，不做数据迁移。
+fn resolve_preview_mime(mime_type: Option<&str>, stored_path: &str) -> Option<String> {
+    match mime_type {
+        Some(value) if value != "application/octet-stream" => Some(value.to_string()),
+        _ => guess_mime_type(Path::new(stored_path))
+            .or_else(|| mime_type.map(|value| value.to_string())),
     }
 }
 
@@ -1706,5 +1729,156 @@ mod tests {
             .preview_material_file(&renamed_again.id)
             .expect("preview renamed");
         assert_eq!(preview.text.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn imports_mp4_and_webm_with_video_mime_types() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let mp4_source = temp_dir.path().join("课程视频.mp4");
+        let webm_source = temp_dir.path().join("clip.webm");
+        std::fs::write(&mp4_source, b"fake mp4 bytes").expect("write mp4");
+        std::fs::write(&webm_source, b"fake webm bytes").expect("write webm");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "视频导入".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+
+        let mp4 = repository
+            .import_material_file(&learning_content.id, &mp4_source, &material_library_dir)
+            .expect("import mp4");
+        let webm = repository
+            .import_material_file(&learning_content.id, &webm_source, &material_library_dir)
+            .expect("import webm");
+
+        assert_eq!(mp4.mime_type.as_deref(), Some("video/mp4"));
+        assert_eq!(webm.mime_type.as_deref(), Some("video/webm"));
+    }
+
+    #[test]
+    fn previews_video_material_without_reading_file_bytes() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let mp4_source = temp_dir.path().join("lecture.mp4");
+        std::fs::write(&mp4_source, b"fake mp4 bytes").expect("write mp4");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "视频预览".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(&learning_content.id, &mp4_source, &material_library_dir)
+            .expect("import mp4");
+        // 删除磁盘副本来证明视频预览不读文件字节：流式播放由前端走 asset 协议
+        std::fs::remove_file(&material.stored_path).expect("remove stored copy");
+
+        let preview = repository
+            .preview_material_file(&material.id)
+            .expect("preview video");
+
+        assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Video);
+        assert_eq!(preview.mime_type.as_deref(), Some("video/mp4"));
+        assert!(preview.data_url.is_none());
+        assert!(preview.text.is_none());
+        assert!(preview.encoding.is_none());
+    }
+
+    #[test]
+    fn previews_unsupported_video_format_with_video_mime_hint_without_reading_bytes() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let mkv_source = temp_dir.path().join("movie.mkv");
+        std::fs::write(&mkv_source, b"fake mkv bytes").expect("write mkv");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "不支持视频格式".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(&learning_content.id, &mkv_source, &material_library_dir)
+            .expect("import mkv");
+        std::fs::remove_file(&material.stored_path).expect("remove stored copy");
+
+        let preview = repository
+            .preview_material_file(&material.id)
+            .expect("preview mkv");
+
+        assert_eq!(
+            preview.kind,
+            crate::models::MaterialPreviewKind::Unsupported
+        );
+        assert!(preview
+            .mime_type
+            .as_deref()
+            .expect("mkv mime")
+            .starts_with("video/"));
+        assert!(preview.data_url.is_none());
+    }
+
+    #[test]
+    fn resolve_preview_mime_falls_back_to_original_when_stored_path_has_no_extension() {
+        assert_eq!(
+            resolve_preview_mime(Some("application/octet-stream"), "C:\\library\\讲座"),
+            Some("application/octet-stream".to_string())
+        );
+        assert_eq!(resolve_preview_mime(None, "C:\\library\\讲座"), None);
+        // 有效 mime 不被 stored_path 扩展名覆盖
+        assert_eq!(
+            resolve_preview_mime(Some("text/plain"), "C:\\library\\note.mp4"),
+            Some("text/plain".to_string())
+        );
+    }
+
+    #[test]
+    fn previews_legacy_octet_stream_video_record_as_video() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let mp4_source = temp_dir.path().join("旧版导入.mp4");
+        std::fs::write(&mp4_source, b"fake mp4 bytes").expect("write mp4");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "存量视频兜底".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(&learning_content.id, &mp4_source, &material_library_dir)
+            .expect("import mp4");
+        // 模拟 V1.1 及更早版本导入的存量记录：mime 落库为 application/octet-stream
+        repository
+            .connection
+            .execute(
+                "UPDATE material_items SET mime_type = 'application/octet-stream' WHERE id = ?1",
+                params![material.id],
+            )
+            .expect("downgrade mime to legacy value");
+
+        let preview = repository
+            .preview_material_file(&material.id)
+            .expect("preview legacy video");
+
+        assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Video);
+        assert_eq!(preview.mime_type.as_deref(), Some("video/mp4"));
+        assert!(preview.data_url.is_none());
     }
 }

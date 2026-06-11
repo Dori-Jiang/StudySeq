@@ -35,19 +35,27 @@ async function buildOutlineNodes(
 ): Promise<PdfOutlineNode[]> {
   if (depth > OUTLINE_MAX_DEPTH) return [];
 
-  const nodes: PdfOutlineNode[] = [];
+  const takenItems: { item: PdfOutlineItem; index: number }[] = [];
   for (const [index, item] of items.entries()) {
     if (budget.remaining <= 0) break;
     budget.remaining -= 1;
+    takenItems.push({ item, index });
+  }
 
+  // 同层 dest 并行解析，避免大目录下数百次串行 worker 往返。
+  const pageNumbers = await Promise.all(
+    takenItems.map(({ item }) => resolveDestinationPageNumber(document, item.dest)),
+  );
+
+  const nodes: PdfOutlineNode[] = [];
+  for (const [takenIndex, { item, index }] of takenItems.entries()) {
     const id = `${idPrefix}-${index}`;
     const title = item.title?.trim() ? item.title.trim() : OUTLINE_EMPTY_TITLE_PLACEHOLDER;
-    const pageNumber = await resolveDestinationPageNumber(document, item.dest);
     const children = Array.isArray(item.items)
       ? await buildOutlineNodes(document, item.items, id, depth + 1, budget)
       : [];
 
-    nodes.push({ id, title, pageNumber, children });
+    nodes.push({ id, title, pageNumber: pageNumbers[takenIndex], children });
   }
 
   return nodes;

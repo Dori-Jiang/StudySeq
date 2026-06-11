@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type {
   CreateLearningContentInput,
+  CreateMaterialFolderInput,
   CreateNoteInput,
   ImportMaterialFileInput,
   LearningContent,
@@ -11,6 +12,8 @@ import type {
   MaterialLibraryStats,
   MaterialPreview,
   MaterialReadingState,
+  MaterialSubtreeCount,
+  MoveMaterialItemInput,
   Note,
   RenameMaterialItemInput,
   SaveMaterialReadingStateInput,
@@ -88,4 +91,18 @@ export function cleanupMaterialLibrary(): Promise<MaterialLibraryCleanupReport> 
 
 export function renameMaterialItem(input: RenameMaterialItemInput): Promise<MaterialItem> {
   return invoke<MaterialItem>("rename_material_item", { input });
+}
+
+export function createMaterialFolder(
+  input: CreateMaterialFolderInput,
+): Promise<MaterialItem> {
+  return invoke<MaterialItem>("create_material_folder", { input });
+}
+
+export function moveMaterialItem(input: MoveMaterialItemInput): Promise<MaterialItem> {
+  return invoke<MaterialItem>("move_material_item", { input });
+}
+
+export function countMaterialSubtree(materialId: string): Promise<MaterialSubtreeCount> {
+  return invoke<MaterialSubtreeCount>("count_material_subtree", { materialId });
 }

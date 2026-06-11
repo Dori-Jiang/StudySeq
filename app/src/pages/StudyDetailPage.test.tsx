@@ -67,6 +67,8 @@ const baseDetail = {
     {
       id: "mat-1",
       learningContentId: "study-1",
+      parentId: null,
+      kind: "file" as const,
       name: "资料.txt",
       originalPath: "C:/source/资料.txt",
       storedPath: "C:/app/资料.txt",

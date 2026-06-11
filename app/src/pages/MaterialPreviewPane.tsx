@@ -1,7 +1,11 @@
 import type { MaterialItem, MaterialPreview } from "../shared/types";
 
 import { PdfPreview } from "./pdf/PdfPreview";
-import { UNSUPPORTED_VIDEO_MESSAGE, VideoPreview } from "./VideoPreview";
+import {
+  UNSUPPORTED_VIDEO_MESSAGE,
+  VIDEO_LOAD_FAILED_MESSAGE,
+  VideoPreview,
+} from "./VideoPreview";
 
 export function MaterialPreviewPane({
   material,
@@ -42,6 +46,9 @@ export function MaterialPreviewPane({
   }
 
   if (preview.kind === "video") {
+    if (!material.storedPath) {
+      return <p className="empty-state">{VIDEO_LOAD_FAILED_MESSAGE}</p>;
+    }
     return <VideoPreview key={material.id} storedPath={material.storedPath} />;
   }
 

@@ -51,6 +51,9 @@ pub fn run() {
             commands::get_material_library_stats,
             commands::cleanup_material_library,
             commands::rename_material_item,
+            commands::create_material_folder,
+            commands::move_material_item,
+            commands::count_material_subtree,
         ])
         .run(tauri::generate_context!())
         .expect("error while running StudySeq");

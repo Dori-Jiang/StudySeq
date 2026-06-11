@@ -2,9 +2,10 @@ use tauri::State;
 
 use crate::errors::{ApiError, AppError};
 use crate::models::{
-    CreateLearningContentInput, CreateNoteInput, ImportMaterialFileInput, LearningContent,
-    LearningDetail, MaterialItem, MaterialLibraryCleanupReport, MaterialLibraryStats,
-    MaterialPreview, MaterialReadingState, Note, RenameMaterialItemInput,
+    CreateLearningContentInput, CreateMaterialFolderInput, CreateNoteInput,
+    ImportMaterialFileInput, LearningContent, LearningDetail, MaterialItem,
+    MaterialLibraryCleanupReport, MaterialLibraryStats, MaterialPreview, MaterialReadingState,
+    MaterialSubtreeCount, MoveMaterialItemInput, Note, RenameMaterialItemInput,
     SaveMaterialReadingStateInput, UpdateLearningContentInput, UpdateNoteInput,
 };
 use crate::repository::LearningContentRepository;
@@ -203,6 +204,45 @@ pub fn rename_material_item(
     rename_material_item_in_repository(&repository, input)
 }
 
+#[tauri::command]
+pub fn create_material_folder(
+    state: State<'_, AppState>,
+    input: CreateMaterialFolderInput,
+) -> Result<MaterialItem, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    create_material_folder_in_repository(&repository, input)
+}
+
+#[tauri::command]
+pub fn move_material_item(
+    state: State<'_, AppState>,
+    input: MoveMaterialItemInput,
+) -> Result<MaterialItem, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    move_material_item_in_repository(&repository, input)
+}
+
+#[tauri::command]
+pub fn count_material_subtree(
+    state: State<'_, AppState>,
+    material_id: String,
+) -> Result<MaterialSubtreeCount, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    count_material_subtree_in_repository(&repository, &material_id)
+}
+
 fn list_learning_contents_from_repository(
     repository: &LearningContentRepository,
 ) -> Result<Vec<LearningContent>, ApiError> {
@@ -346,6 +386,37 @@ fn rename_material_item_in_repository(
 ) -> Result<MaterialItem, ApiError> {
     repository
         .rename_material_item(&input.material_id, &input.name)
+        .map_err(ApiError::from)
+}
+
+fn create_material_folder_in_repository(
+    repository: &LearningContentRepository,
+    input: CreateMaterialFolderInput,
+) -> Result<MaterialItem, ApiError> {
+    repository
+        .create_material_folder(
+            &input.learning_content_id,
+            input.parent_id.as_deref(),
+            &input.name,
+        )
+        .map_err(ApiError::from)
+}
+
+fn move_material_item_in_repository(
+    repository: &LearningContentRepository,
+    input: MoveMaterialItemInput,
+) -> Result<MaterialItem, ApiError> {
+    repository
+        .move_material_item(&input.material_id, input.new_parent_id.as_deref())
+        .map_err(ApiError::from)
+}
+
+fn count_material_subtree_in_repository(
+    repository: &LearningContentRepository,
+    material_id: &str,
+) -> Result<MaterialSubtreeCount, ApiError> {
+    repository
+        .count_material_subtree(material_id)
         .map_err(ApiError::from)
 }
 
@@ -570,6 +641,67 @@ mod tests {
         assert_eq!(stats.orphan_file_count, 1);
         assert_eq!(renamed.name, "重命名.pdf");
         assert_eq!(cleanup.deleted_orphan_file_count, 1);
+    }
+
+    #[test]
+    fn command_handlers_manage_material_folders() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("讲义.txt");
+        std::fs::write(&source_file, "hello").expect("write source file");
+        let content = create_learning_content_in_repository(
+            &repository,
+            CreateLearningContentInput {
+                name: "文件夹命令闭环".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            },
+        )
+        .expect("create learning content");
+
+        let folder = create_material_folder_in_repository(
+            &repository,
+            CreateMaterialFolderInput {
+                learning_content_id: content.id.clone(),
+                parent_id: None,
+                name: "第一章".to_string(),
+            },
+        )
+        .expect("create folder");
+        let material = import_material_file_in_repository(
+            &repository,
+            ImportMaterialFileInput {
+                learning_content_id: content.id.clone(),
+                source_path: source_file.to_string_lossy().to_string(),
+                parent_id: None,
+            },
+            &material_library_dir,
+        )
+        .expect("import material");
+        let moved = move_material_item_in_repository(
+            &repository,
+            MoveMaterialItemInput {
+                material_id: material.id.clone(),
+                new_parent_id: Some(folder.id.clone()),
+            },
+        )
+        .expect("move material into folder");
+        let count =
+            count_material_subtree_in_repository(&repository, &folder.id).expect("count subtree");
+
+        assert_eq!(moved.parent_id.as_deref(), Some(folder.id.as_str()));
+        assert_eq!(count.file_count, 1);
+        assert_eq!(count.folder_count, 0);
+
+        delete_material_item_in_repository(&repository, &folder.id)
+            .expect("delete folder recursively");
+        let detail = get_learning_detail_from_repository(&repository, &content.id)
+            .expect("get detail")
+            .expect("detail exists");
+        assert!(detail.materials.is_empty());
     }
 
     #[test]

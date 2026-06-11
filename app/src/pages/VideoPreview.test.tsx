@@ -21,6 +21,8 @@ function buildMaterial(overrides: Partial<MaterialItem> = {}): MaterialItem {
   return {
     id: "material-1",
     learningContentId: "lc-1",
+    parentId: null,
+    kind: "file",
     name: "课程视频.mp4",
     originalPath: "D:\\downloads\\课程视频.mp4",
     storedPath: "C:\\appdata\\materials\\lc-1\\课程视频.mp4",

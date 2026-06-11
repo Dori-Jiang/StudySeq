@@ -1140,10 +1140,12 @@ textarea {
   display: flex;
   gap: 12px;
   align-items: stretch;
+  min-width: 0;
 }
 
 .pdf-outline-panel {
-  flex: 0 0 232px;
+  flex: 0 1 232px;
+  min-width: 0;
   height: min(72vh, 820px);
   overflow: auto;
   padding: 12px 8px;
@@ -1163,33 +1165,43 @@ textarea {
 }
 
 .pdf-outline-item {
-  margin: 2px 0;
+  margin: 0;
 }
 
-.pdf-outline-entry {
+/* 提高优先级以覆盖全局 button 和 .detail-panel button 的 40px 高度与玻璃质感 */
+.pdf-outline-panel .pdf-outline-entry {
   display: block;
   width: 100%;
-  padding: 4px 8px;
+  height: auto;
+  padding: 3px 8px;
   border: none;
   border-radius: 6px;
   background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
   color: #2f4760;
   font-size: 13px;
+  line-height: 1.45;
   text-align: left;
   cursor: pointer;
 }
 
-.pdf-outline-entry:hover {
+.pdf-outline-panel .pdf-outline-entry:hover {
+  color: #185d9e;
   background: #eef5fc;
+  box-shadow: none;
 }
 
-.pdf-outline-entry:disabled {
+.pdf-outline-panel .pdf-outline-entry:active {
+  background: #e2eefb;
+  box-shadow: none;
+  transform: none;
+}
+
+.pdf-outline-panel .pdf-outline-entry:disabled {
   color: #9fb1c4;
-  cursor: default;
-}
-
-.pdf-outline-entry:disabled:hover {
   background: transparent;
+  cursor: default;
 }
 
 .pdf-scroll-viewport {

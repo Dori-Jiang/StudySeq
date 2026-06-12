@@ -917,8 +917,8 @@ button:disabled {
 .material-library-panel {
   display: grid;
   gap: 10px;
-  margin-top: 16px;
-  padding-top: 14px;
+  margin-top: 30px;
+  padding-top: 18px;
   border-top: 1px solid rgb(202 218 236 / 62%);
 }
 
@@ -1078,11 +1078,19 @@ button:disabled {
 }
 
 .material-breadcrumb button {
+  height: auto;
   border: none;
   background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
   padding: 4px 6px;
   color: #4a7bb8;
   font-size: 13px;
+}
+
+.material-breadcrumb button:hover {
+  background: #e6f2fc;
+  box-shadow: none;
 }
 
 .material-breadcrumb button:disabled {
@@ -1121,11 +1129,22 @@ button:disabled {
   gap: 8px;
   justify-items: center;
   width: 100%;
+  /* 覆盖全局玻璃按钮样式：高度必须随内容撑开，否则图标文字溢出导致网格行重叠 */
+  height: auto;
   border: none;
   background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
   padding: 14px 8px 12px;
   cursor: pointer;
   min-width: 0;
+}
+
+.material-tile-open:hover,
+.material-tile-open:active {
+  background: transparent;
+  box-shadow: none;
+  transform: none;
 }
 
 .material-tile-open h3 {
@@ -1210,6 +1229,8 @@ button:disabled {
   border: none;
   border-radius: 6px;
   background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
   color: #4a6f8a;
   opacity: 0;
   cursor: pointer;
@@ -1258,8 +1279,11 @@ button:disabled {
 }
 
 .material-tile-menu button {
+  height: auto;
   border: none;
   background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
   padding: 7px 10px;
   border-radius: 6px;
   font-size: 13px;
@@ -1270,6 +1294,7 @@ button:disabled {
 
 .material-tile-menu button:hover {
   background: #f2f8fe;
+  box-shadow: none;
 }
 
 .material-tile-menu .material-tile-menu-danger {

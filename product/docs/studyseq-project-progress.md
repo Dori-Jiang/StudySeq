@@ -2,29 +2,28 @@
 
 ## 管理规则
 
-- 本文件由 `project_manager` 子智能体维护。
+- 本文件由 `planner` 负责版本目标和阶段规划，由 `doc-updater` 负责阶段结束后的稳定记录更新。
 - 本文件用于记录版本目标、开发进度、验收标准、阻塞点、下一步和推迟项。
 - 只记录稳定事实和已确认事项，不记录临时想法。
 - 新版本目标和阶段进度优先更新本文件，不再为每次讨论新建独立文档。
-- `WORKING-CONTEXT.md` 不由 `project_manager` 管理。
+- `WORKING-CONTEXT.md` 不由单一管理型 agent 维护；阶段结束时由 `doc-updater` 按稳定事实更新。
 
 ## 当前阶段
 
-当前进入 **V1.1 窄版规划阶段**。
+当前进入 **V1.3 稳定化规划阶段**。
 
-V1 已完成发布候选收口，`main` 和 `v1.0.0` 固定为 V1 稳定状态。当前开发分支为 `codex/v1.1`。
+V1.2 已完成 PDF 目录、视频播放和资料文件夹能力，当前开发分支为 `claude-version`。V1.3 不做大 UI 改版，也不新增大功能，定位为 V1.2 后的安全加固、错误体验和一致性收口。
 
-V1.1 目标不是扩成新平台能力，而是在 V1 稳定闭环上补齐继续阅读和资料治理：
+V1.3 目标不是扩成新平台能力，而是在 V1.2 稳定闭环上补齐审查遗留项：
 
 ```text
-创建学习内容
--> 导入资料
--> App 内阅读 txt / 图片 / PDF
--> 边看边写纯文本笔记
--> 保存当前资料、当前笔记、阅读分栏比例、PDF 当前页和缩放
--> 查看资料库占用并清理 App 管理副本中的无引用文件
--> 重命名资料
--> 关闭重开后更准确继续学习
+收紧 Tauri / Rust 安全边界
+-> 统一 API 错误合同和用户提示
+-> 保持资料文件夹上下文
+-> 补齐笔记失败态
+-> 修正资料库清理一致性
+-> 复测 V1.2 PDF / 视频 / 文件夹主线
+-> 准备 V1.3 release
 ```
 
 ## 版本目标
@@ -109,14 +108,40 @@ V1.1 不进入：
 - SQLite 加密。
 - PDF 滚动位置精细恢复。
 
+### V1.3：安全加固与体验一致性收口
+
+V1.3 目标：在 V1.2 的 PDF 目录、视频播放、资料文件夹能力稳定后，处理 V1.2 审查遗留的非阻塞问题，提升安全边界、错误提示一致性和资料区状态连续性。
+
+V1.3 成功口径：
+
+- 资料预览不会读取 App 资料库目录外的 `stored_path`。
+- API 错误面向用户展示稳定、友好的中文信息，不暴露底层路径、SQL 或系统错误原文。
+- CSP 从 `null` 收紧后，txt、图片、PDF、MP4/WebM 预览仍正常。
+- 从文件夹内打开资料并返回后，资料区仍停留在原文件夹。
+- 保存笔记、删除笔记失败时不丢输入、不误判成功。
+- 资料库清理的数据库删除段具备事务保护，确认文案和实际行为一致。
+- V1.2 的 PDF 目录、视频播放、资料文件夹能力不回退。
+
+V1.3 不进入：
+
+- 大 UI 改版。
+- 新视频格式支持。
+- 视频播放进度记忆。
+- PDF 全文搜索。
+- Office 预览或 Office 转 PDF。
+- 笔记分组。
+- 云同步、账号系统、多端同步。
+- 拖拽移动资料 / 文件夹。
+- 跨学习内容移动资料。
+
 ### V2：后续扩展候选
 
 V2 以后再评估：
 
 - Office 转 PDF 后 App 内阅读。
 - 视频转码或播放内核。
-- PDF 搜索、目录、大纲。
-- 资料文件夹和复杂资料树。
+- PDF 全文搜索。
+- 复杂资料树和拖拽移动。
 - 笔记分组。
 - 云同步、账号、多端同步。
 - SQLite 加密。
@@ -134,8 +159,7 @@ V2 以后再评估：
 Tauri 2 + Vite + React + TypeScript + Rust + SQLite
 ```
 
-- `project_manager` 子智能体已建立。
-- `technical_lead` 子智能体已建立。
+- 项目 agent 团队已改为任务型角色：`planner` 负责规划，`architect` 负责跨层技术判断，`doc-updater` 负责稳定记录。
 - `app/` 已建立 Tauri 2 + Vite + React + TypeScript + Rust + SQLite 骨架。
 - 已实现学习内容创建、SQLite 持久化、主页列表展示。
 - 已实现主页删除学习内容，删除前二次确认。
@@ -335,10 +359,63 @@ npm.cmd run tauri -- build --debug
 - 资料重命名的文件系统操作和数据库更新有明确失败处理。
 - PDF worker 在打包后的真实 Tauri App 中仍可用。
 
+## V1.3 开发计划
+
+V1.3 采用 A1-A7 分阶段推进。阶段顺序按 `planner`、`architect`、`doc-updater` 三个 agent 的结论合并：先安全边界，再错误合同，再清理一致性和前端状态，最后真实 App 回归与发包。
+
+| 阶段 | 主题 | 目标 | 主要工作 | 验收标准 | 建议 agent |
+| --- | --- | --- | --- | --- | --- |
+| A1 | 资料预览路径防御 | 补齐 `preview_material_file` 的只读路径安全边界 | repository 读取 `stored_path` 后，用 App 资料库目录做 canonical 校验；库外路径返回稳定错误；补库内、库外、缺失文件、folder、video/unsupported 用例 | 库内 txt/图片/PDF 正常预览；库外路径不被读取；Rust 测试覆盖 | `tdd-guide`、`rust-reviewer`、`security-reviewer` |
+| A2 | API 错误合同收敛 | 避免向前端透传底层 DB/IO 错误原文 | 将 `ApiError` 调整为稳定 `code + message` 合同；数据库、文件系统、路径越界、状态不可用等错误映射为用户友好中文文案；前端统一消费稳定错误 | UI 不显示本机绝对路径、SQL 或系统错误原文；前端/Rust 错误路径测试通过 | `security-reviewer`、`typescript-reviewer` |
+| A3 | CSP 安全策略收口 | 将 Tauri CSP 从 `null` 收紧为可运行的最小策略 | 更新 `tauri.conf.json`；确保 PDF worker/canvas、图片/data URL、asset 视频流、txt 预览可用；分 debug/release 真实 App 验证 | 打包后 txt、图片、PDF、MP4/WebM 均可预览；MKV 等仍显示不支持；无关键 CSP 阻断 | `security-reviewer`、`typescript-reviewer`、`e2e-runner` |
+| A4 | 资料库清理一致性 | 让 cleanup 的数据库删除段可重试、可收敛 | 孤儿资料记录和阅读状态删除放入事务；文件系统删除仍按可重试副作用处理；修正清理确认文案与实际行为 | 清理失败不产生半清理 DB 状态；重复清理可收敛；确认文案准确描述清理对象 | `tdd-guide`、`database-reviewer`、`rust-reviewer` |
+| A5 | 资料区位置恢复 | 保留用户在资料文件夹中的当前上下文 | 将 `currentFolderId` 提升到详情页或等价受控状态；阅读模式切换不丢当前文件夹；删除当前文件夹后回到合理层级 | 子文件夹内打开资料并返回后仍停留原文件夹；不新增数据库持久化需求 | `typescript-reviewer`、`react-reviewer` |
+| A6 | 笔记操作错误处理 | 补齐保存/删除笔记失败态 | 保存笔记、删除笔记路径增加 try/catch；保存失败保留输入；删除失败不从 UI 移除笔记；错误提示统一 | 保存失败不丢内容；删除失败有明确提示；用户可继续编辑或重试；前端测试覆盖 | `tdd-guide`、`typescript-reviewer` |
+| A7 | 回归验证与发布准备 | 确认 V1.2 主线不回退并准备 V1.3 release | 跑完整工程验证；真实 App 手测大 MP4 Range、WebM/MKV、中文名视频、V1.1 旧库升级、文件夹嵌套/移动/递归删除、删除学习内容无残留、断网全流程；版本号统一为 `1.3.0` 后发包 | 前端测试、类型检查、构建、Rust fmt/test/clippy、Tauri debug build 通过；真实 App 手测通过；正式包生成 | `e2e-runner`、`build-error-resolver`、`doc-updater` |
+
+## V1.3 手工验收标准
+
+必须使用真实 Tauri App 验收：
+
+1. 打包后的真实 App 中，txt、图片、PDF、MP4/WebM 预览不被 CSP 阻断。
+2. MKV、AVI 等不支持格式仍显示明确的不支持提示。
+3. 非 App 资料库目录内的 `stored_path` 不会被预览接口读取。
+4. 打开文件夹内资料并返回后，资料区仍停留在原文件夹。
+5. 保存笔记失败时有明确提示，原输入内容不丢失。
+6. 删除笔记失败时有明确提示，不出现 UI 与数据库状态不一致。
+7. 资料库清理前确认文案与实际清理对象一致。
+8. 清理失败时可重试，重复清理后状态可收敛。
+9. V1.1 真实库副本升级后，资料、文件夹和阅读状态保持可用。
+10. V1.2 已有 PDF 目录、视频播放、资料文件夹能力不回退。
+11. 删除学习内容后，多层文件夹资料无孤儿记录或无引用 App 副本残留。
+12. 断网状态下，上述流程全部可用。
+
+## V1.3 工程验收标准
+
+发布前必须全部通过：
+
+```text
+npm.cmd test
+npm.cmd run typecheck
+npm.cmd run build
+cargo fmt --check
+cargo test
+cargo clippy -- -D warnings
+npm.cmd run tauri -- build --debug
+```
+
+正式发包前再运行：
+
+```text
+npm.cmd run tauri -- build
+```
+
 ## 下一步
 
-1. 使用真实 App 执行 V1.1 手工验收。
-2. 暂时不提交当前 V1.1 改动。
+1. 先提交或整理当前 Codex agents / 配置变更，临时文件不进入业务 release。
+2. 按 V1.3 A1-A7 顺序推进稳定化开发。
+3. A1-A6 完成后执行 V1.3 工程验收。
+4. A7 使用真实 App 复测 V1.2 主线并准备 V1.3 release 包。
 
 ## 推迟项
 
@@ -351,13 +428,15 @@ npm.cmd run tauri -- build --debug
 - Markdown 或复杂富文本笔记。
 - SQLite 加密。
 - Office 资料预览。
-- 视频资料预览。
-- PDF 搜索、目录、大纲。
-- 资料文件夹和复杂资料树。
+- Office 转 PDF。
+- 新视频格式支持。
+- 视频播放进度记忆。
+- PDF 全文搜索。
+- 复杂资料树和拖拽移动。
+- 跨学习内容移动资料。
 - 笔记分组。
 - PDF 滚动位置精细恢复。
 - Office 外部打开兜底。
-- 轻量视频播放。
 
 ## 风险
 
@@ -443,6 +522,8 @@ npm.cmd run tauri -- build --debug
 - 2026-06-10：根据手工测试反馈修复主页删除学习内容无可见提示的问题；将 `window.confirm` 改为 App 内确认弹窗，确认前不会删除，取消会保留学习内容，删除失败会在弹窗内提示并允许重试。
 - 2026-06-10：修复删除确认弹窗遮罩只覆盖页面内容区域的问题；根因为弹窗位于带 `transform` 动画的路由容器内，现已改为 portal 到 `document.body`，遮罩覆盖整个窗口。
 - 2026-06-10：用户完成 V1.1 真实 App 手工测试，反馈“没什么问题了”；当前等待是否提交和是否准备 V1.1 发包的确认。
+- 2026-06-12：移除旧 `project_manager` 和 `technical_lead` 项目 agent；后续由 `planner` 替代版本规划职责，由 `architect` 替代跨层技术判断职责，由 `doc-updater` 维护稳定项目记录。
+- 2026-06-12：由 `planner`、`architect`、`doc-updater` 三个项目 agent 共同规划 V1.3；确认 V1.3 定位为安全加固与体验一致性收口，不做大 UI 改版、不新增大功能；开发阶段记录为 A1-A7。
 - 2026-06-10：按手工视觉反馈完成详情页阅读框中等上移：压缩详情页顶部 padding、返回按钮下边距、标题块间距和标题区下边距，资料/笔记双栏整体上移。
 - 2026-06-10：确认提交当前 V1.1 改动并准备 V1.1 发包；版本号统一调整为 `1.1.0`。
 - 2026-06-10：完成 V1.1 release build，生成 `StudySeq_1.1.0_x64_en-US.msi` 和 `StudySeq_1.1.0_x64-setup.exe`。

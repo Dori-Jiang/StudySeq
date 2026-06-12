@@ -1,2 +1,64 @@
-# Codex project configuration placeholder.
+# Codex project configuration for StudySeq / 知序.
 
+[features]
+multi_agent = true
+
+[agents]
+max_threads = 6
+max_depth = 1
+
+[agents.planner]
+description = "用于 V1.3+ 范围规划、功能拆分、风险识别和版本边界收敛。"
+config_file = "agents/planner.toml"
+
+[agents.architect]
+description = "用于跨 UI、Tauri command、Rust repository、SQLite 合同的大型架构变更。"
+config_file = "agents/architect.toml"
+
+[agents.tdd-guide]
+description = "新功能、bug 修复或重构行为时使用，要求 RED -> GREEN -> REFACTOR。"
+config_file = "agents/tdd-guide.toml"
+
+[agents.typescript-reviewer]
+description = "审查 app/src 下 TypeScript/React 改动，关注类型、异步、状态流和测试。"
+config_file = "agents/typescript-reviewer.toml"
+
+[agents.react-reviewer]
+description = "审查未来 UI 大改、React 组件边界、交互状态和视觉回归。"
+config_file = "agents/react-reviewer.toml"
+
+[agents.react-build-resolver]
+description = "React/Vite/Vitest/TypeScript 构建或测试失败时使用，专注前端最小修复。"
+config_file = "agents/react-build-resolver.toml"
+
+[agents.rust-reviewer]
+description = "审查 app/src-tauri Rust 改动，关注 Tauri command、repository、文件系统和错误处理。"
+config_file = "agents/rust-reviewer.toml"
+
+[agents.database-reviewer]
+description = "审查 SQLite schema、PRAGMA user_version 迁移、事务、递归删除和清理统计逻辑。"
+config_file = "agents/database-reviewer.toml"
+
+[agents.security-reviewer]
+description = "审查本地文件安全、Tauri 边界、路径穿越、删除安全和错误泄露。"
+config_file = "agents/security-reviewer.toml"
+
+[agents.e2e-runner]
+description = "设计和执行 StudySeq 关键流程验证，覆盖 UI、资料、阅读、笔记、删除和重启恢复。"
+config_file = "agents/e2e-runner.toml"
+
+[agents.build-error-resolver]
+description = "构建、类型、测试、clippy 或 Tauri 打包失败时使用，做最小修复。"
+config_file = "agents/build-error-resolver.toml"
+
+[agents.performance-optimizer]
+description = "大 PDF、视频、资料网格或 UI 大改出现卡顿/内存压力时使用。"
+config_file = "agents/performance-optimizer.toml"
+
+[agents.a11y-architect]
+description = "用于 UI 大改时检查可访问性、键盘流、对比度、焦点和信息层级。"
+config_file = "agents/a11y-architect.toml"
+
+[agents.doc-updater]
+description = "阶段结束、版本收口或稳定决策变化时更新项目文档和上下文。"
+config_file = "agents/doc-updater.toml"

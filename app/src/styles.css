@@ -535,9 +535,13 @@ button:disabled {
 .detail-shell {
   width: calc(100% - var(--page-gutter) * 2);
   max-width: none;
-  min-height: 100vh;
+  /* 锁定视口高度，页面不滚动：面板各自内部滚动，底部内容不再被推出窗口 */
+  height: 100vh;
+  box-sizing: border-box;
+  overflow: hidden;
   margin: 0 auto;
-  padding: 28px 0 48px;
+  /* 顶部给 40px 悬浮窗口栏留出空间 */
+  padding: 46px 0 14px;
   display: flex;
   flex-direction: column;
 }
@@ -546,7 +550,7 @@ button:disabled {
   display: grid;
   width: 38px;
   height: 38px;
-  margin-bottom: 10px;
+  flex-shrink: 0;
   place-items: center;
   color: #2f78c6;
   border: 0;
@@ -572,15 +576,26 @@ button:disabled {
     inset 0 0 0 1px rgb(255 255 255 / 18%);
 }
 
+/* 返回按钮、标题块、进度块并成一行，压缩头部高度 */
 .detail-header {
-  display: block;
-  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
 }
 
 .detail-title-block {
   display: grid;
-  gap: 8px;
+  gap: 4px;
+  min-width: 0;
   max-width: min(760px, 100%);
+}
+
+.detail-title-block h1 {
+  font-size: 26px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .detail-header-meta {
@@ -591,9 +606,11 @@ button:disabled {
 .detail-progress-summary {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px 16px;
+  gap: 6px 16px;
   align-items: center;
-  width: min(520px, 100%);
+  width: min(360px, 40%);
+  margin-left: auto;
+  flex-shrink: 0;
   color: #607086;
   font-size: 13px;
 }
@@ -659,12 +676,13 @@ button:disabled {
   column-gap: 8px;
   align-items: stretch;
   flex: 1;
-  min-height: 520px;
+  min-height: 0;
 }
 
 .detail-panel {
   min-width: 0;
-  min-height: 300px;
+  min-height: 0;
+  overflow-y: auto;
   padding: 20px;
   background: #ffffff;
   border: 1px solid #d9e7f6;
@@ -1552,8 +1570,21 @@ textarea {
     padding: 18px 0 28px;
   }
 
+  /* 窄屏回退为单列页面滚动模式 */
   .detail-shell {
+    height: auto;
     min-height: auto;
+    overflow: visible;
+  }
+
+  .detail-panel {
+    overflow-y: visible;
+    min-height: 300px;
+  }
+
+  .detail-progress-summary {
+    width: 100%;
+    margin-left: 0;
   }
 
   .home-header,

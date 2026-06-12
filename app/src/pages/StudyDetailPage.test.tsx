@@ -140,7 +140,9 @@ describe("StudyDetailPage", () => {
     expect(screen.getByText("第一条笔记")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "第一条笔记" })).not.toBeInTheDocument();
     expect(screen.queryByText("纯文本正文")).not.toBeInTheDocument();
-    expect(screen.getByRole("progressbar", { name: "学习进度" }).closest(".detail-title-block")).toBeInTheDocument();
+    expect(
+      screen.getByRole("progressbar", { name: "学习进度" }).closest(".detail-header"),
+    ).toBeInTheDocument();
   });
 
   it("shows the note editor as a document surface with the title as the headline", async () => {

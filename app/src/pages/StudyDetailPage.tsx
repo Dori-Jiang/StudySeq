@@ -548,26 +548,26 @@ export function StudyDetailPage() {
 
   return (
     <main className="detail-shell">
-      <Link className="page-back-button" to="/" aria-label="返回主页">
-        <ChevronLeftIcon />
-      </Link>
       <section className="detail-header">
+        <Link className="page-back-button" to="/" aria-label="返回主页">
+          <ChevronLeftIcon />
+        </Link>
         <div className="detail-title-block">
           <h1>{detail.learningContent.name}</h1>
           <p className="detail-header-meta">{`${statusLabels[detail.learningContent.status]} · 预计 ${formatHours(detail.learningContent.estimatedHours)}`}</p>
-          <div className="detail-progress-summary">
-            <span>学习进度</span>
-            <strong>{detail.learningContent.progress}%</strong>
-            <div
-              aria-label="学习进度"
-              aria-valuemax={100}
-              aria-valuemin={0}
-              aria-valuenow={detail.learningContent.progress}
-              className="detail-progress-bar"
-              role="progressbar"
-            >
-              <span style={{ width: `${detail.learningContent.progress}%` }} />
-            </div>
+        </div>
+        <div className="detail-progress-summary">
+          <span>学习进度</span>
+          <strong>{detail.learningContent.progress}%</strong>
+          <div
+            aria-label="学习进度"
+            aria-valuemax={100}
+            aria-valuemin={0}
+            aria-valuenow={detail.learningContent.progress}
+            className="detail-progress-bar"
+            role="progressbar"
+          >
+            <span style={{ width: `${detail.learningContent.progress}%` }} />
           </div>
         </div>
       </section>

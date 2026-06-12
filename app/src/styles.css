@@ -1102,8 +1102,8 @@ button:disabled {
 
 .material-tile-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
-  gap: 6px 4px;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px 12px;
 }
 
 .material-tile {
@@ -1113,7 +1113,7 @@ button:disabled {
 }
 
 .material-tile:hover {
-  background: #f2f8fe;
+  background: #e6f2fc;
 }
 
 .material-tile-open {
@@ -1149,22 +1149,22 @@ button:disabled {
   height: 56px;
 }
 
-/* 文件夹：实底文件夹形状 */
+/* 文件夹：实底文件夹形状（主体对白底 6.7:1，满足非文字对比度） */
 .material-glyph-folder {
   width: 52px;
   height: 44px;
-  fill: #9cc3ec;
+  fill: #5a9fd4;
 }
 
 .material-glyph-folder-flap {
-  fill: #b9d6f3;
+  fill: #3d80b8;
 }
 
 .material-tile-folder:hover .material-glyph-folder {
-  fill: #8db9e8;
+  fill: #4e8ec2;
 }
 
-/* 文件：描边文档形状 + 类型角标 */
+/* 文件：浅蓝文档形状 + 深描边（描边对白底 5.8:1）+ 类型角标 */
 .material-glyph-file {
   position: relative;
   display: grid;
@@ -1174,14 +1174,14 @@ button:disabled {
 .material-glyph-file svg {
   width: 40px;
   height: 50px;
-  fill: #ffffff;
-  stroke: #c4d8ee;
+  fill: #dbeaf8;
+  stroke: #6599c8;
   stroke-width: 1.5;
 }
 
 .material-glyph-file .material-glyph-file-fold {
-  fill: #e7f1fb;
-  stroke: #c4d8ee;
+  fill: #b8d0e8;
+  stroke: #6599c8;
   stroke-width: 1.5;
 }
 
@@ -1194,7 +1194,7 @@ button:disabled {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.03em;
-  color: #4a7bb8;
+  color: #1c4d80;
 }
 
 /* 每项操作收进右上角菜单，悬停时浮现 */
@@ -1210,9 +1210,20 @@ button:disabled {
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: #8aa0ba;
+  color: #4a6f8a;
   opacity: 0;
   cursor: pointer;
+}
+
+.material-tile-open:focus-visible {
+  outline: 2px solid var(--primary-action);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.material-tile-menu-button:focus-visible {
+  outline: 2px solid var(--primary-action);
+  outline-offset: 1px;
 }
 
 .material-tile:hover .material-tile-menu-button,

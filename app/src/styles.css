@@ -914,10 +914,20 @@ button:disabled {
   padding: 0 12px;
 }
 
+/* 资料面板用纵向 flex，让统计面板钉在面板底部 */
+.detail-panel-materials {
+  display: flex;
+  flex-direction: column;
+}
+
+.detail-panel-materials .material-explorer {
+  margin-bottom: 24px;
+}
+
 .material-library-panel {
   display: grid;
   gap: 10px;
-  margin-top: 30px;
+  margin-top: auto;
   padding-top: 18px;
   border-top: 1px solid rgb(202 218 236 / 62%);
 }

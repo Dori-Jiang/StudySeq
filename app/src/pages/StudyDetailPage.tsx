@@ -581,7 +581,7 @@ export function StudyDetailPage() {
           gridTemplateColumns: `${detailSplitRatio}fr 16px ${100 - detailSplitRatio}fr`,
         }}
       >
-        <section className="detail-panel">
+        <section className="detail-panel detail-panel-materials">
           {selectedMaterial ? (
             <MaterialInlineReader
               material={selectedMaterial}

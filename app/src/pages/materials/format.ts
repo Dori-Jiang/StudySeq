@@ -14,8 +14,13 @@ export function formatBytes(sizeBytes: number) {
   return `${value.toFixed(1)} ${units[unitIndex]}`;
 }
 
-export function iconForMaterial(material: MaterialItem) {
-  if (material.kind === "folder") return "DIR";
+/** 文件类型短标签：优先取扩展名，无扩展名时按 mime 归类。 */
+export function fileTypeLabel(material: MaterialItem) {
+  const extension = material.name.includes(".")
+    ? material.name.split(".").pop()?.trim().toUpperCase()
+    : null;
+  if (extension && extension.length <= 5) return extension;
+
   const mimeType = material.mimeType;
   if (!mimeType) return "FILE";
   if (mimeType.startsWith("image/")) return "IMG";

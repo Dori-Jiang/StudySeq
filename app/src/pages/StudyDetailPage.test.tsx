@@ -211,16 +211,16 @@ describe("StudyDetailPage", () => {
     renderDetailPage();
     await screen.findByText("资料.txt");
 
-    expect(screen.getByText("2.5 MB")).toBeInTheDocument();
+    // 大图标格子只显示名字和类型，不显示大小等附加信息
+    expect(screen.queryByText("2.5 MB")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /预览/ })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("资料轻量预览")).not.toBeInTheDocument();
     expect(previewMaterialFile).not.toHaveBeenCalled();
     expect(screen.queryByRole("link", { name: "阅读" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "阅读" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "打开资料：资料.txt" })).toBeInTheDocument();
-    const materialItem = screen.getByText("资料.txt").closest("article") as HTMLElement;
-    const actions = within(materialItem).getByRole("group", { name: "资料操作：资料.txt" });
-    expect(within(actions).getByRole("button", { name: "删除" })).toBeInTheDocument();
+    const menu = await openMaterialMenu("资料.txt");
+    expect(within(menu).getByRole("menuitem", { name: "删除" })).toBeInTheDocument();
   });
 
   it("opens a material inside the left detail pane and can return to the material list", async () => {
@@ -275,8 +275,8 @@ describe("StudyDetailPage", () => {
     renderDetailPage();
     await screen.findByText("资料.txt");
 
-    const materialItem = screen.getByText("资料.txt").closest("article") as HTMLElement;
-    await userEvent.click(within(materialItem).getByRole("button", { name: "删除" }));
+    const menu = await openMaterialMenu("资料.txt");
+    await userEvent.click(within(menu).getByRole("menuitem", { name: "删除" }));
 
     expect(previewMaterialFile).not.toHaveBeenCalled();
     expect(screen.getByText("已标记删除 1 个资料")).toBeInTheDocument();
@@ -467,16 +467,16 @@ describe("StudyDetailPage", () => {
     renderDetailPage();
     await screen.findByText("资料.txt");
 
-    const materialItem = screen.getByText("资料.txt").closest("article") as HTMLElement;
-    await userEvent.click(within(materialItem).getByRole("button", { name: "删除" }));
+    const menu = await openMaterialMenu("资料.txt");
+    await userEvent.click(within(menu).getByRole("menuitem", { name: "删除" }));
     expect(screen.queryByText("资料.txt")).not.toBeInTheDocument();
     expect(screen.getByText("已标记删除 1 个资料")).toBeInTheDocument();
 
     await userEvent.click(screen.getByText("撤回"));
     expect(screen.getByText("资料.txt")).toBeInTheDocument();
 
-    const restoredMaterialItem = screen.getByText("资料.txt").closest("article") as HTMLElement;
-    await userEvent.click(within(restoredMaterialItem).getByRole("button", { name: "删除" }));
+    const restoredMenu = await openMaterialMenu("资料.txt");
+    await userEvent.click(within(restoredMenu).getByRole("menuitem", { name: "删除" }));
     await userEvent.click(screen.getByRole("button", { name: "保存资料删除" }));
 
     await waitFor(() => {
@@ -559,8 +559,8 @@ describe("StudyDetailPage", () => {
 
     renderDetailPage();
     await screen.findByText("资料.txt");
-    const materialItem = screen.getByText("资料.txt").closest("article") as HTMLElement;
-    await userEvent.click(within(materialItem).getByRole("button", { name: "重命名" }));
+    const menu = await openMaterialMenu("资料.txt");
+    await userEvent.click(within(menu).getByRole("menuitem", { name: "重命名" }));
 
     await waitFor(() => {
       expect(renameMaterialItem).toHaveBeenCalledWith({
@@ -594,17 +594,10 @@ describe("StudyDetailPage", () => {
     renderDetailPage();
     await screen.findByText("资料.txt");
 
-    await userEvent.click(
-      within(screen.getByText("资料.txt").closest("article") as HTMLElement).getByRole("button", {
-        name: "删除",
-      }),
-    );
-    await userEvent.click(
-      within(screen.getByText("失败资料.txt").closest("article") as HTMLElement).getByRole(
-        "button",
-        { name: "删除" },
-      ),
-    );
+    const firstMenu = await openMaterialMenu("资料.txt");
+    await userEvent.click(within(firstMenu).getByRole("menuitem", { name: "删除" }));
+    const secondMenu = await openMaterialMenu("失败资料.txt");
+    await userEvent.click(within(secondMenu).getByRole("menuitem", { name: "删除" }));
     await userEvent.click(screen.getByRole("button", { name: "保存资料删除" }));
 
     await waitFor(() => {
@@ -778,8 +771,8 @@ describe("StudyDetailPage", () => {
 
       renderDetailPage();
       await screen.findByText("第一章");
-      const actions = screen.getByRole("group", { name: "资料操作：第一章" });
-      await userEvent.click(within(actions).getByRole("button", { name: "移动到" }));
+      const menu = await openMaterialMenu("第一章");
+      await userEvent.click(within(menu).getByRole("menuitem", { name: "移动到" }));
 
       const moveDialog = await screen.findByRole("dialog");
       expect(within(moveDialog).getByRole("button", { name: "第一章" })).toBeDisabled();
@@ -811,12 +804,14 @@ describe("StudyDetailPage", () => {
 
       // 进入文件夹标记删除子项
       await userEvent.click(screen.getByRole("button", { name: "打开文件夹：第一章" }));
-      const fileActions = await screen.findByRole("group", { name: "资料操作：章节资料.txt" });
-      await userEvent.click(within(fileActions).getByRole("button", { name: "删除" }));
+      await screen.findByText("章节资料.txt");
+      const fileMenu = await openMaterialMenu("章节资料.txt");
+      await userEvent.click(within(fileMenu).getByRole("menuitem", { name: "删除" }));
       // 返回根目录标记删除祖先文件夹
       await userEvent.click(screen.getByRole("button", { name: "根目录" }));
-      const folderActions = await screen.findByRole("group", { name: "资料操作：第一章" });
-      await userEvent.click(within(folderActions).getByRole("button", { name: "删除" }));
+      await screen.findByText("第一章");
+      const folderMenu = await openMaterialMenu("第一章");
+      await userEvent.click(within(folderMenu).getByRole("menuitem", { name: "删除" }));
 
       await userEvent.click(await screen.findByRole("button", { name: "保存资料删除" }));
 
@@ -845,14 +840,14 @@ describe("StudyDetailPage", () => {
       renderDetailPage();
       await screen.findByText("他处");
 
-      const otherActions = screen.getByRole("group", { name: "资料操作：他处" });
-      await userEvent.click(within(otherActions).getByRole("button", { name: "删除" }));
+      const otherMenu = await openMaterialMenu("他处");
+      await userEvent.click(within(otherMenu).getByRole("menuitem", { name: "删除" }));
       await waitFor(() => {
         expect(screen.queryByText("他处")).not.toBeInTheDocument();
       });
 
-      const fileActions = screen.getByRole("group", { name: "资料操作：资料.txt" });
-      await userEvent.click(within(fileActions).getByRole("button", { name: "移动到" }));
+      const fileMenu = await openMaterialMenu("资料.txt");
+      await userEvent.click(within(fileMenu).getByRole("menuitem", { name: "移动到" }));
       const moveDialog = await screen.findByRole("dialog");
 
       expect(within(moveDialog).getByRole("button", { name: "他处" })).toBeDisabled();
@@ -881,8 +876,8 @@ describe("StudyDetailPage", () => {
 
       renderDetailPage();
       await screen.findByText("第一章");
-      const actions = screen.getByRole("group", { name: "资料操作：第一章" });
-      await userEvent.click(within(actions).getByRole("button", { name: "删除" }));
+      const menu = await openMaterialMenu("第一章");
+      await userEvent.click(within(menu).getByRole("menuitem", { name: "删除" }));
 
       await waitFor(() => {
         expect(confirmSpy).toHaveBeenCalledWith(
@@ -898,6 +893,11 @@ describe("StudyDetailPage", () => {
     });
   });
 });
+
+async function openMaterialMenu(name: string) {
+  await userEvent.click(screen.getByRole("button", { name: `资料操作：${name}` }));
+  return await screen.findByRole("menu", { name: `资料操作菜单：${name}` });
+}
 
 function renderDetailPage() {
   render(

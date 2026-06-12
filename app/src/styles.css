@@ -1102,73 +1102,171 @@ button:disabled {
 
 .material-tile-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  gap: 6px 4px;
 }
 
 .material-tile {
-  display: grid;
-  gap: 6px;
-  padding: 12px 10px 10px;
-  border: 1px solid #edf3fa;
+  position: relative;
   border-radius: 10px;
-  background: #fbfdff;
   text-align: center;
+}
+
+.material-tile:hover {
+  background: #f2f8fe;
 }
 
 .material-tile-open {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   justify-items: center;
+  width: 100%;
   border: none;
   background: transparent;
-  padding: 0;
+  padding: 14px 8px 12px;
   cursor: pointer;
   min-width: 0;
 }
 
 .material-tile-open h3 {
   margin: 0;
+  max-width: 100%;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
+  line-height: 1.35;
   color: #2b3a4e;
   word-break: break-all;
-}
-
-.material-tile-open p {
-  margin: 0;
-  font-size: 12px;
-  color: #8aa0ba;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .material-tile-icon {
   display: grid;
   place-items: center;
-  width: 52px;
-  height: 52px;
-  border-radius: 12px;
-  background: #eaf3fd;
-  color: #4a7bb8;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  width: 56px;
+  height: 56px;
 }
 
-.material-tile-folder .material-tile-icon {
-  background: #dfecfb;
+/* 文件夹：实底文件夹形状 */
+.material-glyph-folder {
+  width: 52px;
+  height: 44px;
+  fill: #9cc3ec;
+}
+
+.material-glyph-folder-flap {
+  fill: #b9d6f3;
+}
+
+.material-tile-folder:hover .material-glyph-folder {
+  fill: #8db9e8;
+}
+
+/* 文件：描边文档形状 + 类型角标 */
+.material-glyph-file {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.material-glyph-file svg {
+  width: 40px;
+  height: 50px;
+  fill: #ffffff;
+  stroke: #c4d8ee;
+  stroke-width: 1.5;
+}
+
+.material-glyph-file .material-glyph-file-fold {
+  fill: #e7f1fb;
+  stroke: #c4d8ee;
+  stroke-width: 1.5;
+}
+
+.material-glyph-file em {
+  position: absolute;
+  bottom: 7px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: #4a7bb8;
+}
+
+/* 每项操作收进右上角菜单，悬停时浮现 */
+.material-tile-menu-button {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #8aa0ba;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.material-tile:hover .material-tile-menu-button,
+.material-tile-menu-button:focus-visible,
+.material-tile-menu-button[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.material-tile-menu-button:hover {
+  background: #e3eefb;
   color: #35608f;
 }
 
-.material-tile-actions {
-  display: flex;
-  justify-content: center;
-  gap: 6px;
-  flex-wrap: wrap;
+.material-tile-menu-button svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
 }
 
-.material-tile-actions button {
-  font-size: 12px;
-  padding: 3px 8px;
+.material-tile-menu {
+  position: absolute;
+  top: 30px;
+  right: 6px;
+  z-index: 10;
+  display: grid;
+  min-width: 96px;
+  padding: 4px;
+  border: 1px solid #e3edf8;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 8px 22px rgba(43, 58, 78, 0.12);
+}
+
+.material-tile-menu button {
+  border: none;
+  background: transparent;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: left;
+  color: #2b3a4e;
+  cursor: pointer;
+}
+
+.material-tile-menu button:hover {
+  background: #f2f8fe;
+}
+
+.material-tile-menu .material-tile-menu-danger {
+  color: #b3261e;
+}
+
+.material-tile-menu .material-tile-menu-danger:hover {
+  background: #fdf1f0;
 }
 
 .move-dialog-targets {

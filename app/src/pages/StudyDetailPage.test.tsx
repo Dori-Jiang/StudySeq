@@ -270,6 +270,18 @@ describe("StudyDetailPage", () => {
     expect(screen.queryByText("资料正文")).not.toBeInTheDocument();
   });
 
+  it("does not expose raw runtime errors when material preview fails", async () => {
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    previewMaterialFile.mockRejectedValueOnce(new Error("C:\\Users\\123\\secret.txt"));
+
+    renderDetailPage();
+    await screen.findByText("资料.txt");
+    await userEvent.click(screen.getByRole("button", { name: "打开资料：资料.txt" }));
+
+    expect(await screen.findByText("操作失败，请稍后重试")).toBeInTheDocument();
+    expect(screen.queryByText(/C:\\Users/)).not.toBeInTheDocument();
+  });
+
   it("keeps material delete independent from the inline reader", async () => {
     getLearningDetail.mockResolvedValueOnce(baseDetail);
     vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -497,6 +509,7 @@ describe("StudyDetailPage", () => {
         libraryBytes: 11,
         missingFileCount: 1,
         orphanFileCount: 1,
+        orphanDatabaseRecordCount: 1,
         orphanBytes: 6,
         updatedAt: "2026-06-09T00:00:00Z",
       })
@@ -507,6 +520,7 @@ describe("StudyDetailPage", () => {
         libraryBytes: 11,
         missingFileCount: 1,
         orphanFileCount: 1,
+        orphanDatabaseRecordCount: 1,
         orphanBytes: 6,
         updatedAt: "2026-06-09T00:01:00Z",
       })
@@ -517,6 +531,7 @@ describe("StudyDetailPage", () => {
         libraryBytes: 5,
         missingFileCount: 0,
         orphanFileCount: 0,
+        orphanDatabaseRecordCount: 0,
         orphanBytes: 0,
         updatedAt: "2026-06-09T00:02:00Z",
       });
@@ -547,6 +562,52 @@ describe("StudyDetailPage", () => {
     });
     expect(await screen.findByText(/已清理 1 个无引用文件/)).toBeInTheDocument();
     expect(screen.getByText("无引用文件 0")).toBeInTheDocument();
+  });
+
+  it("shows cleanup confirmation matching orphan files and orphan database records", async () => {
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    getMaterialLibraryStats
+      .mockResolvedValueOnce({
+        materialCount: 2,
+        referencedBytes: 10,
+        actualReferencedBytes: 5,
+        libraryBytes: 11,
+        missingFileCount: 3,
+        orphanFileCount: 1,
+        orphanDatabaseRecordCount: 2,
+        orphanBytes: 6,
+        updatedAt: "2026-06-09T00:01:00Z",
+      })
+      .mockResolvedValueOnce({
+        materialCount: 2,
+        referencedBytes: 10,
+        actualReferencedBytes: 5,
+        libraryBytes: 5,
+        missingFileCount: 3,
+        orphanFileCount: 0,
+        orphanDatabaseRecordCount: 0,
+        orphanBytes: 0,
+        updatedAt: "2026-06-09T00:02:00Z",
+      });
+    cleanupMaterialLibrary.mockResolvedValueOnce({
+      deletedOrphanFileCount: 1,
+      deletedOrphanDatabaseRecordCount: 2,
+      deletedBytes: 6,
+      failedPaths: [],
+      updatedAt: "2026-06-09T00:01:00Z",
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderDetailPage();
+    await screen.findByText("资料.txt");
+    await userEvent.click(screen.getByRole("button", { name: "清理无引用资料" }));
+
+    await waitFor(() => {
+      expect(confirmSpy).toHaveBeenCalledWith(
+        "确定清理 1 个无引用文件，并删除 2 条孤儿资料记录吗？缺失文件只会保留为统计提示。",
+      );
+    });
+    expect(await screen.findByText("孤儿记录 0")).toBeInTheDocument();
   });
 
   it("renames material and updates the visible material row", async () => {
@@ -591,7 +652,10 @@ describe("StudyDetailPage", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     deleteMaterialItem
       .mockResolvedValueOnce()
-      .mockRejectedValueOnce(new Error("文件被占用"));
+      .mockRejectedValueOnce({
+        code: "file_system_error",
+        message: "文件系统操作失败，请确认文件仍可访问",
+      });
 
     renderDetailPage();
     await screen.findByText("资料.txt");
@@ -635,6 +699,97 @@ describe("StudyDetailPage", () => {
     await waitFor(() => {
       expect(deleteNote).toHaveBeenCalledWith("note-1");
     });
+    expect(screen.queryByText("第一条笔记")).not.toBeInTheDocument();
+  });
+
+  it("keeps new note draft when create note fails", async () => {
+    getLearningDetail.mockResolvedValueOnce({ ...baseDetail, notes: [] });
+    createNote.mockRejectedValueOnce({
+      code: "database_error",
+      message: "保存失败",
+    });
+
+    renderDetailPage();
+    await screen.findByText("还没有笔记");
+
+    await userEvent.type(screen.getByLabelText("笔记标题"), "失败草稿");
+    await userEvent.type(screen.getByLabelText("笔记正文"), "不会丢失的正文");
+    await userEvent.click(screen.getByRole("button", { name: "保存笔记" }));
+
+    expect(await screen.findByText("保存失败")).toBeInTheDocument();
+    expect(screen.getByLabelText("笔记标题")).toHaveValue("失败草稿");
+    expect(screen.getByLabelText("笔记正文")).toHaveValue("不会丢失的正文");
+    expect(screen.queryByText("失败草稿")).not.toBeInTheDocument();
+    expect(screen.getByText("还没有笔记")).toBeInTheDocument();
+  });
+
+  it("keeps existing note draft when update note fails", async () => {
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    updateNote.mockRejectedValueOnce({
+      code: "database_error",
+      message: "更新失败",
+    });
+
+    renderDetailPage();
+    await screen.findByText("第一条笔记");
+    await userEvent.selectOptions(screen.getByLabelText("选择笔记"), "note-1");
+    await userEvent.clear(screen.getByLabelText("笔记标题"));
+    await userEvent.type(screen.getByLabelText("笔记标题"), "未保存标题");
+    await userEvent.clear(screen.getByLabelText("笔记正文"));
+    await userEvent.type(screen.getByLabelText("笔记正文"), "未保存正文");
+    await userEvent.click(screen.getByRole("button", { name: "保存笔记" }));
+
+    expect(await screen.findByText("更新失败")).toBeInTheDocument();
+    expect(screen.getByLabelText("笔记标题")).toHaveValue("未保存标题");
+    expect(screen.getByLabelText("笔记正文")).toHaveValue("未保存正文");
+    expect(screen.getByText("第一条笔记")).toBeInTheDocument();
+    expect(screen.queryByText("未保存标题")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("选择笔记")).toHaveValue("note-1");
+  });
+
+  it("keeps note visible and selected when delete note fails", async () => {
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    deleteNote.mockRejectedValueOnce({
+      code: "database_error",
+      message: "删除失败",
+    });
+
+    renderDetailPage();
+    await screen.findByText("第一条笔记");
+    await userEvent.selectOptions(screen.getByLabelText("选择笔记"), "note-1");
+    await userEvent.click(screen.getByRole("button", { name: "删除当前笔记" }));
+
+    expect(await screen.findByText("删除失败")).toBeInTheDocument();
+    expect(screen.getByText("第一条笔记")).toBeInTheDocument();
+    expect(screen.getByLabelText("选择笔记")).toHaveValue("note-1");
+    expect(screen.getByLabelText("笔记标题")).toHaveValue("第一条笔记");
+    expect(screen.getByLabelText("笔记正文")).toHaveValue("纯文本正文");
+  });
+
+  it("allows retry after failed note delete", async () => {
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    deleteNote
+      .mockRejectedValueOnce({
+        code: "database_error",
+        message: "删除失败",
+      })
+      .mockResolvedValueOnce();
+
+    renderDetailPage();
+    await screen.findByText("第一条笔记");
+    await userEvent.selectOptions(screen.getByLabelText("选择笔记"), "note-1");
+    await userEvent.click(screen.getByRole("button", { name: "删除当前笔记" }));
+    expect(await screen.findByText("删除失败")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "删除当前笔记" }));
+
+    await waitFor(() => {
+      expect(deleteNote).toHaveBeenCalledTimes(2);
+    });
+    expect(deleteNote).toHaveBeenNthCalledWith(1, "note-1");
+    expect(deleteNote).toHaveBeenNthCalledWith(2, "note-1");
     expect(screen.queryByText("第一条笔记")).not.toBeInTheDocument();
   });
 
@@ -734,6 +889,35 @@ describe("StudyDetailPage", () => {
       expect(await screen.findByText("新文件.txt")).toBeInTheDocument();
     });
 
+    it("打开文件夹内资料并返回后仍停留在原文件夹", async () => {
+      getLearningDetail.mockResolvedValueOnce({
+        ...baseDetail,
+        materials: [folderItem, nestedFile, baseDetail.materials[0]],
+      });
+      previewMaterialFile.mockResolvedValueOnce({
+        materialId: "mat-nested",
+        kind: "text",
+        mimeType: "text/plain",
+        text: "章节正文",
+        dataUrl: null,
+        encoding: "utf-8",
+      });
+
+      renderDetailPage();
+      await screen.findByText("第一章");
+      await userEvent.click(screen.getByRole("button", { name: "打开文件夹：第一章" }));
+      expect(await screen.findByText("章节资料.txt")).toBeInTheDocument();
+      expect(screen.queryByText("资料.txt")).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: "打开资料：章节资料.txt" }));
+      expect(await screen.findByText("章节正文")).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "返回资料列表" }));
+
+      expect(await screen.findByText("章节资料.txt")).toBeInTheDocument();
+      expect(screen.queryByText("资料.txt")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "根目录" })).toBeEnabled();
+    });
+
     it("新建文件夹调用 API 并显示在当前层", async () => {
       getLearningDetail.mockResolvedValueOnce(baseDetail);
       vi.spyOn(window, "prompt").mockReturnValue("新章节");
@@ -830,6 +1014,48 @@ describe("StudyDetailPage", () => {
       expect(screen.getByText("资料.txt")).toBeInTheDocument();
     });
 
+    it("删除当前文件夹后返回最近仍存在的父级", async () => {
+      const innerFolder = {
+        ...folderItem,
+        id: "folder-inner",
+        name: "第二节",
+        parentId: "folder-1",
+      };
+      const innerFile = {
+        ...nestedFile,
+        id: "mat-inner",
+        name: "第二节资料.txt",
+        parentId: "folder-inner",
+      };
+      getLearningDetail.mockResolvedValueOnce({
+        ...baseDetail,
+        materials: [folderItem, innerFolder, innerFile, baseDetail.materials[0]],
+      });
+      countMaterialSubtree.mockResolvedValueOnce({ fileCount: 1, folderCount: 0 });
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      deleteMaterialItem.mockResolvedValueOnce();
+
+      renderDetailPage();
+      await screen.findByText("第一章");
+      await userEvent.click(screen.getByRole("button", { name: "打开文件夹：第一章" }));
+      await userEvent.click(await screen.findByRole("button", { name: "打开文件夹：第二节" }));
+      expect(await screen.findByText("第二节资料.txt")).toBeInTheDocument();
+
+      const innerFolderInBreadcrumb = screen.getByRole("button", { name: "第二节" });
+      expect(innerFolderInBreadcrumb).toBeDisabled();
+      await userEvent.click(screen.getByRole("button", { name: "第一章" }));
+      const menu = await openMaterialMenu("第二节");
+      await userEvent.click(within(menu).getByRole("menuitem", { name: "删除" }));
+      await userEvent.click(screen.getByRole("button", { name: "保存资料删除" }));
+
+      await waitFor(() => {
+        expect(deleteMaterialItem).toHaveBeenCalledWith("folder-inner");
+      });
+      expect(await screen.findByText("这个文件夹是空的")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "第一章" })).toBeDisabled();
+      expect(screen.queryByText("第二节资料.txt")).not.toBeInTheDocument();
+    });
+
     it("移动对话框禁用已标记删除的文件夹目标", async () => {
       const otherFolder = { ...folderItem, id: "folder-other", name: "他处" };
       getLearningDetail.mockResolvedValueOnce({
@@ -859,7 +1085,10 @@ describe("StudyDetailPage", () => {
     it("导入资料失败时显示错误信息", async () => {
       getLearningDetail.mockResolvedValueOnce(baseDetail);
       open.mockResolvedValueOnce("C:/source/坏文件.txt");
-      importMaterialFile.mockRejectedValueOnce({ message: "资料文件不存在" });
+      importMaterialFile.mockRejectedValueOnce({
+        code: "source_file_missing",
+        message: "资料文件不存在",
+      });
 
       renderDetailPage();
       await screen.findByText("资料.txt");

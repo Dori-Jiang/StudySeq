@@ -36,7 +36,7 @@ let dataUrlCounter = 0;
 
 function uniqueDataUrl() {
   dataUrlCounter += 1;
-  return `data:application/pdf;base64,outline-test-${dataUrlCounter}`;
+  return `data:application/pdf;base64,${window.btoa(`outline-test-${dataUrlCounter}`)}`;
 }
 
 beforeEach(() => {
@@ -54,6 +54,26 @@ describe("PdfPreview 目录接线", () => {
     await user.click(screen.getByRole("button", { name: "目录" }));
 
     expect(await screen.findByRole("button", { name: "第一章" })).toBeInTheDocument();
+  });
+
+  it("用二进制数据加载 data URL，避免 PDF 读取被 CSP connect-src 拦截", async () => {
+    pdfGetOutlineMock.mockResolvedValue(null);
+    render(<PdfPreview dataUrl={uniqueDataUrl()} />);
+
+    await screen.findByText("第 1 / 5 页");
+
+    expect(pdfGetDocumentMock).toHaveBeenCalledWith({
+      data: expect.any(Uint8Array),
+    });
+  });
+
+  it("加载真实页数前不显示过期页码和默认总页数的错误组合", async () => {
+    pdfGetOutlineMock.mockResolvedValue(null);
+    render(<PdfPreview dataUrl={uniqueDataUrl()} initialPageNumber={8} />);
+
+    expect(screen.queryByText("第 8 / 1 页")).not.toBeInTheDocument();
+    expect(screen.getByText("正在加载 PDF")).toBeInTheDocument();
+    expect(await screen.findByText("第 5 / 5 页")).toBeInTheDocument();
   });
 
   it("点击大纲条目跳转到对应页", async () => {

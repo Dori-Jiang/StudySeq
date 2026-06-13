@@ -10,9 +10,9 @@
 
 ## 当前阶段
 
-当前进入 **V1.3 稳定化规划阶段**。
+当前进入 **V1.3 自动化开发完成、真实 App 手工验收待执行阶段**。
 
-V1.2 已完成 PDF 目录、视频播放和资料文件夹能力，当前开发分支为 `claude-version`。V1.3 不做大 UI 改版，也不新增大功能，定位为 V1.2 后的安全加固、错误体验和一致性收口。
+V1.2 已完成 PDF 目录、视频播放和资料文件夹能力，当前稳定参考分支为 `claude-version`。V1.3 开发分支为 `v1.3`。V1.3 不做大 UI 改版，也不新增大功能，定位为 V1.2 后的安全加固、错误体验和一致性收口。
 
 V1.3 目标不是扩成新平台能力，而是在 V1.2 稳定闭环上补齐审查遗留项：
 
@@ -23,6 +23,8 @@ V1.3 目标不是扩成新平台能力，而是在 V1.2 稳定闭环上补齐审
 -> 补齐笔记失败态
 -> 修正资料库清理一致性
 -> 复测 V1.2 PDF / 视频 / 文件夹主线
+-> V1.3 自动化开发完成
+-> 等待真实 App 手工验收
 -> 准备 V1.3 release
 ```
 
@@ -373,9 +375,23 @@ V1.3 采用 A1-A7 分阶段推进。阶段顺序按 `planner`、`architect`、`d
 | A6 | 笔记操作错误处理 | 补齐保存/删除笔记失败态 | 保存笔记、删除笔记路径增加 try/catch；保存失败保留输入；删除失败不从 UI 移除笔记；错误提示统一 | 保存失败不丢内容；删除失败有明确提示；用户可继续编辑或重试；前端测试覆盖 | `tdd-guide`、`typescript-reviewer` |
 | A7 | 回归验证与发布准备 | 确认 V1.2 主线不回退并准备 V1.3 release | 跑完整工程验证；真实 App 手测大 MP4 Range、WebM/MKV、中文名视频、V1.1 旧库升级、文件夹嵌套/移动/递归删除、删除学习内容无残留、断网全流程；版本号统一为 `1.3.0` 后发包 | 前端测试、类型检查、构建、Rust fmt/test/clippy、Tauri debug build 通过；真实 App 手测通过；正式包生成 | `e2e-runner`、`build-error-resolver`、`doc-updater` |
 
+### V1.3 自动化完成记录
+
+| 阶段 | 状态 | 完成内容 | 自动化验证 |
+| --- | --- | --- | --- |
+| A1 | 已完成 | `preview_material_file` 从 command 层传入 App 资料库目录，读取前做 canonical 路径校验；库外、相对穿越、缺失副本、folder、video/unsupported 均有 Rust 覆盖。 | `cargo test preview` 通过；全量 `cargo test` 通过。 |
+| A2 | 已完成 | `ApiError` 改为稳定 `code + message`；DB/IO 错误映射为用户友好中文文案；前端只展示稳定 `ApiError` message，未知运行时错误统一显示通用文案。 | `errors::tests::api_error_hides_database_and_io_details` 通过；`toUserMessage` 和页面错误泄露测试通过。 |
+| A3 | 已完成自动化部分 | `tauri.conf.json` CSP 从 `null` 收紧为最小策略，保留 data URL、asset 视频、PDF worker 所需来源。 | `npm.cmd run build`、`npm.cmd run tauri -- build --debug`、`npm.cmd run tauri -- build` 通过；真实 App CSP 手测待执行。 |
+| A4 | 已完成 | `MaterialLibraryStats` 增 `orphanDatabaseRecordCount`；cleanup 孤儿记录和阅读状态删除改为单事务；确认文案改为无引用文件 + 孤儿资料记录，缺失文件只作为统计提示。 | Rust cleanup 测试、前端确认文案测试通过；全量前端/Rust 测试通过。 |
+| A5 | 已完成 | `currentFolderId` 提升到 `StudyDetailPage` 受控状态；内嵌阅读返回后保留当前文件夹；删除当前文件夹后回到最近仍存在的父级。 | `StudyDetailPage.test.tsx` 覆盖打开资料返回、删除当前文件夹回退。 |
+| A6 | 已完成 | 保存笔记和删除笔记增加 try/catch；保存失败保留草稿；删除失败不移除笔记并允许重试。 | `StudyDetailPage.test.tsx` 覆盖新建保存失败、更新失败、删除失败和删除重试。 |
+| A7 | 已完成自动化部分 | 版本号统一为 `1.3.0`，debug 包和正式 release 包均已生成。 | V1.3 工程验收命令全部通过；真实 App 手工验收待用户执行。 |
+
 ## V1.3 手工验收标准
 
 必须使用真实 Tauri App 验收：
+
+当前状态：**待用户手工执行**。以下项目未由自动化测试替代。
 
 1. 打包后的真实 App 中，txt、图片、PDF、MP4/WebM 预览不被 CSP 阻断。
 2. MKV、AVI 等不支持格式仍显示明确的不支持提示。
@@ -404,18 +420,36 @@ cargo clippy -- -D warnings
 npm.cmd run tauri -- build --debug
 ```
 
+当前自动化验证结果（2026-06-12）：
+
+| 命令 | 结果 | 备注 |
+| --- | --- | --- |
+| `npm.cmd test` | 通过 | 10 个测试文件、100 个测试通过；jsdom canvas 未实现提示为测试环境噪声，退出码为 0。 |
+| `npm.cmd run typecheck` | 通过 | `tsc --noEmit` 通过。 |
+| `npm.cmd run build` | 通过 | Vite production build 通过。 |
+| `cargo fmt --check` | 通过 | Rust 格式检查通过。 |
+| `cargo test` | 通过 | 48 个 Rust 测试通过。 |
+| `cargo clippy -- -D warnings` | 通过 | 无 clippy warning。 |
+| `npm.cmd run tauri -- build --debug` | 通过 | 已生成 debug app 和 debug MSI/NSIS 包。 |
+
 正式发包前再运行：
 
 ```text
 npm.cmd run tauri -- build
 ```
 
+当前正式发包验证结果（2026-06-12）：
+
+- `npm.cmd run tauri -- build` 已通过。
+- 正式 exe：`app/src-tauri/target/release/studyseq.exe`
+- 正式 MSI：`app/src-tauri/target/release/bundle/msi/StudySeq_1.3.0_x64_en-US.msi`
+- 正式 NSIS：`app/src-tauri/target/release/bundle/nsis/StudySeq_1.3.0_x64-setup.exe`
+
 ## 下一步
 
-1. 先提交或整理当前 Codex agents / 配置变更，临时文件不进入业务 release。
-2. 按 V1.3 A1-A7 顺序推进稳定化开发。
-3. A1-A6 完成后执行 V1.3 工程验收。
-4. A7 使用真实 App 复测 V1.2 主线并准备 V1.3 release 包。
+1. 使用真实 App 执行 V1.3 手工验收标准，重点检查 CSP 下 txt、图片、PDF、MP4/WebM 预览和 V1.2 主线不回退。
+2. 手工验收通过后提交并推送 `v1.3` 分支。
+3. 如需要正式发布，再打 tag 并发布 V1.3 release 包。
 
 ## 推迟项
 

@@ -55,7 +55,7 @@ export function PdfPreview({
     startScrollTop: number;
   } | null>(null);
   const [pageNumber, setPageNumber] = useState(() => Math.max(1, initialPageNumber ?? 1));
-  const [pageCount, setPageCount] = useState(1);
+  const [pageCount, setPageCount] = useState<number | null>(null);
   const [scale, setScale] = useState(() => clampScale(initialScale ?? 1));
   const [renderScale, setRenderScale] = useState(() => clampScale(initialScale ?? 1));
   const pageCacheRef = useRef<Map<number, Promise<PdfPageProxy>>>(new Map());
@@ -63,12 +63,15 @@ export function PdfPreview({
   const lastPrefetchedPageRef = useRef<number | null>(null);
   const [isOutlineOpen, setIsOutlineOpen] = useState(false);
   const [outlineNodes, setOutlineNodes] = useState<PdfOutlineNode[] | null>(null);
+  const [hasLoadFailed, setHasLoadFailed] = useState(false);
   // 适应宽度基准：100% 缩放时页面铺满阅读区可用宽度；环境不支持测量时退回 A4 固定宽
   const [fitWidth, setFitWidth] = useState(PDF_BASE_WIDTH);
 
   const sheetWidth = fitWidth * scale;
   const sheetHeight = sheetWidth * (PDF_BASE_HEIGHT / PDF_BASE_WIDTH);
   const displayScale = sheetWidth / PDF_BASE_WIDTH;
+  const displayedPageNumber =
+    pageCount === null ? Math.max(1, pageNumber) : clampPageNumber(pageNumber, pageCount);
 
   useEffect(() => {
     const nextScale = clampScale(initialScale ?? 1);
@@ -76,10 +79,12 @@ export function PdfPreview({
     renderedPageCacheRef.current.clear();
     lastPrefetchedPageRef.current = null;
     setPageNumber(Math.max(1, initialPageNumber ?? 1));
+    setPageCount(null);
     setScale(nextScale);
     setRenderScale(nextScale);
     setIsOutlineOpen(false);
     setOutlineNodes(null);
+    setHasLoadFailed(false);
   }, [dataUrl, initialPageNumber, initialScale]);
 
   useEffect(() => {
@@ -110,12 +115,13 @@ export function PdfPreview({
 
     async function renderPdf() {
       const document = await loadPdfDocument(dataUrl);
+      const safePageNumber = clampPageNumber(pageNumber, document.numPages);
       if (!isCancelled) {
         setPageCount(document.numPages);
-        setPageNumber((currentPage) => Math.min(currentPage, document.numPages));
+        setPageNumber((currentPage) => clampPageNumber(currentPage, document.numPages));
+        setHasLoadFailed(false);
       }
 
-      const safePageNumber = clampPageNumber(pageNumber, document.numPages);
       const canvas = canvasRef.current;
       if (!canvas || isCancelled) return;
       const cachedRenderedPage = getCachedRenderedPage(
@@ -160,7 +166,7 @@ export function PdfPreview({
     }
 
     renderPdf().catch(() => {
-      // The surrounding preview surface stays visible; full error handling can be added later.
+      if (!isCancelled) setHasLoadFailed(true);
     });
 
     return () => {
@@ -196,8 +202,9 @@ export function PdfPreview({
   }, [displayScale]);
 
   useEffect(() => {
-    onStateChange?.({ pageNumber, scale });
-  }, [onStateChange, pageNumber, scale]);
+    if (pageCount === null || hasLoadFailed) return;
+    onStateChange?.({ pageNumber: displayedPageNumber, scale });
+  }, [displayedPageNumber, hasLoadFailed, onStateChange, pageCount, scale]);
 
   useEffect(() => {
     function handlePointerMove(event: PointerEvent) {
@@ -249,6 +256,7 @@ export function PdfPreview({
   }
 
   function handleOutlineJump(targetPageNumber: number) {
+    if (pageCount === null) return;
     setPageNumber(clampPageNumber(targetPageNumber, pageCount));
   }
 
@@ -264,16 +272,26 @@ export function PdfPreview({
         </button>
         <button
           type="button"
-          disabled={pageNumber <= 1}
+          disabled={pageCount === null || displayedPageNumber <= 1}
           onClick={() => setPageNumber((currentPage) => Math.max(1, currentPage - 1))}
         >
           上一页
         </button>
-        <span>{`第 ${pageNumber} / ${pageCount} 页`}</span>
+        <span>
+          {hasLoadFailed
+            ? "PDF 加载失败"
+            : pageCount === null
+              ? "正在加载 PDF"
+              : `第 ${displayedPageNumber} / ${pageCount} 页`}
+        </span>
         <button
           type="button"
-          disabled={pageNumber >= pageCount}
-          onClick={() => setPageNumber((currentPage) => Math.min(pageCount, currentPage + 1))}
+          disabled={pageCount === null || displayedPageNumber >= pageCount}
+          onClick={() =>
+            setPageNumber((currentPage) =>
+              pageCount === null ? currentPage : Math.min(pageCount, currentPage + 1),
+            )
+          }
         >
           下一页
         </button>
@@ -311,6 +329,7 @@ export function PdfPreview({
               }}
             >
               <canvas className="pdf-preview" ref={canvasRef} aria-label="PDF 预览" />
+              {hasLoadFailed && <p className="empty-state">PDF 加载失败，请重新打开资料</p>}
             </div>
           </div>
         </div>

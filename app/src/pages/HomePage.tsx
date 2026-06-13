@@ -8,6 +8,7 @@ import {
   listLearningContents,
   updateLearningContent,
 } from "../shared/api/learningContentApi";
+import { toUserMessage } from "../shared/api/errors";
 import type { LearningContent, StudyStatus } from "../shared/types";
 
 const statusLabels: Record<LearningContent["status"], string> = {
@@ -40,7 +41,7 @@ export function HomePage() {
       })
       .catch((loadError: unknown) => {
         if (isMounted) {
-          setError(toMessage(loadError));
+          setError(toUserMessage(loadError));
         }
       })
       .finally(() => {
@@ -103,7 +104,7 @@ export function HomePage() {
       );
       setContentPendingDelete(null);
     } catch (deleteError: unknown) {
-      setDeleteError(`删除学习内容失败：${toMessage(deleteError)}`);
+      setDeleteError(`删除学习内容失败：${toUserMessage(deleteError)}`);
     } finally {
       setIsDeletingContent(false);
     }
@@ -397,12 +398,4 @@ function StudyRowEditForm({
       {error ? <p className="error-message study-row-edit-error">{error}</p> : null}
     </form>
   );
-}
-
-function toMessage(error: unknown) {
-  if (typeof error === "object" && error !== null && "message" in error) {
-    return String(error.message);
-  }
-
-  return String(error);
 }

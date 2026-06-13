@@ -80,6 +80,7 @@ export type MaterialLibraryStats = {
   libraryBytes: number;
   missingFileCount: number;
   orphanFileCount: number;
+  orphanDatabaseRecordCount: number;
   orphanBytes: number;
   updatedAt: string;
 };

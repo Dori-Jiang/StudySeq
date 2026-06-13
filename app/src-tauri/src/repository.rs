@@ -554,7 +554,11 @@ impl LearningContentRepository {
         Ok(())
     }
 
-    pub fn preview_material_file(&self, material_id: &str) -> Result<MaterialPreview, AppError> {
+    pub fn preview_material_file(
+        &self,
+        material_id: &str,
+        material_library_dir: impl AsRef<Path>,
+    ) -> Result<MaterialPreview, AppError> {
         let Some(material) = self.get_material(material_id)? else {
             return Err(AppError::MaterialNotFound);
         };
@@ -570,12 +574,19 @@ impl LearningContentRepository {
                 encoding: None,
             });
         };
+        let stored_path_buf = PathBuf::from(&stored_path);
+        if !is_material_preview_path_inside_library(
+            &stored_path_buf,
+            material_library_dir.as_ref(),
+        )? {
+            return Err(AppError::MaterialPathOutsideLibrary);
+        }
         let mime_type = resolve_preview_mime(material.mime_type.as_deref(), &stored_path);
         let kind = preview_kind(mime_type.as_deref());
 
         match kind {
             MaterialPreviewKind::Text => {
-                let bytes = std::fs::read(&stored_path)?;
+                let bytes = read_material_preview_bytes(&stored_path_buf)?;
                 let (text, encoding) = decode_text(&bytes);
                 Ok(MaterialPreview {
                     material_id: material.id,
@@ -587,7 +598,7 @@ impl LearningContentRepository {
                 })
             }
             MaterialPreviewKind::Image | MaterialPreviewKind::Pdf => {
-                let bytes = std::fs::read(&stored_path)?;
+                let bytes = read_material_preview_bytes(&stored_path_buf)?;
                 let mime = mime_type
                     .clone()
                     .unwrap_or_else(|| "application/octet-stream".to_string());
@@ -698,6 +709,7 @@ impl LearningContentRepository {
         }
 
         let library_scan = scan_material_library(material_library_dir.as_ref(), &referenced_paths)?;
+        let orphan_database_record_count = self.list_orphan_materials()?.len() as i64;
 
         Ok(MaterialLibraryStats {
             material_count: file_materials.len() as i64,
@@ -706,6 +718,7 @@ impl LearningContentRepository {
             library_bytes: library_scan.library_bytes,
             missing_file_count,
             orphan_file_count: library_scan.orphan_files.len() as i64,
+            orphan_database_record_count,
             orphan_bytes: library_scan.orphan_bytes,
             updated_at: Utc::now().to_rfc3339(),
         })
@@ -741,8 +754,7 @@ impl LearningContentRepository {
         }
 
         let orphan_materials = self.list_orphan_materials()?;
-        let mut deleted_orphan_database_record_count = 0;
-        for material in orphan_materials {
+        for material in &orphan_materials {
             // 孤儿 folder 行没有磁盘实体，只删记录
             if let Some(stored_path) = material.stored_path.as_deref() {
                 let stored_path = PathBuf::from(stored_path);
@@ -760,15 +772,21 @@ impl LearningContentRepository {
                     }
                 }
             }
-            self.connection.execute(
-                "DELETE FROM material_reading_states WHERE material_id = ?1",
-                params![material.id],
-            )?;
-            self.connection.execute(
-                "DELETE FROM material_items WHERE id = ?1",
-                params![material.id],
-            )?;
-            deleted_orphan_database_record_count += 1;
+        }
+        let deleted_orphan_database_record_count = orphan_materials.len() as i64;
+        if !orphan_materials.is_empty() {
+            let transaction = self.connection.unchecked_transaction()?;
+            for material in &orphan_materials {
+                transaction.execute(
+                    "DELETE FROM material_reading_states WHERE material_id = ?1",
+                    params![material.id],
+                )?;
+                transaction.execute(
+                    "DELETE FROM material_items WHERE id = ?1",
+                    params![material.id],
+                )?;
+            }
+            transaction.commit()?;
         }
 
         Ok(MaterialLibraryCleanupReport {
@@ -1345,6 +1363,32 @@ fn is_path_inside_directory(path: &Path, directory: &Path) -> Result<bool, AppEr
     Ok(canonical_path.starts_with(canonical_directory))
 }
 
+fn is_material_preview_path_inside_library(
+    path: &Path,
+    directory: &Path,
+) -> Result<bool, AppError> {
+    match is_path_inside_directory(path, directory) {
+        Ok(true) => Ok(true),
+        Ok(false) if !path.exists() => {
+            let Some(parent) = path.parent() else {
+                return Ok(false);
+            };
+            is_path_inside_directory(parent, directory)
+        }
+        other => other,
+    }
+}
+
+fn read_material_preview_bytes(path: &Path) -> Result<Vec<u8>, AppError> {
+    std::fs::read(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            AppError::MaterialFileMissing
+        } else {
+            AppError::Io(error)
+        }
+    })
+}
+
 fn guess_mime_type(path: &Path) -> Option<String> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
     let mime = match extension.as_str() {
@@ -1742,7 +1786,7 @@ mod tests {
             .expect("import material");
 
         let preview = repository
-            .preview_material_file(&material.id)
+            .preview_material_file(&material.id, &material_library_dir)
             .expect("preview material");
 
         assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Text);
@@ -1781,10 +1825,10 @@ mod tests {
             .expect("import pdf");
 
         let image_preview = repository
-            .preview_material_file(&image.id)
+            .preview_material_file(&image.id, &material_library_dir)
             .expect("preview image");
         let pdf_preview = repository
-            .preview_material_file(&pdf.id)
+            .preview_material_file(&pdf.id, &material_library_dir)
             .expect("preview pdf");
 
         assert_eq!(
@@ -1802,6 +1846,196 @@ mod tests {
             .as_deref()
             .expect("pdf data url")
             .starts_with("data:application/pdf;base64,"));
+    }
+
+    #[test]
+    fn previews_material_inside_library_after_canonical_check() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("资料（第一章）.txt");
+        std::fs::write(&source_file, "库内正文").expect("write source");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "库内预览".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(
+                &learning_content.id,
+                &source_file,
+                &material_library_dir,
+                None,
+            )
+            .expect("import material");
+
+        let preview = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("preview inside library");
+
+        assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Text);
+        assert_eq!(preview.text.as_deref(), Some("库内正文"));
+    }
+
+    #[test]
+    fn preview_refuses_stored_path_outside_material_library() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("source.txt");
+        let outside_file = temp_dir.path().join("secret.txt");
+        std::fs::write(&source_file, "safe").expect("write source");
+        std::fs::write(&outside_file, "secret").expect("write outside");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "预览越界防护".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(
+                &learning_content.id,
+                &source_file,
+                &material_library_dir,
+                None,
+            )
+            .expect("import material");
+        repository
+            .connection
+            .execute(
+                "UPDATE material_items SET stored_path = ?1 WHERE id = ?2",
+                params![outside_file.to_string_lossy().to_string(), material.id],
+            )
+            .expect("corrupt stored path");
+
+        let error = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect_err("preview outside library should fail");
+
+        assert!(matches!(error, AppError::MaterialPathOutsideLibrary));
+        assert_eq!(
+            std::fs::read_to_string(&outside_file).expect("read outside"),
+            "secret"
+        );
+    }
+
+    #[test]
+    fn preview_refuses_relative_traversal_that_resolves_outside_library() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let outside_dir = temp_dir.path().join("outside");
+        std::fs::create_dir_all(&outside_dir).expect("create outside dir");
+        let source_file = temp_dir.path().join("source.txt");
+        let outside_file = outside_dir.join("secret.txt");
+        std::fs::write(&source_file, "safe").expect("write source");
+        std::fs::write(&outside_file, "secret").expect("write outside");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "相对路径穿越".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(
+                &learning_content.id,
+                &source_file,
+                &material_library_dir,
+                None,
+            )
+            .expect("import material");
+        let traversal_path = material_library_dir
+            .join("..")
+            .join("outside")
+            .join("secret.txt");
+        repository
+            .connection
+            .execute(
+                "UPDATE material_items SET stored_path = ?1 WHERE id = ?2",
+                params![traversal_path.to_string_lossy().to_string(), material.id],
+            )
+            .expect("corrupt stored path");
+
+        let error = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect_err("relative traversal should fail");
+
+        assert!(matches!(error, AppError::MaterialPathOutsideLibrary));
+    }
+
+    #[test]
+    fn preview_missing_library_copy_returns_stable_file_error() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("source.txt");
+        std::fs::write(&source_file, "source fallback must not be read").expect("write source");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "缺失副本".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(
+                &learning_content.id,
+                &source_file,
+                &material_library_dir,
+                None,
+            )
+            .expect("import material");
+        std::fs::remove_file(material.stored_path.as_deref().expect("stored path"))
+            .expect("remove stored copy");
+
+        let error = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect_err("missing library copy should fail");
+
+        assert!(matches!(error, AppError::MaterialFileMissing));
+        assert!(source_file.exists());
+    }
+
+    #[test]
+    fn preview_folder_row_stays_unsupported_without_path_check_failure() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "文件夹预览".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let folder = repository
+            .create_material_folder(&learning_content.id, None, "第一章")
+            .expect("create folder");
+
+        let preview = repository
+            .preview_material_file(&folder.id, &material_library_dir)
+            .expect("preview folder");
+
+        assert_eq!(
+            preview.kind,
+            crate::models::MaterialPreviewKind::Unsupported
+        );
+        assert!(preview.text.is_none());
+        assert!(preview.data_url.is_none());
     }
 
     #[test]
@@ -2109,6 +2343,7 @@ mod tests {
         assert_eq!(stats.actual_referenced_bytes, first_material.size_bytes);
         assert_eq!(stats.missing_file_count, 1);
         assert_eq!(stats.orphan_file_count, 1);
+        assert_eq!(stats.orphan_database_record_count, 0);
         assert_eq!(stats.orphan_bytes, 6);
         assert!(stats.library_bytes >= first_material.size_bytes + 6);
     }
@@ -2161,6 +2396,122 @@ mod tests {
             0
         );
         assert!(source_file.exists());
+    }
+
+    #[test]
+    fn stats_count_orphan_database_records_separately_from_missing_files() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        std::fs::create_dir_all(&material_library_dir).expect("create library dir");
+        repository
+            .connection
+            .execute(
+                "INSERT INTO material_items (
+                    id, learning_content_id, parent_id, kind, name,
+                    original_path, stored_path, mime_type, size_bytes, created_at, updated_at
+                ) VALUES (?1, ?2, NULL, 'folder', ?3, NULL, NULL, NULL, 0, ?4, ?4)",
+                params![
+                    "orphan-folder",
+                    "deleted-content",
+                    "孤儿文件夹",
+                    "2026-06-10T00:00:00Z",
+                ],
+            )
+            .expect("insert orphan folder row");
+
+        let stats = repository
+            .get_material_library_stats(&material_library_dir)
+            .expect("get stats");
+
+        assert_eq!(stats.missing_file_count, 0);
+        assert_eq!(stats.orphan_file_count, 0);
+        assert_eq!(stats.orphan_database_record_count, 1);
+    }
+
+    #[test]
+    fn cleanup_rolls_back_orphan_database_records_and_reading_states_on_db_failure() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let orphan_content_id = "deleted-learning-content";
+        let orphan_dir = material_library_dir.join(orphan_content_id);
+        std::fs::create_dir_all(&orphan_dir).expect("create orphan dir");
+        let orphan_material_path = orphan_dir.join("orphan.txt");
+        std::fs::write(&orphan_material_path, b"orphan").expect("write orphan copy");
+        repository
+            .connection
+            .execute(
+                "INSERT INTO material_items (
+                    id, learning_content_id, name, original_path, stored_path, mime_type, size_bytes, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    "orphan-material",
+                    orphan_content_id,
+                    "orphan.txt",
+                    "C:/source/orphan.txt",
+                    orphan_material_path.to_string_lossy().to_string(),
+                    "text/plain",
+                    6,
+                    "2026-06-10T00:00:00Z",
+                    "2026-06-10T00:00:00Z",
+                ],
+            )
+            .expect("insert orphan material");
+        repository
+            .save_material_reading_state("orphan-material", 3, 1.2)
+            .expect("insert orphan reading state");
+        repository
+            .connection
+            .execute_batch(
+                "
+                CREATE TRIGGER fail_orphan_material_delete
+                BEFORE DELETE ON material_items
+                WHEN OLD.id = 'orphan-material'
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced cleanup failure');
+                END;
+                ",
+            )
+            .expect("create failing trigger");
+
+        let error = repository
+            .cleanup_material_library(&material_library_dir)
+            .expect_err("cleanup should fail during database delete");
+
+        assert!(matches!(error, AppError::Database(_)));
+        assert_eq!(
+            repository.debug_count_materials().expect("count materials"),
+            1
+        );
+        assert_eq!(
+            repository
+                .debug_count_material_reading_states()
+                .expect("count reading states"),
+            1
+        );
+
+        repository
+            .connection
+            .execute_batch("DROP TRIGGER fail_orphan_material_delete;")
+            .expect("drop failing trigger");
+        let report = repository
+            .cleanup_material_library(&material_library_dir)
+            .expect("retry cleanup");
+
+        assert_eq!(report.deleted_orphan_database_record_count, 1);
+        assert_eq!(
+            repository.debug_count_materials().expect("count materials"),
+            0
+        );
+        assert_eq!(
+            repository
+                .debug_count_material_reading_states()
+                .expect("count reading states"),
+            0
+        );
     }
 
     #[test]
@@ -2227,7 +2578,7 @@ mod tests {
         .exists());
 
         let preview = repository
-            .preview_material_file(&renamed_again.id)
+            .preview_material_file(&renamed_again.id, &material_library_dir)
             .expect("preview renamed");
         assert_eq!(preview.text.as_deref(), Some("second"));
     }
@@ -2301,7 +2652,7 @@ mod tests {
             .expect("remove stored copy");
 
         let preview = repository
-            .preview_material_file(&material.id)
+            .preview_material_file(&material.id, &material_library_dir)
             .expect("preview video");
 
         assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Video);
@@ -2339,7 +2690,7 @@ mod tests {
             .expect("remove stored copy");
 
         let preview = repository
-            .preview_material_file(&material.id)
+            .preview_material_file(&material.id, &material_library_dir)
             .expect("preview mkv");
 
         assert_eq!(
@@ -2861,7 +3212,7 @@ mod tests {
             .expect("downgrade mime to legacy value");
 
         let preview = repository
-            .preview_material_file(&material.id)
+            .preview_material_file(&material.id, &material_library_dir)
             .expect("preview legacy video");
 
         assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Video);

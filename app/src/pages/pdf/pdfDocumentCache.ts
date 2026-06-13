@@ -67,7 +67,7 @@ export async function loadPdfDocument(dataUrl: string) {
       "pdfjs-dist/legacy/build/pdf.worker.mjs",
       import.meta.url,
     ).toString();
-    return pdfjs.getDocument({ url: dataUrl }).promise as unknown as Promise<PdfDocumentProxy>;
+    return pdfjs.getDocument(createPdfDocumentSource(dataUrl)).promise as unknown as Promise<PdfDocumentProxy>;
   })();
 
   trimPdfDocumentCache();
@@ -77,6 +77,29 @@ export async function loadPdfDocument(dataUrl: string) {
   });
 
   return documentPromise;
+}
+
+function createPdfDocumentSource(dataUrl: string) {
+  const commaIndex = dataUrl.indexOf(",");
+  if (!dataUrl.startsWith("data:") || commaIndex < 0) {
+    return { url: dataUrl };
+  }
+
+  const metadata = dataUrl.slice(5, commaIndex).toLowerCase();
+  if (!metadata.split(";").includes("base64")) {
+    return { url: dataUrl };
+  }
+
+  try {
+    const binary = window.atob(dataUrl.slice(commaIndex + 1));
+    const data = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      data[index] = binary.charCodeAt(index);
+    }
+    return { data };
+  } catch {
+    return { url: dataUrl };
+  }
 }
 
 function trimPdfDocumentCache() {

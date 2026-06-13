@@ -4,6 +4,7 @@ import {
   PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -32,6 +33,7 @@ import { MaterialExplorer } from "./materials/MaterialExplorer";
 import { MaterialLibraryStatsPanel } from "./materials/MaterialLibraryStatsPanel";
 import { formatBytes } from "./materials/format";
 import { collectSubtreeIds } from "./materials/materialTree";
+import { toUserMessage } from "../shared/api/errors";
 import type {
   LearningDetail,
   MaterialItem,
@@ -83,8 +85,29 @@ export function StudyDetailPage() {
   );
   const [statsMessage, setStatsMessage] = useState<string | null>(null);
   const [detailSplitRatio, setDetailSplitRatio] = useState(DEFAULT_DETAIL_SPLIT_RATIO);
+  const [currentMaterialFolderId, setCurrentMaterialFolderId] = useState<string | null>(null);
   const selectedMaterial =
     detail?.materials.find((material) => material.id === selectedMaterialId) ?? undefined;
+  const handleCurrentMaterialFolderChange = useCallback((folderId: string | null) => {
+    setCurrentMaterialFolderId(folderId);
+  }, []);
+  const materialParentById = useMemo(() => {
+    return new Map(detail?.materials.map((material) => [material.id, material.parentId]) ?? []);
+  }, [detail?.materials]);
+
+  useEffect(() => {
+    if (currentMaterialFolderId === null) return;
+    const currentFolder = detail?.materials.find(
+      (material) => material.id === currentMaterialFolderId && material.kind === "folder",
+    );
+    if (currentFolder) return;
+
+    let fallbackFolderId = materialParentById.get(currentMaterialFolderId) ?? null;
+    while (fallbackFolderId && !materialParentById.has(fallbackFolderId)) {
+      fallbackFolderId = materialParentById.get(fallbackFolderId) ?? null;
+    }
+    setCurrentMaterialFolderId(fallbackFolderId);
+  }, [currentMaterialFolderId, detail?.materials, materialParentById]);
 
   useEffect(() => {
     if (!studyId) {
@@ -102,7 +125,7 @@ export function StudyDetailPage() {
       })
       .catch((loadError: unknown) => {
         if (isMounted) {
-          setError(toMessage(loadError));
+          setError(toUserMessage(loadError));
         }
       })
       .finally(() => {
@@ -171,7 +194,7 @@ export function StudyDetailPage() {
       );
       setError(null);
     } catch (importError: unknown) {
-      setError(toMessage(importError));
+      setError(toUserMessage(importError));
     }
   }
 
@@ -202,7 +225,7 @@ export function StudyDetailPage() {
       );
       setError(null);
     } catch (createError: unknown) {
-      setError(toMessage(createError));
+      setError(toUserMessage(createError));
     }
   }
 
@@ -224,7 +247,7 @@ export function StudyDetailPage() {
       );
       setError(null);
     } catch (moveError: unknown) {
-      setError(toMessage(moveError));
+      setError(toUserMessage(moveError));
     }
   }
 
@@ -248,7 +271,7 @@ export function StudyDetailPage() {
       );
       setError(null);
     } catch (previewError: unknown) {
-      setError(toMessage(previewError));
+      setError(toUserMessage(previewError));
     }
   }
 
@@ -286,7 +309,7 @@ export function StudyDetailPage() {
 
     const timeoutId = window.setTimeout(() => {
       saveMaterialReadingState(pendingPdfState).catch((saveError: unknown) => {
-        setError(toMessage(saveError));
+        setError(toUserMessage(saveError));
       });
     }, PDF_STATE_SAVE_DELAY_MS);
 
@@ -303,30 +326,34 @@ export function StudyDetailPage() {
       return;
     }
 
-    const saved = selectedNoteId
-      ? await updateNote({
-          noteId: selectedNoteId,
-          title,
-          body: noteBody,
-        })
-      : await createNote({
-          learningContentId: studyId,
-          title,
-          body: noteBody,
-        });
+    try {
+      const saved = selectedNoteId
+        ? await updateNote({
+            noteId: selectedNoteId,
+            title,
+            body: noteBody,
+          })
+        : await createNote({
+            learningContentId: studyId,
+            title,
+            body: noteBody,
+          });
 
-    setDetail((currentDetail) =>
-      currentDetail
-        ? {
-            ...currentDetail,
-            notes: upsertNote(currentDetail.notes, saved),
-          }
-        : currentDetail,
-    );
-    setSelectedNoteId(saved.id);
-    setNoteTitle(saved.title);
-    setNoteBody(saved.body);
-    setError(null);
+      setDetail((currentDetail) =>
+        currentDetail
+          ? {
+              ...currentDetail,
+              notes: upsertNote(currentDetail.notes, saved),
+            }
+          : currentDetail,
+      );
+      setSelectedNoteId(saved.id);
+      setNoteTitle(saved.title);
+      setNoteBody(saved.body);
+      setError(null);
+    } catch (saveError: unknown) {
+      setError(toUserMessage(saveError));
+    }
   }
 
   async function handleStageDeleteMaterial(material: MaterialItem) {
@@ -339,7 +366,7 @@ export function StudyDetailPage() {
           `（${count.fileCount} 个文件、${count.folderCount} 个子文件夹）。` +
           `仅删除 App 管理副本，不影响原始文件。确定删除吗？保存后将无法撤回。`;
       } catch (countError: unknown) {
-        setError(toMessage(countError));
+        setError(toUserMessage(countError));
         return;
       }
     }
@@ -386,14 +413,20 @@ export function StudyDetailPage() {
       result.status === "fulfilled" ? [result.value] : [],
     );
     const failedIds = idsToDelete.filter((materialId) => !deletedIds.includes(materialId));
+    const removedIds = new Set(
+      deletedIds.flatMap((deletedId) => [...collectSubtreeIds(detail.materials, deletedId)]),
+    );
+    if (currentMaterialFolderId && removedIds.has(currentMaterialFolderId)) {
+      setCurrentMaterialFolderId(
+        findNearestRemainingParentFolder(
+          detail.materials,
+          currentMaterialFolderId,
+          removedIds,
+        ),
+      );
+    }
     setDetail((currentDetail) => {
       if (!currentDetail) return currentDetail;
-      // 文件夹由后端递归删除，前端同步移除整棵子树
-      const removedIds = new Set(
-        deletedIds.flatMap((deletedId) => [
-          ...collectSubtreeIds(currentDetail.materials, deletedId),
-        ]),
-      );
       return {
         ...currentDetail,
         materials: currentDetail.materials.filter((material) => !removedIds.has(material.id)),
@@ -421,7 +454,7 @@ export function StudyDetailPage() {
       setStatsMessage(null);
       setError(null);
     } catch (statsError: unknown) {
-      setError(toMessage(statsError));
+      setError(toUserMessage(statsError));
     }
   }
 
@@ -429,14 +462,14 @@ export function StudyDetailPage() {
     try {
       const latestStats = await getMaterialLibraryStats();
       setMaterialLibraryStats(latestStats);
-      if (latestStats.orphanFileCount === 0 && latestStats.missingFileCount === 0) {
+      if (latestStats.orphanFileCount === 0 && latestStats.orphanDatabaseRecordCount === 0) {
         setStatsMessage("没有可清理的无引用资料");
         return;
       }
 
       if (
         !window.confirm(
-          `确定清理 ${latestStats.orphanFileCount} 个无引用文件，并删除 ${latestStats.missingFileCount} 条缺失资料记录吗？`,
+          `确定清理 ${latestStats.orphanFileCount} 个无引用文件，并删除 ${latestStats.orphanDatabaseRecordCount} 条孤儿资料记录吗？缺失文件只会保留为统计提示。`,
         )
       ) {
         return;
@@ -450,7 +483,7 @@ export function StudyDetailPage() {
       );
       setError(report.failedPaths.length > 0 ? `部分路径清理失败：${report.failedPaths.join("、")}` : null);
     } catch (cleanupError: unknown) {
-      setError(toMessage(cleanupError));
+      setError(toUserMessage(cleanupError));
     }
   }
 
@@ -479,7 +512,7 @@ export function StudyDetailPage() {
       }
       setError(null);
     } catch (renameError: unknown) {
-      setError(toMessage(renameError));
+      setError(toUserMessage(renameError));
     }
   }
 
@@ -488,19 +521,23 @@ export function StudyDetailPage() {
       return;
     }
 
-    await deleteNote(note.id);
-    if (selectedNoteId === note.id) {
-      handleNewNote();
+    try {
+      await deleteNote(note.id);
+      if (selectedNoteId === note.id) {
+        handleNewNote();
+      }
+      setDetail((currentDetail) =>
+        currentDetail
+          ? {
+              ...currentDetail,
+              notes: currentDetail.notes.filter((currentNote) => currentNote.id !== note.id),
+            }
+          : currentDetail,
+      );
+      setError(null);
+    } catch (deleteError: unknown) {
+      setError(toUserMessage(deleteError));
     }
-    setDetail((currentDetail) =>
-      currentDetail
-        ? {
-            ...currentDetail,
-            notes: currentDetail.notes.filter((currentNote) => currentNote.id !== note.id),
-          }
-        : currentDetail,
-    );
-    setError(null);
   }
 
   function handleSelectNote(note: Note) {
@@ -596,8 +633,10 @@ export function StudyDetailPage() {
                 <h2>资料</h2>
               </div>
               <MaterialExplorer
+                currentFolderId={currentMaterialFolderId}
                 materials={detail.materials}
                 pendingDeletedMaterialIds={pendingDeletedMaterialIds}
+                onCurrentFolderChange={handleCurrentMaterialFolderChange}
                 onCreateFolder={(parentId) => {
                   void handleCreateFolder(parentId);
                 }}
@@ -792,14 +831,25 @@ function upsertNote(notes: Note[], savedNote: Note) {
   return notes.map((note) => (note.id === savedNote.id ? savedNote : note));
 }
 
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max);
-}
-
-function toMessage(error: unknown) {
-  if (typeof error === "object" && error !== null && "message" in error) {
-    return String(error.message);
+function findNearestRemainingParentFolder(
+  materials: MaterialItem[],
+  folderId: string,
+  removedIds: Set<string>,
+) {
+  const materialById = new Map(materials.map((material) => [material.id, material]));
+  let parentId = materialById.get(folderId)?.parentId ?? null;
+  const visitedIds = new Set<string>();
+  while (parentId) {
+    if (!visitedIds.add(parentId)) return null;
+    const parent = materialById.get(parentId);
+    if (!parent) return null;
+    if (parent.kind === "folder" && !removedIds.has(parent.id)) return parent.id;
+    parentId = parent.parentId;
   }
 
-  return String(error);
+  return null;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
 }

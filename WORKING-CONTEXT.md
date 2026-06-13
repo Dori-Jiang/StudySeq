@@ -114,6 +114,12 @@
 - V1.2 发包版本号已统一为 `1.2.0`（package.json / tauri.conf.json / Cargo.toml）。注意 Windows PowerShell 5.1 改这些文件时不要用 `Set-Content -Encoding utf8`（会写 BOM，Tauri 解析 tauri.conf.json 会失败），用无 BOM 的 UTF8Encoding。
 - V1.2 留给用户的手测清单：① 数百 MB 真实 MP4 拖动进度（asset 协议 Range 验证，技术设计的高风险项）；② WebM 播放、MKV 显示专属提示、中文文件名视频；③ 用 V1.1 真实库副本验证旧库升级（资料保留在根目录、阅读进度保留）；④ 建夹/嵌套/移动/重命名/递归删除全流程；⑤ 删除学习内容含多层文件夹无残留；⑥ 断网全流程。
 - V1.2 下一步：等用户手测反馈后做 release 正式发包（`npm.cmd run tauri -- build`）。
+- 当前已进入 V1.3 开发线程，工作分支为 `v1.3`；`claude-version` 保留为 V1.2 完成态/参考态，后续开发默认不写入 `claude-version`。
+- V1.3 定位为 V1.2 后的安全加固与体验一致性收口，不做大 UI 改版、不新增大功能。A1-A7 自动化开发已完成：`preview_material_file` 读取前校验 App 资料库目录；`ApiError` 改为稳定 `code + message`，前端只展示稳定 ApiError message，未知运行时错误统一显示通用文案；Tauri CSP 从 `null` 收紧；资料库 cleanup 的孤儿记录/阅读状态 DB 删除改为事务；清理确认文案改为无引用文件 + 孤儿资料记录；资料区当前文件夹状态提升到详情页；保存/删除笔记失败会保留 UI 状态并提示。
+- V1.3 版本号已统一为 `1.3.0`（package.json / package-lock.json / tauri.conf.json / Cargo.toml / Cargo.lock 中本 crate）。
+- V1.3 自动化验证已通过：`npm.cmd test`（10 文件、100 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`cargo fmt --check`、`cargo test`（48 测试）、`cargo clippy -- -D warnings`、`npm.cmd run tauri -- build --debug`、`npm.cmd run tauri -- build`。
+- V1.3 正式包已生成：`app/src-tauri/target/release/studyseq.exe`、`app/src-tauri/target/release/bundle/msi/StudySeq_1.3.0_x64_en-US.msi`、`app/src-tauri/target/release/bundle/nsis/StudySeq_1.3.0_x64-setup.exe`。
+- V1.3 真实 App 手工验收仍待用户执行：重点检查 CSP 下 txt/图片/PDF/MP4/WebM 预览、MKV/AVI 不支持提示、库外 stored_path 不被读取、文件夹内打开资料返回位置、笔记保存/删除失败、cleanup 可重试收敛、V1.1 旧库升级、V1.2 PDF 目录/视频/资料文件夹不回退、断网全流程。
 
 ## 已准备依赖
 

@@ -137,8 +137,9 @@ pub fn preview_material_file(
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
+    let material_library_dir = state.material_library_dir.clone();
 
-    preview_material_file_in_repository(&repository, &material_id)
+    preview_material_file_in_repository(&repository, &material_id, &material_library_dir)
 }
 
 #[tauri::command]
@@ -345,9 +346,10 @@ fn delete_note_in_repository(
 fn preview_material_file_in_repository(
     repository: &LearningContentRepository,
     material_id: &str,
+    material_library_dir: &std::path::Path,
 ) -> Result<MaterialPreview, ApiError> {
     repository
-        .preview_material_file(material_id)
+        .preview_material_file(material_id, material_library_dir)
         .map_err(ApiError::from)
 }
 
@@ -651,6 +653,48 @@ mod tests {
         assert_eq!(stats.orphan_file_count, 1);
         assert_eq!(renamed.name, "重命名.pdf");
         assert_eq!(cleanup.deleted_orphan_file_count, 1);
+    }
+
+    #[test]
+    fn command_preview_material_file_uses_app_material_library_dir() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let wrong_library_dir = temp_dir.path().join("wrong-materials");
+        std::fs::create_dir_all(&wrong_library_dir).expect("create wrong library dir");
+        let source_file = temp_dir.path().join("source.txt");
+        std::fs::write(&source_file, "hello").expect("write source");
+        let content = create_learning_content_in_repository(
+            &repository,
+            CreateLearningContentInput {
+                name: "预览命令".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            },
+        )
+        .expect("create learning content");
+        let material = import_material_file_in_repository(
+            &repository,
+            ImportMaterialFileInput {
+                learning_content_id: content.id.clone(),
+                source_path: source_file.to_string_lossy().to_string(),
+                parent_id: None,
+            },
+            &material_library_dir,
+        )
+        .expect("import material");
+
+        let error =
+            preview_material_file_in_repository(&repository, &material.id, &wrong_library_dir)
+                .expect_err("wrong library dir should be rejected");
+        assert_eq!(error.code, "material_path_outside_library");
+
+        let preview =
+            preview_material_file_in_repository(&repository, &material.id, &material_library_dir)
+                .expect("preview with app library dir");
+        assert_eq!(preview.text.as_deref(), Some("hello"));
     }
 
     #[test]

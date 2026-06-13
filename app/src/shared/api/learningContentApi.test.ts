@@ -286,6 +286,7 @@ describe("learningContentApi", () => {
         libraryBytes: 11,
         missingFileCount: 1,
         orphanFileCount: 1,
+        orphanDatabaseRecordCount: 1,
         orphanBytes: 6,
         updatedAt: "2026-06-09T00:02:00Z",
       })

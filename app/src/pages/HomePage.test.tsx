@@ -212,7 +212,10 @@ describe("HomePage", () => {
         lastOpenedAt: null,
       },
     ]);
-    deleteLearningContent.mockRejectedValueOnce(new Error("数据库繁忙"));
+    deleteLearningContent.mockRejectedValueOnce({
+      code: "database_error",
+      message: "数据库操作失败，请稍后重试",
+    });
 
     renderHomePage();
     await screen.findByText("Rust 入门");
@@ -220,9 +223,39 @@ describe("HomePage", () => {
     const dialog = screen.getByRole("dialog", { name: "删除学习内容" });
     await userEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
 
-    expect(await within(dialog).findByText("删除学习内容失败：数据库繁忙")).toBeInTheDocument();
+    expect(
+      await within(dialog).findByText("删除学习内容失败：数据库操作失败，请稍后重试"),
+    ).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "删除学习内容" })).toBeInTheDocument();
     expect(screen.getByText("Rust 入门")).toBeInTheDocument();
+  });
+
+  it("does not expose raw runtime errors on delete failure", async () => {
+    listLearningContents.mockResolvedValueOnce([
+      {
+        id: "study-1",
+        name: "Rust 入门",
+        status: "planned",
+        deadline: null,
+        estimatedHours: 12,
+        progress: 30,
+        createdAt: "2026-06-08T00:00:00Z",
+        updatedAt: "2026-06-08T00:00:00Z",
+        lastOpenedAt: null,
+      },
+    ]);
+    deleteLearningContent.mockRejectedValueOnce(new Error("C:\\Users\\123\\secret.sqlite"));
+
+    renderHomePage();
+    await screen.findByText("Rust 入门");
+    await userEvent.click(screen.getByRole("button", { name: "删除 Rust 入门" }));
+    const dialog = screen.getByRole("dialog", { name: "删除学习内容" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
+
+    expect(
+      await within(dialog).findByText("删除学习内容失败：操作失败，请稍后重试"),
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByText(/C:\\Users/)).not.toBeInTheDocument();
   });
 
   it("edits learning content basic fields from the home row", async () => {

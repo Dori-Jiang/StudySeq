@@ -115,6 +115,7 @@ pub struct MaterialLibraryStats {
     pub library_bytes: i64,
     pub missing_file_count: i64,
     pub orphan_file_count: i64,
+    pub orphan_database_record_count: i64,
     pub orphan_bytes: i64,
     pub updated_at: String,
 }

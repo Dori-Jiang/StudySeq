@@ -31,6 +31,7 @@ export function MaterialLibraryStatsPanel({
           <span>{`磁盘占用 ${formatBytes(stats.libraryBytes)}`}</span>
           <span>{`缺失文件 ${stats.missingFileCount}`}</span>
           <span>{`无引用文件 ${stats.orphanFileCount}`}</span>
+          <span>{`孤儿记录 ${stats.orphanDatabaseRecordCount}`}</span>
         </div>
       ) : (
         <p className="muted-text">资料库统计低频刷新，可手动刷新。</p>

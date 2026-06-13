@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { MaterialItem } from "../../shared/types";
 import { MaterialTile } from "./MaterialTile";
@@ -7,7 +7,9 @@ import { buildBreadcrumb, collectSubtreeIds, listChildren } from "./materialTree
 
 type MaterialExplorerProps = {
   materials: MaterialItem[];
+  currentFolderId: string | null;
   pendingDeletedMaterialIds: string[];
+  onCurrentFolderChange: (folderId: string | null) => void;
   onCreateFolder: (parentId: string | null) => void;
   onImport: (parentId: string | null) => void;
   onMove: (material: MaterialItem, newParentId: string | null) => Promise<void> | void;
@@ -17,7 +19,9 @@ type MaterialExplorerProps = {
 };
 
 export function MaterialExplorer({
+  currentFolderId,
   materials,
+  onCurrentFolderChange,
   onCreateFolder,
   onImport,
   onMove,
@@ -26,14 +30,7 @@ export function MaterialExplorer({
   onStageDelete,
   pendingDeletedMaterialIds,
 }: MaterialExplorerProps) {
-  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [movingMaterial, setMovingMaterial] = useState<MaterialItem | null>(null);
-
-  // 当前文件夹被删除或不存在时回落到根目录
-  const currentFolder = materials.find(
-    (material) => material.id === currentFolderId && material.kind === "folder",
-  );
-  const effectiveFolderId = currentFolder ? currentFolder.id : null;
 
   // 被标记删除的项连同其整棵子树一起隐藏：一次性求出待删子树合集
   const pendingSubtreeIds = new Set(
@@ -41,6 +38,20 @@ export function MaterialExplorer({
       ...collectSubtreeIds(materials, materialId),
     ]),
   );
+  // 当前文件夹被删除、标记删除或不存在时回落到根目录
+  const currentFolder = materials.find(
+    (material) =>
+      material.id === currentFolderId &&
+      material.kind === "folder" &&
+      !pendingSubtreeIds.has(material.id),
+  );
+  const effectiveFolderId = currentFolder ? currentFolder.id : null;
+  useEffect(() => {
+    if (currentFolderId !== null && effectiveFolderId === null) {
+      onCurrentFolderChange(null);
+    }
+  }, [currentFolderId, effectiveFolderId, onCurrentFolderChange]);
+
   const visibleChildren = listChildren(materials, effectiveFolderId).filter(
     (material) => !pendingSubtreeIds.has(material.id),
   );
@@ -48,7 +59,7 @@ export function MaterialExplorer({
 
   function handleOpen(material: MaterialItem) {
     if (material.kind === "folder") {
-      setCurrentFolderId(material.id);
+      onCurrentFolderChange(material.id);
       return;
     }
     onOpenFile(material);
@@ -67,7 +78,7 @@ export function MaterialExplorer({
           <button
             type="button"
             disabled={effectiveFolderId === null}
-            onClick={() => setCurrentFolderId(null)}
+            onClick={() => onCurrentFolderChange(null)}
           >
             根目录
           </button>
@@ -79,7 +90,7 @@ export function MaterialExplorer({
               <button
                 type="button"
                 disabled={folder.id === effectiveFolderId}
-                onClick={() => setCurrentFolderId(folder.id)}
+                onClick={() => onCurrentFolderChange(folder.id)}
               >
                 {folder.name}
               </button>

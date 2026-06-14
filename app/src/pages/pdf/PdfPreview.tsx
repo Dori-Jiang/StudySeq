@@ -36,12 +36,12 @@ const PDF_STAGE_HORIZONTAL_PADDING = 56;
 const PDF_MIN_FIT_WIDTH = 160;
 
 export function PdfPreview({
-  dataUrl,
+  sourceUrl,
   initialPageNumber,
   initialScale,
   onStateChange,
 }: {
-  dataUrl: string;
+  sourceUrl: string;
   initialPageNumber?: number;
   initialScale?: number;
   onStateChange?: (state: { pageNumber: number; scale: number }) => void;
@@ -85,13 +85,13 @@ export function PdfPreview({
     setIsOutlineOpen(false);
     setOutlineNodes(null);
     setHasLoadFailed(false);
-  }, [dataUrl, initialPageNumber, initialScale]);
+  }, [sourceUrl, initialPageNumber, initialScale]);
 
   useEffect(() => {
     if (!isOutlineOpen || outlineNodes !== null) return;
 
     let isCancelled = false;
-    loadPdfDocument(dataUrl)
+    loadPdfDocument(sourceUrl)
       .then((document) => loadPdfOutline(document))
       .then((nodes) => {
         if (!isCancelled) setOutlineNodes(nodes);
@@ -103,18 +103,18 @@ export function PdfPreview({
     return () => {
       isCancelled = true;
     };
-  }, [dataUrl, isOutlineOpen, outlineNodes]);
+  }, [sourceUrl, isOutlineOpen, outlineNodes]);
 
   useEffect(() => {
     renderedPageCacheRef.current.clear();
-  }, [dataUrl, renderScale]);
+  }, [sourceUrl, renderScale]);
 
   useEffect(() => {
     let isCancelled = false;
     let renderTask: PdfRenderTask | null = null;
 
     async function renderPdf() {
-      const document = await loadPdfDocument(dataUrl);
+      const document = await loadPdfDocument(sourceUrl);
       const safePageNumber = clampPageNumber(pageNumber, document.numPages);
       if (!isCancelled) {
         setPageCount(document.numPages);
@@ -173,7 +173,7 @@ export function PdfPreview({
       isCancelled = true;
       renderTask?.cancel?.();
     };
-  }, [dataUrl, pageNumber, renderScale]);
+  }, [sourceUrl, pageNumber, renderScale]);
 
   useEffect(() => {
     const viewport = viewportRef.current;

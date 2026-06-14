@@ -11,7 +11,8 @@ use tauri::Manager;
 
 pub struct AppState {
     pub repository: Mutex<LearningContentRepository>,
-    pub material_library_dir: PathBuf,
+    pub default_material_library_dir: PathBuf,
+    pub material_library_dir: Mutex<PathBuf>,
 }
 
 pub fn run() {
@@ -25,10 +26,18 @@ pub fn run() {
             let database_path = data_dir.join("studyseq.sqlite");
             let repository = LearningContentRepository::open(database_path)
                 .map_err(|error| tauri::Error::Anyhow(error.into()))?;
+            let default_material_library_dir = data_dir.join("materials");
+            let material_library_location = repository
+                .get_material_library_location(&default_material_library_dir)
+                .map_err(|error| tauri::Error::Anyhow(error.into()))?;
+            app.asset_protocol_scope()
+                .allow_directory(&material_library_location.path, true)
+                .map_err(|error| tauri::Error::Anyhow(error.into()))?;
 
             app.manage(AppState {
                 repository: Mutex::new(repository),
-                material_library_dir: data_dir.join("materials"),
+                default_material_library_dir,
+                material_library_dir: Mutex::new(PathBuf::from(material_library_location.path)),
             });
 
             Ok(())
@@ -47,8 +56,12 @@ pub fn run() {
             commands::preview_material_file,
             commands::get_material_reading_state,
             commands::save_material_reading_state,
+            commands::save_video_playback_state,
             commands::get_material_library_stats,
             commands::cleanup_material_library,
+            commands::get_material_library_location,
+            commands::choose_material_library_storage_root,
+            commands::set_material_library_location,
             commands::rename_material_item,
             commands::create_material_folder,
             commands::move_material_item,

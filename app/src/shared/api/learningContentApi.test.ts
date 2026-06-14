@@ -7,12 +7,14 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { invoke } from "@tauri-apps/api/core";
 import {
   cleanupMaterialLibrary,
+  chooseMaterialLibraryStorageRoot,
   createLearningContent,
   createNote,
   deleteLearningContent,
   deleteMaterialItem,
   deleteNote,
   getLearningDetail,
+  getMaterialLibraryLocation,
   getMaterialLibraryStats,
   getMaterialReadingState,
   importMaterialFile,
@@ -20,6 +22,8 @@ import {
   previewMaterialFile,
   renameMaterialItem,
   saveMaterialReadingState,
+  saveVideoPlaybackState,
+  setMaterialLibraryLocation,
   updateLearningContent,
   updateNote,
 } from "./learningContentApi";
@@ -43,6 +47,12 @@ describe("learningContentApi", () => {
         createdAt: "2026-06-08T00:00:00Z",
         updatedAt: "2026-06-08T00:00:00Z",
         lastOpenedAt: null,
+        recentOpen: {
+          materialId: "mat-pdf",
+          materialName: "讲义.pdf",
+          openedAt: "2026-06-14T10:35:00Z",
+          position: { kind: "pdf_page", pageNumber: 14 },
+        },
       },
     ]);
 
@@ -51,6 +61,69 @@ describe("learningContentApi", () => {
     expect(invokeMock).toHaveBeenCalledWith("list_learning_contents");
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe("Rust 入门");
+  });
+
+  it("rejects invalid recent open position payloads at the API boundary", async () => {
+    invokeMock.mockResolvedValueOnce([
+      {
+        id: "study-1",
+        name: "Rust 入门",
+        status: "planned",
+        deadline: null,
+        estimatedHours: 10,
+        progress: 20,
+        createdAt: "2026-06-08T00:00:00Z",
+        updatedAt: "2026-06-08T00:00:00Z",
+        lastOpenedAt: null,
+        recentOpen: {
+          materialId: "mat-1",
+          materialName: "资料.pdf",
+          openedAt: "2026-06-14T00:00:00Z",
+          position: { kind: "unknown" },
+        },
+      },
+    ]);
+
+    await expect(listLearningContents()).rejects.toThrow("Invalid recent open position");
+  });
+
+  it("rejects invalid video playback state numbers at the API boundary", async () => {
+    invokeMock.mockResolvedValueOnce({
+      materialId: "mat-video",
+      pageNumber: 1,
+      scale: 1,
+      lastOpenedAt: "2026-06-09T00:00:00Z",
+      positionKind: "video_second",
+      videoPositionSeconds: Number.NaN,
+      updatedAt: "2026-06-09T00:00:00Z",
+    });
+
+    await expect(
+      saveVideoPlaybackState({
+        materialId: "mat-video",
+        positionSeconds: 42,
+      }),
+    ).rejects.toThrow("Invalid API number value");
+  });
+
+  it("rejects invalid saved PDF reading state payloads at the API boundary", async () => {
+    invokeMock.mockResolvedValueOnce({
+      materialId: "mat-pdf",
+      pageNumber: 4,
+      scale: 1.5,
+      lastOpenedAt: "2026-06-09T00:00:00Z",
+      positionKind: "pdf_page",
+      videoPositionSeconds: "not-a-number",
+      updatedAt: "2026-06-09T00:00:00Z",
+    });
+
+    await expect(
+      saveMaterialReadingState({
+        materialId: "mat-pdf",
+        pageNumber: 4,
+        scale: 1.5,
+      }),
+    ).rejects.toThrow("Invalid API number value");
   });
 
   it("creates learning content through the Rust command", async () => {
@@ -64,6 +137,7 @@ describe("learningContentApi", () => {
       createdAt: "2026-06-08T00:00:00Z",
       updatedAt: "2026-06-08T00:00:00Z",
       lastOpenedAt: null,
+        recentOpen: null,
     });
 
     const result = await createLearningContent({
@@ -82,6 +156,27 @@ describe("learningContentApi", () => {
     expect(result.id).toBe("study-2");
   });
 
+  it("rejects invalid created learning content payloads at the API boundary", async () => {
+    invokeMock.mockResolvedValueOnce({
+      id: "study-2",
+      name: "TypeScript 练习",
+      status: "unknown",
+      deadline: null,
+      estimatedHours: 6,
+      progress: 0,
+      createdAt: "2026-06-08T00:00:00Z",
+      updatedAt: "2026-06-08T00:00:00Z",
+      lastOpenedAt: null,
+      recentOpen: null,
+    });
+
+    await expect(
+      createLearningContent({
+        name: "TypeScript 练习",
+      }),
+    ).rejects.toThrow("Invalid study status");
+  });
+
   it("loads a learning detail through the Rust command", async () => {
     invokeMock.mockResolvedValueOnce({
       learningContent: {
@@ -94,6 +189,7 @@ describe("learningContentApi", () => {
         createdAt: "2026-06-08T00:00:00Z",
         updatedAt: "2026-06-08T00:00:00Z",
         lastOpenedAt: null,
+        recentOpen: null,
       },
       materials: [],
       notes: [],
@@ -124,6 +220,7 @@ describe("learningContentApi", () => {
       createdAt: "2026-06-08T00:00:00Z",
       updatedAt: "2026-06-08T00:01:00Z",
       lastOpenedAt: null,
+        recentOpen: null,
     });
 
     const result = await updateLearningContent({
@@ -150,6 +247,32 @@ describe("learningContentApi", () => {
     expect(result.estimatedHours).toBe(12);
     expect(result.progress).toBe(65);
     expect(result.deadline).toBe("2026-08-15");
+  });
+
+  it("rejects invalid updated learning content payloads at the API boundary", async () => {
+    invokeMock.mockResolvedValueOnce({
+      id: "study-1",
+      name: "Rust 深入",
+      status: "active",
+      deadline: null,
+      estimatedHours: Number.NaN,
+      progress: 65,
+      createdAt: "2026-06-08T00:00:00Z",
+      updatedAt: "2026-06-08T00:01:00Z",
+      lastOpenedAt: null,
+      recentOpen: null,
+    });
+
+    await expect(
+      updateLearningContent({
+        id: "study-1",
+        name: "Rust 深入",
+        status: "active",
+        progress: 65,
+        deadline: null,
+        estimatedHours: 12,
+      }),
+    ).rejects.toThrow("Invalid API number value");
   });
 
   it("imports material through the Rust command", async () => {
@@ -228,6 +351,7 @@ describe("learningContentApi", () => {
       mimeType: "text/plain",
       text: "资料正文",
       dataUrl: null,
+      assetPath: null,
       encoding: "utf-8",
     });
 
@@ -237,6 +361,62 @@ describe("learningContentApi", () => {
       materialId: "mat-1",
     });
     expect(result.text).toBe("资料正文");
+  });
+
+  it("rejects invalid material preview payloads at the API boundary", async () => {
+    invokeMock.mockResolvedValueOnce({
+      materialId: "mat-1",
+      kind: "pdf",
+      mimeType: "application/pdf",
+      text: null,
+      dataUrl: 123,
+      encoding: null,
+    });
+
+    await expect(previewMaterialFile("mat-1")).rejects.toThrow("Invalid API string value");
+  });
+
+  it("gets and sets material library location through Rust commands", async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        path: "C:/Users/123/AppData/Roaming/com.studyseq.desktop/materials",
+        isDefault: true,
+      })
+      .mockResolvedValueOnce({
+        path: "D:/LearningData/StudySeqData/materials",
+        isDefault: false,
+      });
+
+    const current = await getMaterialLibraryLocation();
+    const moved = await setMaterialLibraryLocation({
+      path: "D:/LearningData/StudySeqData/materials",
+    });
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "get_material_library_location");
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "set_material_library_location", {
+      input: { path: "D:/LearningData/StudySeqData/materials" },
+    });
+    expect(current.isDefault).toBe(true);
+    expect(moved.path).toBe("D:/LearningData/StudySeqData/materials");
+  });
+
+  it("chooses material library storage root through the Rust command", async () => {
+    invokeMock.mockResolvedValueOnce("D:/LearningData").mockResolvedValueOnce(null);
+
+    await expect(chooseMaterialLibraryStorageRoot()).resolves.toBe("D:/LearningData");
+    await expect(chooseMaterialLibraryStorageRoot()).resolves.toBeNull();
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "choose_material_library_storage_root");
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "choose_material_library_storage_root");
+  });
+
+  it("rejects invalid material library location payloads at the API boundary", async () => {
+    invokeMock.mockResolvedValueOnce({
+      path: "D:/LearningData/StudySeqData/materials",
+      isDefault: "false",
+    });
+
+    await expect(getMaterialLibraryLocation()).rejects.toThrow("Invalid API boolean value");
   });
 
   it("updates plain-text note through the Rust command", async () => {
@@ -271,13 +451,28 @@ describe("learningContentApi", () => {
         materialId: "mat-pdf",
         pageNumber: 3,
         scale: 1.4,
+        lastOpenedAt: "2026-06-09T00:00:00Z",
+        positionKind: "pdf_page",
+        videoPositionSeconds: null,
         updatedAt: "2026-06-09T00:00:00Z",
       })
       .mockResolvedValueOnce({
         materialId: "mat-pdf",
         pageNumber: 4,
         scale: 1.5,
+        lastOpenedAt: "2026-06-09T00:01:00Z",
+        positionKind: "pdf_page",
+        videoPositionSeconds: null,
         updatedAt: "2026-06-09T00:01:00Z",
+      })
+      .mockResolvedValueOnce({
+        materialId: "mat-video",
+        pageNumber: 1,
+        scale: 1,
+        lastOpenedAt: "2026-06-09T00:01:30Z",
+        positionKind: "video_second",
+        videoPositionSeconds: 42.5,
+        updatedAt: "2026-06-09T00:01:30Z",
       })
       .mockResolvedValueOnce({
         materialCount: 2,
@@ -315,6 +510,10 @@ describe("learningContentApi", () => {
       pageNumber: 4,
       scale: 1.5,
     });
+    const savedVideoState = await saveVideoPlaybackState({
+      materialId: "mat-video",
+      positionSeconds: 42.5,
+    });
     const stats = await getMaterialLibraryStats();
     const cleanup = await cleanupMaterialLibrary();
     const renamed = await renameMaterialItem({
@@ -332,9 +531,15 @@ describe("learningContentApi", () => {
         scale: 1.5,
       },
     });
-    expect(invokeMock).toHaveBeenNthCalledWith(3, "get_material_library_stats");
-    expect(invokeMock).toHaveBeenNthCalledWith(4, "cleanup_material_library");
-    expect(invokeMock).toHaveBeenNthCalledWith(5, "rename_material_item", {
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "save_video_playback_state", {
+      input: {
+        materialId: "mat-video",
+        positionSeconds: 42.5,
+      },
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "get_material_library_stats");
+    expect(invokeMock).toHaveBeenNthCalledWith(5, "cleanup_material_library");
+    expect(invokeMock).toHaveBeenNthCalledWith(6, "rename_material_item", {
       input: {
         materialId: "mat-pdf",
         name: "重命名.pdf",
@@ -342,6 +547,7 @@ describe("learningContentApi", () => {
     });
     expect(loadedState?.pageNumber).toBe(3);
     expect(savedState.scale).toBe(1.5);
+    expect(savedVideoState.videoPositionSeconds).toBe(42.5);
     expect(stats.orphanFileCount).toBe(1);
     expect(cleanup.deletedBytes).toBe(6);
     expect(renamed.name).toBe("重命名.pdf");

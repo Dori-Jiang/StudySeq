@@ -10,6 +10,19 @@ export type LearningContent = {
   createdAt: string;
   updatedAt: string;
   lastOpenedAt: string | null;
+  recentOpen: RecentMaterialOpenSummary | null;
+};
+
+export type RecentMaterialOpenPosition =
+  | { kind: "none" }
+  | { kind: "pdf_page"; pageNumber: number }
+  | { kind: "video_second"; seconds: number };
+
+export type RecentMaterialOpenSummary = {
+  materialId: string;
+  materialName: string;
+  openedAt: string;
+  position: RecentMaterialOpenPosition;
 };
 
 export type CreateLearningContentInput = {
@@ -64,6 +77,9 @@ export type MaterialReadingState = {
   materialId: string;
   pageNumber: number;
   scale: number;
+  lastOpenedAt: string | null;
+  positionKind: "none" | "pdf_page" | "video_second";
+  videoPositionSeconds: number | null;
   updatedAt: string;
 };
 
@@ -71,6 +87,11 @@ export type SaveMaterialReadingStateInput = {
   materialId: string;
   pageNumber: number;
   scale: number;
+};
+
+export type SaveVideoPlaybackStateInput = {
+  materialId: string;
+  positionSeconds: number;
 };
 
 export type MaterialLibraryStats = {
@@ -91,6 +112,15 @@ export type MaterialLibraryCleanupReport = {
   deletedBytes: number;
   failedPaths: string[];
   updatedAt: string;
+};
+
+export type MaterialLibraryLocation = {
+  path: string;
+  isDefault: boolean;
+};
+
+export type SetMaterialLibraryLocationInput = {
+  path: string;
 };
 
 export type RenameMaterialItemInput = {
@@ -121,6 +151,7 @@ export type MaterialPreview = {
   mimeType: string | null;
   text: string | null;
   dataUrl: string | null;
+  assetPath: string | null;
   encoding: string | null;
 };
 

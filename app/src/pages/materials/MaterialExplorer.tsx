@@ -18,6 +18,9 @@ type MaterialExplorerProps = {
   onStageDelete: (material: MaterialItem) => void;
 };
 
+type MaterialTypeFilter = "all" | "folder" | "text" | "image" | "pdf" | "video" | "other";
+type MaterialSortMode = "default" | "name" | "type" | "updated";
+
 export function MaterialExplorer({
   currentFolderId,
   materials,
@@ -31,6 +34,9 @@ export function MaterialExplorer({
   pendingDeletedMaterialIds,
 }: MaterialExplorerProps) {
   const [movingMaterial, setMovingMaterial] = useState<MaterialItem | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [typeFilter, setTypeFilter] = useState<MaterialTypeFilter>("all");
+  const [sortMode, setSortMode] = useState<MaterialSortMode>("default");
 
   // 被标记删除的项连同其整棵子树一起隐藏：一次性求出待删子树合集
   const pendingSubtreeIds = new Set(
@@ -54,6 +60,16 @@ export function MaterialExplorer({
 
   const visibleChildren = listChildren(materials, effectiveFolderId).filter(
     (material) => !pendingSubtreeIds.has(material.id),
+  );
+  const filteredChildren = sortMaterials(
+    visibleChildren.filter((material) => {
+      const normalizedSearch = searchTerm.trim().toLocaleLowerCase("zh-CN");
+      const nameMatches =
+        normalizedSearch.length === 0 ||
+        material.name.toLocaleLowerCase("zh-CN").includes(normalizedSearch);
+      return nameMatches && materialMatchesTypeFilter(material, typeFilter);
+    }),
+    sortMode,
   );
   const breadcrumb = buildBreadcrumb(materials, effectiveFolderId);
 
@@ -107,13 +123,56 @@ export function MaterialExplorer({
         </div>
       </div>
 
+      <div className="material-explorer-controls" aria-label="当前文件夹资料定位">
+        <label>
+          搜索
+          <input
+            aria-label="搜索当前文件夹资料"
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder="文件名或扩展名"
+          />
+        </label>
+        <label>
+          类型
+          <select
+            aria-label="筛选资料类型"
+            value={typeFilter}
+            onChange={(event) => setTypeFilter(event.target.value as MaterialTypeFilter)}
+          >
+            <option value="all">全部</option>
+            <option value="folder">文件夹</option>
+            <option value="text">文本</option>
+            <option value="image">图片</option>
+            <option value="pdf">PDF</option>
+            <option value="video">视频</option>
+            <option value="other">其他文件</option>
+          </select>
+        </label>
+        <label>
+          排序
+          <select
+            aria-label="排序当前文件夹资料"
+            value={sortMode}
+            onChange={(event) => setSortMode(event.target.value as MaterialSortMode)}
+          >
+            <option value="default">默认</option>
+            <option value="name">名称</option>
+            <option value="type">类型</option>
+            <option value="updated">最近更新</option>
+          </select>
+        </label>
+      </div>
+
       {visibleChildren.length === 0 ? (
         <p className="empty-state">
           {effectiveFolderId === null ? "还没有资料" : "这个文件夹是空的"}
         </p>
+      ) : filteredChildren.length === 0 ? (
+        <p className="empty-state">当前文件夹没有匹配资料</p>
       ) : (
         <div className="material-tile-grid">
-          {visibleChildren.map((material) => (
+          {filteredChildren.map((material) => (
             <MaterialTile
               key={material.id}
               material={material}
@@ -139,4 +198,41 @@ export function MaterialExplorer({
       ) : null}
     </div>
   );
+}
+
+function materialMatchesTypeFilter(material: MaterialItem, filter: MaterialTypeFilter) {
+  if (filter === "all") return true;
+  if (filter === "folder") return material.kind === "folder";
+  if (material.kind === "folder") return false;
+  return getMaterialTypeGroup(material) === filter;
+}
+
+function getMaterialTypeGroup(material: MaterialItem): Exclude<MaterialTypeFilter, "all" | "folder"> {
+  const mimeType = material.mimeType ?? "";
+  const extension = material.name.split(".").pop()?.toLocaleLowerCase("zh-CN") ?? "";
+  if (mimeType === "text/plain" || extension === "txt") return "text";
+  if (mimeType.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp"].includes(extension)) {
+    return "image";
+  }
+  if (mimeType === "application/pdf" || extension === "pdf") return "pdf";
+  if (mimeType.startsWith("video/") || ["mp4", "webm", "mkv", "avi", "mov"].includes(extension)) {
+    return "video";
+  }
+  return "other";
+}
+
+function sortMaterials(materials: MaterialItem[], sortMode: MaterialSortMode) {
+  if (sortMode === "default") return materials;
+  return [...materials].sort((left, right) => {
+    if (sortMode === "name") {
+      return left.name.localeCompare(right.name, "zh-CN");
+    }
+    if (sortMode === "updated") {
+      return right.updatedAt.localeCompare(left.updatedAt);
+    }
+
+    const leftType = left.kind === "folder" ? "folder" : getMaterialTypeGroup(left);
+    const rightType = right.kind === "folder" ? "folder" : getMaterialTypeGroup(right);
+    return leftType.localeCompare(rightType, "zh-CN") || left.name.localeCompare(right.name, "zh-CN");
+  });
 }

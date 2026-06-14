@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StudySeq V1.4 主页学习足迹概念</title>
+    <style>
+      :root {
+        color: #172033;
+        background: #f7fbff;
+        --line: #dce8f4;
+        --line-soft: #edf3f9;
+        --muted: #607086;
+        --muted-2: #8594a8;
+        --blue: #2f78c6;
+        --blue-soft: #e8f4ff;
+        --blue-strong: #185d9e;
+        --green: #2f8c67;
+        --green-soft: #e9f7f1;
+        --amber: #a96624;
+        --amber-soft: #fff3df;
+        --red: #b55347;
+        --red-soft: #fff0ee;
+        --surface: #ffffff;
+        --surface-soft: #fbfdff;
+        --shadow: 0 18px 46px rgb(47 120 198 / 10%);
+        font-family:
+          "Segoe UI",
+          "Microsoft YaHei",
+          system-ui,
+          sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 1180px;
+        min-height: 100vh;
+        background:
+          linear-gradient(180deg, rgb(247 251 255 / 96%), rgb(255 255 255 / 94%)),
+          radial-gradient(circle at 18% 0%, rgb(198 225 255 / 34%), transparent 30%);
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      .screen {
+        width: 1440px;
+        min-height: 960px;
+        margin: 0 auto;
+        padding: 44px 54px 52px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 22px;
+      }
+
+      .eyebrow {
+        margin-bottom: 8px;
+        color: var(--blue);
+        font-size: 14px;
+      }
+
+      h1 {
+        font-size: 34px;
+        font-weight: 650;
+        letter-spacing: 0;
+      }
+
+      .summary {
+        max-width: 720px;
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.5;
+      }
+
+      .top-actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .icon-button,
+      .text-button,
+      .primary-button {
+        height: 36px;
+        border: 1px solid #c8d9ea;
+        border-radius: 8px;
+        background: rgb(234 244 255 / 72%);
+        color: #285f75;
+        box-shadow: 0 8px 18px rgb(47 120 198 / 10%);
+      }
+
+      .icon-button {
+        display: grid;
+        width: 38px;
+        place-items: center;
+        font-size: 18px;
+      }
+
+      .text-button,
+      .primary-button {
+        padding: 0 13px;
+        font-size: 14px;
+      }
+
+      .primary-button {
+        border-color: #2f78c6;
+        background: #2f78c6;
+        color: #ffffff;
+      }
+
+      .home-panel {
+        display: grid;
+        gap: 16px;
+      }
+
+      .notice {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        padding: 15px 18px;
+        border: 1px solid #d6e6f5;
+        border-radius: 8px;
+        background: linear-gradient(180deg, #f5fbff, #ffffff);
+      }
+
+      .notice h2 {
+        margin-bottom: 4px;
+        color: #172033;
+        font-size: 17px;
+        font-weight: 650;
+      }
+
+      .notice p {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .notice strong {
+        color: var(--blue-strong);
+        font-weight: 700;
+      }
+
+      .create-strip {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 140px 96px;
+        gap: 10px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface);
+      }
+
+      .create-strip label {
+        display: grid;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .create-strip input {
+        height: 38px;
+        padding: 0 12px;
+        border: 1px solid #ccddeb;
+        border-radius: 8px;
+        background: #fbfdff;
+        color: #172033;
+        font-size: 14px;
+      }
+
+      .study-list {
+        display: grid;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface);
+        overflow: hidden;
+      }
+
+      .study-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 170px 254px 128px;
+        gap: 18px;
+        align-items: center;
+        min-height: 104px;
+        padding: 18px;
+        border-bottom: 1px solid var(--line-soft);
+      }
+
+      .study-row:last-child {
+        border-bottom: 0;
+      }
+
+      .study-main {
+        display: grid;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .study-title {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .study-title h3 {
+        overflow: hidden;
+        color: #172033;
+        font-size: 18px;
+        font-weight: 650;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+
+      .status-pill,
+      .record-pill,
+      .action-pill {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        min-height: 24px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 650;
+        white-space: nowrap;
+      }
+
+      .status-pill {
+        background: var(--blue-soft);
+        color: var(--blue-strong);
+      }
+
+      .status-pill.green {
+        background: var(--green-soft);
+        color: var(--green);
+      }
+
+      .status-pill.amber {
+        background: var(--amber-soft);
+        color: var(--amber);
+      }
+
+      .status-pill.red {
+        background: var(--red-soft);
+        color: var(--red);
+      }
+
+      .study-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .progress-block {
+        display: grid;
+        gap: 8px;
+      }
+
+      .progress-label {
+        display: flex;
+        justify-content: space-between;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .progress-label strong {
+        color: #24334a;
+      }
+
+      .progress-track {
+        height: 8px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #e8f0f8;
+      }
+
+      .progress-fill {
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #2f78c6, #47a28a);
+      }
+
+      .study-record {
+        display: grid;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .record-line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .record-line strong {
+        flex: none;
+        color: #263750;
+        font-size: 14px;
+      }
+
+      .record-line span {
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+
+      .record-pill {
+        background: #eef7fa;
+        color: #285f75;
+      }
+
+      .record-pill.amber {
+        background: var(--amber-soft);
+        color: var(--amber);
+      }
+
+      .record-pill.red {
+        background: var(--red-soft);
+        color: var(--red);
+      }
+
+      .row-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      .action-pill {
+        border: 1px solid #c8d9ea;
+        background: #f6fbff;
+        color: #285f75;
+      }
+
+      .add-card {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 64px;
+        border: 1px dashed #bfd4e8;
+        border-radius: 8px;
+        background: rgb(251 253 255 / 82%);
+        color: #285f75;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="screen">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">StudySeq / V1.4 homepage concept</p>
+          <h1>学习内容</h1>
+          <p class="summary">
+            自动学习记录只进入每个学习主题栏：只显示上次打开时间、上次打开文件、上次打开到哪里。
+          </p>
+        </div>
+        <div class="top-actions" aria-label="页面操作">
+          <button class="icon-button" aria-label="搜索">⌕</button>
+          <button class="primary-button">新建</button>
+        </div>
+      </header>
+
+      <section class="home-panel">
+        <section class="notice" aria-label="主页轻提醒">
+          <div>
+            <h2>学习主题栏内显示最近打开位置</h2>
+            <p>不显示学习时长、打卡、连续天数或独立足迹列表，只帮助用户继续上次的位置。</p>
+          </div>
+          <button class="text-button">只看需继续</button>
+        </section>
+
+        <section class="create-strip" aria-label="新建学习内容">
+          <label>
+            学习内容名称
+            <input value="Rust 入门" readonly />
+          </label>
+          <label>
+            预计工时
+            <input value="28" readonly />
+          </label>
+          <button class="primary-button">新建</button>
+        </section>
+
+        <section class="study-list" aria-label="学习内容列表">
+          <article class="study-row">
+            <div class="study-main">
+              <div class="study-title">
+                <h3>Rust 入门</h3>
+                <span class="status-pill green">进行中</span>
+              </div>
+              <div class="study-meta">
+                <span>截止 2026-06-30</span>
+                <span>预计 28h</span>
+                <span>上次打开：今天 19:35</span>
+              </div>
+            </div>
+            <div class="progress-block">
+              <div class="progress-label"><span>进度</span><strong>65%</strong></div>
+              <div class="progress-track"><div class="progress-fill" style="width: 65%"></div></div>
+            </div>
+              <div class="study-record" aria-label="Rust 入门最近打开记录">
+                <div class="record-line">
+                  <strong>上次打开</strong>
+                  <span>今天 19:35</span>
+                </div>
+                <div class="record-line">
+                  <strong>打开文件</strong>
+                  <span>课程视频 03.mp4</span>
+                </div>
+                <div class="record-line">
+                  <strong>打开位置</strong>
+                  <span>00:24:18</span>
+                </div>
+              </div>
+            <div class="row-actions">
+              <span class="action-pill">编辑</span>
+              <span class="action-pill">删除</span>
+            </div>
+          </article>
+
+          <article class="study-row">
+            <div class="study-main">
+              <div class="study-title">
+                <h3>V1.4 产品规划</h3>
+                <span class="status-pill">计划中</span>
+              </div>
+              <div class="study-meta">
+                <span>截止 2026-07-05</span>
+                <span>预计 12h</span>
+                <span>上次打开：今天 21:10</span>
+              </div>
+            </div>
+            <div class="progress-block">
+              <div class="progress-label"><span>进度</span><strong>38%</strong></div>
+              <div class="progress-track"><div class="progress-fill" style="width: 38%"></div></div>
+            </div>
+              <div class="study-record" aria-label="V1.4 产品规划最近打开记录">
+                <div class="record-line">
+                  <strong>上次打开</strong>
+                  <span>今天 21:10</span>
+                </div>
+                <div class="record-line">
+                  <strong>打开文件</strong>
+                  <span>studyseq-project-progress.md</span>
+                </div>
+                <div class="record-line">
+                  <strong>打开位置</strong>
+                  <span>第 6 节：V1.3 开发计划</span>
+                </div>
+              </div>
+            <div class="row-actions">
+              <span class="action-pill">编辑</span>
+              <span class="action-pill">删除</span>
+            </div>
+          </article>
+
+          <article class="study-row">
+            <div class="study-main">
+              <div class="study-title">
+                <h3>数据库迁移</h3>
+                <span class="status-pill amber">复习</span>
+              </div>
+              <div class="study-meta">
+                <span>截止 2026-06-24</span>
+                <span>预计 16h</span>
+                <span>上次打开：昨天 22:00</span>
+              </div>
+            </div>
+            <div class="progress-block">
+              <div class="progress-label"><span>进度</span><strong>48%</strong></div>
+              <div class="progress-track"><div class="progress-fill" style="width: 48%"></div></div>
+            </div>
+              <div class="study-record" aria-label="数据库迁移最近打开记录">
+                <div class="record-line">
+                  <strong>上次打开</strong>
+                  <span>昨天 22:00</span>
+                </div>
+                <div class="record-line">
+                  <strong>打开文件</strong>
+                  <span>SQLite migration notes.pdf</span>
+                </div>
+                <div class="record-line">
+                  <strong>打开位置</strong>
+                  <span>第 14 页</span>
+                </div>
+              </div>
+            <div class="row-actions">
+              <span class="action-pill">编辑</span>
+              <span class="action-pill">删除</span>
+            </div>
+          </article>
+
+          <article class="study-row">
+            <div class="study-main">
+              <div class="study-title">
+                <h3>英语听力</h3>
+                <span class="status-pill red">停滞</span>
+              </div>
+              <div class="study-meta">
+                <span>截止 2026-06-28</span>
+                <span>预计 20h</span>
+                <span>上次打开：6 月 8 日</span>
+              </div>
+            </div>
+            <div class="progress-block">
+              <div class="progress-label"><span>进度</span><strong>32%</strong></div>
+              <div class="progress-track"><div class="progress-fill" style="width: 32%"></div></div>
+            </div>
+              <div class="study-record" aria-label="英语听力最近打开记录">
+                <div class="record-line">
+                  <strong>上次打开</strong>
+                  <span>6 月 8 日 20:12</span>
+                </div>
+                <div class="record-line">
+                  <strong>打开文件</strong>
+                  <span>Listening Practice 02.mp3</span>
+                </div>
+                <div class="record-line">
+                  <strong>打开位置</strong>
+                  <span>00:18:42</span>
+                </div>
+              </div>
+            <div class="row-actions">
+              <span class="action-pill">编辑</span>
+              <span class="action-pill">删除</span>
+            </div>
+          </article>
+        </section>
+
+        <button class="add-card">＋ 新建学习内容</button>
+      </section>
+    </main>
+  </body>
+</html>

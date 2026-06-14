@@ -1,15 +1,29 @@
-use tauri::State;
+use std::path::PathBuf;
+
+use tauri::{Manager, State, Window};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::errors::{ApiError, AppError};
 use crate::models::{
     CreateLearningContentInput, CreateMaterialFolderInput, CreateNoteInput,
     ImportMaterialFileInput, LearningContent, LearningDetail, MaterialItem,
-    MaterialLibraryCleanupReport, MaterialLibraryStats, MaterialPreview, MaterialReadingState,
-    MaterialSubtreeCount, MoveMaterialItemInput, Note, RenameMaterialItemInput,
-    SaveMaterialReadingStateInput, UpdateLearningContentInput, UpdateNoteInput,
+    MaterialLibraryCleanupReport, MaterialLibraryLocation, MaterialLibraryStats, MaterialPreview,
+    MaterialReadingState, MaterialSubtreeCount, MoveMaterialItemInput, Note,
+    RenameMaterialItemInput, SaveMaterialReadingStateInput, SaveVideoPlaybackStateInput,
+    SetMaterialLibraryLocationInput, UpdateLearningContentInput, UpdateNoteInput,
 };
 use crate::repository::LearningContentRepository;
 use crate::AppState;
+
+fn current_material_library_dir(
+    state: &State<'_, AppState>,
+) -> Result<std::path::PathBuf, AppError> {
+    state
+        .material_library_dir
+        .lock()
+        .map(|path| path.clone())
+        .map_err(|_| AppError::StateUnavailable)
+}
 
 #[tauri::command]
 pub fn list_learning_contents(
@@ -19,8 +33,9 @@ pub fn list_learning_contents(
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
+    let material_library_dir = current_material_library_dir(&state)?;
 
-    list_learning_contents_from_repository(&repository)
+    list_learning_contents_from_repository(&repository, &material_library_dir)
 }
 
 #[tauri::command]
@@ -68,7 +83,7 @@ pub fn delete_learning_content(state: State<'_, AppState>, id: String) -> Result
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
-    let material_library_dir = state.material_library_dir.clone();
+    let material_library_dir = current_material_library_dir(&state)?;
 
     delete_learning_content_in_repository(&repository, &id, &material_library_dir)
 }
@@ -79,13 +94,14 @@ pub fn delete_material_item(state: State<'_, AppState>, id: String) -> Result<()
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
-    let material_library_dir = state.material_library_dir.clone();
+    let material_library_dir = current_material_library_dir(&state)?;
 
     delete_material_item_in_repository(&repository, &id, &material_library_dir)
 }
 
 #[tauri::command]
 pub fn import_material_file(
+    window: Window,
     state: State<'_, AppState>,
     input: ImportMaterialFileInput,
 ) -> Result<MaterialItem, ApiError> {
@@ -94,7 +110,11 @@ pub fn import_material_file(
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
 
-    let material_library_dir = state.material_library_dir.clone();
+    let material_library_dir = current_material_library_dir(&state)?;
+    let source_path = PathBuf::from(&input.source_path);
+    if !window.asset_protocol_scope().is_allowed(&source_path) {
+        return Err(ApiError::from(AppError::SourceFileMissing));
+    }
     import_material_file_in_repository(&repository, input, &material_library_dir)
 }
 
@@ -137,7 +157,7 @@ pub fn preview_material_file(
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
-    let material_library_dir = state.material_library_dir.clone();
+    let material_library_dir = current_material_library_dir(&state)?;
 
     preview_material_file_in_repository(&repository, &material_id, &material_library_dir)
 }
@@ -164,8 +184,23 @@ pub fn save_material_reading_state(
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
+    let material_library_dir = current_material_library_dir(&state)?;
 
-    save_material_reading_state_in_repository(&repository, input)
+    save_material_reading_state_in_repository(&repository, input, &material_library_dir)
+}
+
+#[tauri::command]
+pub fn save_video_playback_state(
+    state: State<'_, AppState>,
+    input: SaveVideoPlaybackStateInput,
+) -> Result<MaterialReadingState, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+    let material_library_dir = current_material_library_dir(&state)?;
+
+    save_video_playback_state_in_repository(&repository, input, &material_library_dir)
 }
 
 #[tauri::command]
@@ -176,7 +211,7 @@ pub fn get_material_library_stats(
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
-    let material_library_dir = state.material_library_dir.clone();
+    let material_library_dir = current_material_library_dir(&state)?;
 
     get_material_library_stats_from_repository(&repository, &material_library_dir)
 }
@@ -189,7 +224,7 @@ pub fn cleanup_material_library(
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
-    let material_library_dir = state.material_library_dir.clone();
+    let material_library_dir = current_material_library_dir(&state)?;
 
     cleanup_material_library_in_repository(&repository, &material_library_dir)
 }
@@ -203,9 +238,72 @@ pub fn rename_material_item(
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
-    let material_library_dir = state.material_library_dir.clone();
+    let material_library_dir = current_material_library_dir(&state)?;
 
     rename_material_item_in_repository(&repository, input, &material_library_dir)
+}
+
+#[tauri::command]
+pub fn get_material_library_location(
+    state: State<'_, AppState>,
+) -> Result<MaterialLibraryLocation, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    repository
+        .get_material_library_location(&state.default_material_library_dir)
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub fn choose_material_library_storage_root(window: Window) -> Result<Option<String>, ApiError> {
+    let selected = window
+        .dialog()
+        .file()
+        .set_title("选择资料库存放位置")
+        .blocking_pick_folder();
+
+    Ok(selected
+        .and_then(|path| path.into_path().ok())
+        .map(|path| path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub fn set_material_library_location(
+    window: Window,
+    state: State<'_, AppState>,
+    input: SetMaterialLibraryLocationInput,
+) -> Result<MaterialLibraryLocation, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+    let current_dir = current_material_library_dir(&state)?;
+    let target_dir = if input.path == "DEFAULT" {
+        state.default_material_library_dir.clone()
+    } else {
+        std::path::PathBuf::from(input.path)
+    };
+    let location = repository
+        .set_material_library_location(
+            &current_dir,
+            &state.default_material_library_dir,
+            &target_dir,
+        )
+        .map_err(ApiError::from)?;
+    window
+        .asset_protocol_scope()
+        .allow_directory(&location.path, true)
+        .map_err(|_| ApiError::from(AppError::InvalidMaterialLibraryLocation))?;
+
+    *state
+        .material_library_dir
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)? = std::path::PathBuf::from(&location.path);
+
+    Ok(location)
 }
 
 #[tauri::command]
@@ -249,8 +347,11 @@ pub fn count_material_subtree(
 
 fn list_learning_contents_from_repository(
     repository: &LearningContentRepository,
+    material_library_dir: &std::path::Path,
 ) -> Result<Vec<LearningContent>, ApiError> {
-    repository.list().map_err(ApiError::from)
+    repository
+        .list_with_material_library(material_library_dir)
+        .map_err(ApiError::from)
 }
 
 fn create_learning_content_in_repository(
@@ -365,9 +466,29 @@ fn get_material_reading_state_from_repository(
 fn save_material_reading_state_in_repository(
     repository: &LearningContentRepository,
     input: SaveMaterialReadingStateInput,
+    material_library_dir: &std::path::Path,
 ) -> Result<MaterialReadingState, ApiError> {
     repository
-        .save_material_reading_state(&input.material_id, input.page_number, input.scale)
+        .save_material_reading_state(
+            &input.material_id,
+            input.page_number,
+            input.scale,
+            material_library_dir,
+        )
+        .map_err(ApiError::from)
+}
+
+fn save_video_playback_state_in_repository(
+    repository: &LearningContentRepository,
+    input: SaveVideoPlaybackStateInput,
+    material_library_dir: &std::path::Path,
+) -> Result<MaterialReadingState, ApiError> {
+    repository
+        .save_video_playback_state(
+            &input.material_id,
+            input.position_seconds,
+            material_library_dir,
+        )
         .map_err(ApiError::from)
 }
 
@@ -441,6 +562,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
             .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
 
         create_learning_content_in_repository(
             &repository,
@@ -453,8 +575,8 @@ mod tests {
         )
         .expect("create learning content");
 
-        let contents =
-            list_learning_contents_from_repository(&repository).expect("list learning contents");
+        let contents = list_learning_contents_from_repository(&repository, &material_library_dir)
+            .expect("list learning contents");
 
         assert_eq!(contents.len(), 1);
         assert_eq!(contents[0].name, "SQLite 闭环");
@@ -629,8 +751,30 @@ mod tests {
                 page_number: 4,
                 scale: 1.5,
             },
+            &material_library_dir,
         )
         .expect("save material reading state");
+        let video_source = temp_dir.path().join("source.mp4");
+        std::fs::write(&video_source, b"video").expect("write video source");
+        let video = import_material_file_in_repository(
+            &repository,
+            ImportMaterialFileInput {
+                learning_content_id: content.id.clone(),
+                source_path: video_source.to_string_lossy().to_string(),
+                parent_id: None,
+            },
+            &material_library_dir,
+        )
+        .expect("import video");
+        let saved_video_state = save_video_playback_state_in_repository(
+            &repository,
+            SaveVideoPlaybackStateInput {
+                material_id: video.id.clone(),
+                position_seconds: 42.5,
+            },
+            &material_library_dir,
+        )
+        .expect("save video playback state");
         let loaded_state = get_material_reading_state_from_repository(&repository, &material.id)
             .expect("get material reading state")
             .expect("state exists");
@@ -649,6 +793,7 @@ mod tests {
             .expect("cleanup");
 
         assert_eq!(saved_state.page_number, 4);
+        assert_eq!(saved_video_state.video_position_seconds, Some(42.5));
         assert_eq!(loaded_state.scale, 1.5);
         assert_eq!(stats.orphan_file_count, 1);
         assert_eq!(renamed.name, "重命名.pdf");

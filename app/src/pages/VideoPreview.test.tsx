@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { MaterialPreviewPane } from "./MaterialPreviewPane";
-import { VideoPreview } from "./VideoPreview";
+import { VideoPreview, VIDEO_POSITION_SAVE_INTERVAL_SECONDS } from "./VideoPreview";
 import type { MaterialItem, MaterialPreview } from "../shared/types";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -41,6 +41,7 @@ function buildPreview(overrides: Partial<MaterialPreview> = {}): MaterialPreview
     mimeType: "video/mp4",
     text: null,
     dataUrl: null,
+    assetPath: "C:\\appdata\\materials\\lc-1\\课程视频.mp4",
     encoding: null,
     ...overrides,
   };
@@ -93,6 +94,118 @@ describe("VideoPreview", () => {
     expect(loadSpy).toHaveBeenCalled();
     expect(video.getAttribute("src")).toBeNull();
   });
+
+  it("元数据加载前卸载不会把播放位置保存为 0", () => {
+    const onPositionChange = vi.fn();
+    const { unmount } = render(
+      <VideoPreview
+        storedPath={"C:\\appdata\\materials\\lc-1\\课程视频.mp4"}
+        initialPositionSeconds={42}
+        onPositionChange={onPositionChange}
+      />,
+    );
+    const video = screen.getByLabelText("视频播放器") as HTMLVideoElement;
+    Object.defineProperty(video, "currentTime", {
+      configurable: true,
+      writable: true,
+      value: 0,
+    });
+
+    unmount();
+
+    expect(onPositionChange).not.toHaveBeenCalled();
+  });
+
+  it("加载元数据后恢复上次播放位置", () => {
+    render(
+      <VideoPreview
+        storedPath={"C:\\appdata\\materials\\lc-1\\课程视频.mp4"}
+        initialPositionSeconds={42}
+      />,
+    );
+    const video = screen.getByLabelText("视频播放器") as HTMLVideoElement;
+    Object.defineProperty(video, "duration", {
+      configurable: true,
+      value: 100,
+    });
+
+    fireEvent.loadedMetadata(video);
+
+    expect(video.currentTime).toBe(42);
+  });
+
+  it("加载元数据但未播放时卸载不会把播放位置保存为 0", () => {
+    const onPositionChange = vi.fn();
+    const { unmount } = render(
+      <VideoPreview
+        storedPath={"C:\\appdata\\materials\\lc-1\\课程视频.mp4"}
+        onPositionChange={onPositionChange}
+      />,
+    );
+    const video = screen.getByLabelText("视频播放器") as HTMLVideoElement;
+    Object.defineProperty(video, "duration", {
+      configurable: true,
+      value: 100,
+    });
+    Object.defineProperty(video, "currentTime", {
+      configurable: true,
+      writable: true,
+      value: 0,
+    });
+
+    fireEvent.loadedMetadata(video);
+    unmount();
+
+    expect(onPositionChange).not.toHaveBeenCalled();
+  });
+
+  it("按播放位置变化阈值低频上报进度", () => {
+    const onPositionChange = vi.fn();
+    render(
+      <VideoPreview
+        storedPath={"C:\\appdata\\materials\\lc-1\\课程视频.mp4"}
+        onPositionChange={onPositionChange}
+      />,
+    );
+    const video = screen.getByLabelText("视频播放器") as HTMLVideoElement;
+    Object.defineProperty(video, "currentTime", {
+      configurable: true,
+      writable: true,
+      value: 1,
+    });
+
+    fireEvent.timeUpdate(video);
+    video.currentTime = VIDEO_POSITION_SAVE_INTERVAL_SECONDS - 1;
+    fireEvent.timeUpdate(video);
+    video.currentTime = VIDEO_POSITION_SAVE_INTERVAL_SECONDS + 1;
+    fireEvent.timeUpdate(video);
+    video.currentTime = VIDEO_POSITION_SAVE_INTERVAL_SECONDS + 2;
+    fireEvent.pause(video);
+
+    expect(onPositionChange).toHaveBeenNthCalledWith(1, 1);
+    expect(onPositionChange).toHaveBeenNthCalledWith(2, VIDEO_POSITION_SAVE_INTERVAL_SECONDS + 1);
+    expect(onPositionChange).toHaveBeenNthCalledWith(3, VIDEO_POSITION_SAVE_INTERVAL_SECONDS + 2);
+  });
+
+  it("跳转后立即上报当前播放位置", () => {
+    const onPositionChange = vi.fn();
+    render(
+      <VideoPreview
+        storedPath={"C:\\appdata\\materials\\lc-1\\课程视频.mp4"}
+        onPositionChange={onPositionChange}
+      />,
+    );
+    const video = screen.getByLabelText("视频播放器") as HTMLVideoElement;
+    Object.defineProperty(video, "currentTime", {
+      configurable: true,
+      writable: true,
+      value: 36,
+    });
+
+    fireEvent.seeked(video);
+
+    expect(onPositionChange).toHaveBeenCalledWith(36);
+  });
 });
 
 describe("MaterialPreviewPane 视频分支", () => {
@@ -101,6 +214,8 @@ describe("MaterialPreviewPane 视频分支", () => {
       <MaterialPreviewPane
         material={buildMaterial()}
         preview={buildPreview()}
+        videoPositionSeconds={36}
+        onVideoPositionChange={vi.fn()}
       />,
     );
 

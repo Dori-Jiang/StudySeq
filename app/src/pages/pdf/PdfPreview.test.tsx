@@ -32,11 +32,20 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
 
 afterEach(cleanup);
 
-let dataUrlCounter = 0;
+let sourceCounter = 0;
+
+function uniquePdfSourceUrl() {
+  sourceCounter += 1;
+  return `asset://localhost/C%3A%2Fapp%2Foutline-test-${sourceCounter}.pdf`;
+}
 
 function uniqueDataUrl() {
-  dataUrlCounter += 1;
-  return `data:application/pdf;base64,${window.btoa(`outline-test-${dataUrlCounter}`)}`;
+  sourceCounter += 1;
+  return `data:application/pdf;base64,${window.btoa(`outline-test-${sourceCounter}`)}`;
+}
+
+function largeDataUrl() {
+  return `data:application/pdf;base64,${"A".repeat(12 * 1024 * 1024)}`;
 }
 
 beforeEach(() => {
@@ -49,16 +58,31 @@ describe("PdfPreview 目录接线", () => {
     pdfGetOutlineMock.mockResolvedValue([
       { title: "第一章", dest: [{ num: 1 }], items: [] },
     ]);
-    render(<PdfPreview dataUrl={uniqueDataUrl()} />);
+    render(<PdfPreview sourceUrl={uniquePdfSourceUrl()} />);
 
     await user.click(screen.getByRole("button", { name: "目录" }));
 
     expect(await screen.findByRole("button", { name: "第一章" })).toBeInTheDocument();
   });
 
-  it("用二进制数据加载 data URL，避免 PDF 读取被 CSP connect-src 拦截", async () => {
+  it("用 asset URL 加载 PDF，避免大文件整本 base64 解码", async () => {
     pdfGetOutlineMock.mockResolvedValue(null);
-    render(<PdfPreview dataUrl={uniqueDataUrl()} />);
+    const sourceUrl = uniquePdfSourceUrl();
+    const atobSpy = vi.spyOn(window, "atob");
+    render(<PdfPreview sourceUrl={sourceUrl} />);
+
+    await screen.findByText("第 1 / 5 页");
+
+    expect(pdfGetDocumentMock).toHaveBeenCalledWith({
+      url: sourceUrl,
+    });
+    expect(atobSpy).not.toHaveBeenCalled();
+    atobSpy.mockRestore();
+  });
+
+  it("保留 data URL 二进制加载兼容路径", async () => {
+    pdfGetOutlineMock.mockResolvedValue(null);
+    render(<PdfPreview sourceUrl={uniqueDataUrl()} />);
 
     await screen.findByText("第 1 / 5 页");
 
@@ -67,9 +91,24 @@ describe("PdfPreview 目录接线", () => {
     });
   });
 
+  it("大型 data URL 不在主线程解码，避免异常 payload 卡死", async () => {
+    pdfGetOutlineMock.mockResolvedValue(null);
+    const sourceUrl = largeDataUrl();
+    const atobSpy = vi.spyOn(window, "atob");
+    render(<PdfPreview sourceUrl={sourceUrl} />);
+
+    await screen.findByText("第 1 / 5 页");
+
+    expect(pdfGetDocumentMock).toHaveBeenCalledWith({
+      url: sourceUrl,
+    });
+    expect(atobSpy).not.toHaveBeenCalled();
+    atobSpy.mockRestore();
+  });
+
   it("加载真实页数前不显示过期页码和默认总页数的错误组合", async () => {
     pdfGetOutlineMock.mockResolvedValue(null);
-    render(<PdfPreview dataUrl={uniqueDataUrl()} initialPageNumber={8} />);
+    render(<PdfPreview sourceUrl={uniquePdfSourceUrl()} initialPageNumber={8} />);
 
     expect(screen.queryByText("第 8 / 1 页")).not.toBeInTheDocument();
     expect(screen.getByText("正在加载 PDF")).toBeInTheDocument();
@@ -81,7 +120,7 @@ describe("PdfPreview 目录接线", () => {
     pdfGetOutlineMock.mockResolvedValue([
       { title: "第三章", dest: [{ num: 2 }], items: [] },
     ]);
-    render(<PdfPreview dataUrl={uniqueDataUrl()} />);
+    render(<PdfPreview sourceUrl={uniquePdfSourceUrl()} />);
 
     await user.click(screen.getByRole("button", { name: "目录" }));
     await user.click(await screen.findByRole("button", { name: "第三章" }));
@@ -92,7 +131,7 @@ describe("PdfPreview 目录接线", () => {
   it("无大纲 PDF 展示空状态", async () => {
     const user = userEvent.setup();
     pdfGetOutlineMock.mockResolvedValue(null);
-    render(<PdfPreview dataUrl={uniqueDataUrl()} />);
+    render(<PdfPreview sourceUrl={uniquePdfSourceUrl()} />);
 
     await user.click(screen.getByRole("button", { name: "目录" }));
 
@@ -118,7 +157,7 @@ describe("PdfPreview 目录接线", () => {
     pdfGetOutlineMock.mockResolvedValue(null);
 
     try {
-      render(<PdfPreview dataUrl={uniqueDataUrl()} />);
+      render(<PdfPreview sourceUrl={uniquePdfSourceUrl()} />);
 
       act(() => {
         resizeCallback?.(
@@ -139,7 +178,7 @@ describe("PdfPreview 目录接线", () => {
     pdfGetOutlineMock.mockResolvedValue([
       { title: "第一章", dest: [{ num: 1 }], items: [] },
     ]);
-    render(<PdfPreview dataUrl={uniqueDataUrl()} />);
+    render(<PdfPreview sourceUrl={uniquePdfSourceUrl()} />);
 
     await user.click(screen.getByRole("button", { name: "目录" }));
     await screen.findByRole("button", { name: "第一章" });

@@ -173,6 +173,31 @@ h1 {
   min-width: 76px;
 }
 
+.home-material-library-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 20px;
+  padding: 16px 18px;
+  background: #ffffff;
+  border: 1px solid #d9e7f6;
+  border-radius: 8px;
+}
+
+.home-material-library-panel h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.home-material-library-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .content-edit-form {
   display: grid;
   grid-template-columns: 160px 180px max-content;
@@ -389,6 +414,37 @@ a {
   color: #607086;
 }
 
+.study-recent-open {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  min-width: 0;
+  max-width: min(620px, 100%);
+  color: #506277;
+  font-size: 13px;
+}
+
+.study-recent-open span {
+  min-width: 0;
+}
+
+.study-recent-open span:not(:last-child)::after {
+  padding-left: 10px;
+  color: #b7c7d9;
+  content: "/";
+}
+
+.study-recent-open-empty {
+  color: #8a9aac;
+}
+
+.study-recent-open-file {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .study-meta {
   display: grid;
   min-width: 138px;
@@ -428,6 +484,9 @@ a {
 }
 
 .study-row-actions .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   height: 32px;
   padding: 0 13px;
 }
@@ -1136,6 +1195,19 @@ button:disabled {
   gap: 8px;
 }
 
+.material-explorer-controls {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(110px, 140px) minmax(120px, 150px);
+  gap: 10px;
+  align-items: end;
+}
+
+.material-explorer-controls input,
+.material-explorer-controls select {
+  width: 100%;
+  height: 34px;
+}
+
 .material-tile-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
@@ -1411,9 +1483,20 @@ button:disabled {
 
 .note-document-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 12px;
   padding-top: 8px;
   border-top: 1px solid #edf3fa;
+}
+
+.note-save-status {
+  color: #607086;
+  font-size: 13px;
+}
+
+.note-save-status-error {
+  color: #b3261e;
 }
 
 textarea {
@@ -1588,10 +1671,15 @@ textarea {
   }
 
   .home-header,
+  .home-material-library-panel,
   .study-row,
   .detail-header {
     align-items: start;
     flex-direction: column;
+  }
+
+  .home-material-library-actions {
+    justify-content: flex-start;
   }
 
   .study-row-link {
@@ -1613,6 +1701,7 @@ textarea {
   .create-form,
   .content-edit-form,
   .study-row-edit-form,
+  .material-explorer-controls,
   .detail-grid {
     grid-template-columns: 1fr;
   }

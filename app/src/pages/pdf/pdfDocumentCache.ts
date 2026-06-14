@@ -8,6 +8,7 @@ export const PDF_MAX_RENDER_SCALE = 3;
 export const PDF_ZOOM_RENDER_DEBOUNCE_MS = 150;
 const PDF_DOCUMENT_CACHE_LIMIT = 3;
 const PDF_RENDERED_PAGE_CACHE_LIMIT = 6;
+const PDF_DATA_URL_INLINE_DECODE_LIMIT_BYTES = 8 * 1024 * 1024;
 
 export type PdfViewport = {
   width: number;
@@ -57,8 +58,8 @@ export function clampPageNumber(pageNumber: number, pageCount: number) {
   return Math.min(Math.max(pageNumber, 1), pageCount);
 }
 
-export async function loadPdfDocument(dataUrl: string) {
-  const cachedDocument = pdfDocumentCache.get(dataUrl);
+export async function loadPdfDocument(sourceUrl: string) {
+  const cachedDocument = pdfDocumentCache.get(sourceUrl);
   if (cachedDocument) return cachedDocument;
 
   const documentPromise = (async () => {
@@ -67,39 +68,49 @@ export async function loadPdfDocument(dataUrl: string) {
       "pdfjs-dist/legacy/build/pdf.worker.mjs",
       import.meta.url,
     ).toString();
-    return pdfjs.getDocument(createPdfDocumentSource(dataUrl)).promise as unknown as Promise<PdfDocumentProxy>;
+    return pdfjs.getDocument(createPdfDocumentSource(sourceUrl)).promise as unknown as Promise<PdfDocumentProxy>;
   })();
 
   trimPdfDocumentCache();
-  pdfDocumentCache.set(dataUrl, documentPromise);
+  pdfDocumentCache.set(sourceUrl, documentPromise);
   documentPromise.catch(() => {
-    pdfDocumentCache.delete(dataUrl);
+    pdfDocumentCache.delete(sourceUrl);
   });
 
   return documentPromise;
 }
 
-function createPdfDocumentSource(dataUrl: string) {
-  const commaIndex = dataUrl.indexOf(",");
-  if (!dataUrl.startsWith("data:") || commaIndex < 0) {
-    return { url: dataUrl };
+function createPdfDocumentSource(sourceUrl: string) {
+  const commaIndex = sourceUrl.indexOf(",");
+  if (!sourceUrl.startsWith("data:") || commaIndex < 0) {
+    return { url: sourceUrl };
   }
 
-  const metadata = dataUrl.slice(5, commaIndex).toLowerCase();
+  const metadata = sourceUrl.slice(5, commaIndex).toLowerCase();
   if (!metadata.split(";").includes("base64")) {
-    return { url: dataUrl };
+    return { url: sourceUrl };
+  }
+
+  const base64Payload = sourceUrl.slice(commaIndex + 1);
+  if (estimateBase64DecodedBytes(base64Payload) > PDF_DATA_URL_INLINE_DECODE_LIMIT_BYTES) {
+    return { url: sourceUrl };
   }
 
   try {
-    const binary = window.atob(dataUrl.slice(commaIndex + 1));
+    const binary = window.atob(base64Payload);
     const data = new Uint8Array(binary.length);
     for (let index = 0; index < binary.length; index += 1) {
       data[index] = binary.charCodeAt(index);
     }
     return { data };
   } catch {
-    return { url: dataUrl };
+    return { url: sourceUrl };
   }
+}
+
+function estimateBase64DecodedBytes(payload: string) {
+  const padding = payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((payload.length * 3) / 4) - padding);
 }
 
 function trimPdfDocumentCache() {

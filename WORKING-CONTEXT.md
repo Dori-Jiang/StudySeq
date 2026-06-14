@@ -120,6 +120,24 @@
 - V1.3 自动化验证已通过：`npm.cmd test`（10 文件、100 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`cargo fmt --check`、`cargo test`（48 测试）、`cargo clippy -- -D warnings`、`npm.cmd run tauri -- build --debug`、`npm.cmd run tauri -- build`。
 - V1.3 正式包已生成：`app/src-tauri/target/release/studyseq.exe`、`app/src-tauri/target/release/bundle/msi/StudySeq_1.3.0_x64_en-US.msi`、`app/src-tauri/target/release/bundle/nsis/StudySeq_1.3.0_x64-setup.exe`。
 - V1.3 真实 App 手工验收仍待用户执行：重点检查 CSP 下 txt/图片/PDF/MP4/WebM 预览、MKV/AVI 不支持提示、库外 stored_path 不被读取、文件夹内打开资料返回位置、笔记保存/删除失败、cleanup 可重试收敛、V1.1 旧库升级、V1.2 PDF 目录/视频/资料文件夹不回退、断网全流程。
+- 当前已进入 V1.4 开发线程，工作分支为 `codex/v1.4`；V1.4 主题为“主页最近打开位置”，不做日历打卡、独立足迹列表、学习时长统计或连续学习天数。
+- V1.4 自动化开发已完成：`material_reading_states` 扩展最近打开字段，并新增 `app_settings` 后数据库升级到 `user_version = 6`；`list_learning_contents` 返回 `recentOpen`；主页学习主题栏显示最近打开时间、文件名和 PDF 页码/视频时间点；普通文件只显示时间和文件名。
+- V1.4 视频继续播放已完成：`VideoPreview` 按上次秒数恢复播放，按 10 秒阈值、暂停、跳转和卸载低频保存；详情页仍是当前阅读主线。
+- V1.4 审查修复已完成：PDF 状态保存要求资料是库内存在的 PDF；视频预览和视频进度保存都要求副本位于 App 资料库且仍存在，主页 `recentOpen` 会过滤失效副本；视频进度保存不刷新 `last_opened_at`；视频卸载保存避免 metadata-only 写入 0；详情页打开资料成功/失败都增加过期请求保护；主页最近打开摘要接入 `aria-describedby`；前端 API 对最近打开 union 和阅读状态做轻量运行时校验。
+- V1.4 大 PDF 卡死修复已完成：PDF 预览不再由 Rust 整本 `std::fs::read` 后 base64 返回，也不再由前端主线程 `atob` 整本解码；后端 PDF 只校验资料副本在 App 资料库内且文件存在，返回 `data_url: None` 并记录打开；前端用 `convertFileSrc(storedPath)` 生成 asset URL 交给 pdf.js `{ url }` 加载；异常/旧 data URL 兼容路径加 8MB 内联解码上限；`previewMaterialFile` 前端 API 已加运行时 payload 校验；库内缺失 PDF 父目录统一返回 `MaterialFileMissing`。
+- V1.4 资料库位置设置已完成：主页新增“资料库位置”设置，目录选择由 Rust command 执行，用户选择一个存放位置后，App 实际使用其下 `StudySeqData\materials` 作为专用资料库；支持迁回默认 AppData 位置；启动和迁移后只把当前资料库目录加入 Tauri asset scope，不授权用户选择的根目录；导入命令只接受文件选择器授权过的 source path；迁移路径会校验已保存设置并使用 canonical 相对路径；迁移复制可重试，同内容目标副本允许继续；迁移后只删除已确认迁移的旧资料副本并清空库内空目录，不整目录删除用户手放文件。
+- V1.4 顺手修复资料移动旧问题：重名资料移动时 `next_available_path` 现在始终返回资料库目录内路径，避免生成 `app/src-tauri/笔记 (1).txt` 这类工作目录残留。
+- V1.4 版本号已统一为 `1.4.0`（package.json / package-lock.json / tauri.conf.json / Cargo.toml / Cargo.lock 中本 crate）。
+- V1.4 已通过自动化验证：`npm.cmd test`（10 文件、126 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`cargo fmt --check`、`cargo test`（63 测试）、`cargo clippy -- -D warnings`、`npm.cmd run tauri -- build --debug`。
+- V1.4 真实 App 手工验收已由用户完成，未发现问题；当前 V1.4 可视为开发与验收完成，下一步按需要生成正式 release 包、提交并推送 `codex/v1.4`、创建 V1.4 tag。
+- V1.5 A1-D1 自动化开发已完成，参与角色包括 `planner`、`typescript-reviewer`、`rust-reviewer`、`react-build-resolver`、`security-reviewer`；用户已完成真实 App 手测，未发现 V1.5 阻塞问题。
+- V1.5 已接入：主页最近打开摘要提供轻量“继续”入口，点击后仍进入当前详情页，由详情页按继续意图自动打开最近资料；PDF / 视频复用现有位置恢复，txt / 图片直接打开，文件夹上下文保持；当前文件夹资料定位、笔记保存状态、删除影响提示和图片 / 文本预览性能收口均已落地。
+- V1.5 不做日历、足迹、统计、全文搜索、Office、富文本笔记、资料笔记强绑定、整文件夹导入、目录同步、打开原文件或旧独立阅读页。
+- V1.5 没有新增 SQLite 表，没有提升 `PRAGMA user_version`；复用 `recentOpen`、`getLearningDetail`、`previewMaterialFile`、`getMaterialReadingState`，版本号已统一为 `1.5.0`。
+- V1.5 C2 安全审查结论：未发现 P0；继续入口仍走 `previewMaterialFile`，`assetPath` 来自 Rust 校验后的资料库副本；文本预览有 2MB 保护；UI 不展示清理失败绝对路径。V1.6 候选：① 资料库位置设置避免直接信任前端传入路径字符串，改为 Rust command 合并选择与迁移或一次性 token；② `MaterialLibraryCleanupReport.failedPaths` 改为只返回失败数量或脱敏相对路径。
+- V1.5 自动化验证已通过：`npm.cmd test`（10 文件、130 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`cargo fmt --check`、`cargo test`（64 测试）、`cargo clippy -- -D warnings`、`npm.cmd run tauri -- build --debug`。debug 包已生成；真实 App 手测已由用户完成，下一步按需要生成正式 release 包、提交、推送和 tag。
+- V1.5 真实 App 手测观察项：① 搜索只覆盖本级资料夹，不能搜索更下一级文件夹，符合 V1.5 当前文件夹资料定位范围，递归/全局搜索后置；② 删除最近打开资料后，主页不引用已删除失效资料，但会回退到更上一次新打开的有效资料，符合“无失效引用”口径。
+- V1.5 开发计划已更新：`product/docs/studyseq-v1.5-development-plan.md`。阶段为 A1 继续学习合同、A2 主页继续入口、A3 详情页自动打开资料、B1 当前文件夹资料定位、B2 笔记保存状态、B3 删除影响提示、C1 图片 / 文本预览性能收口、C2 安全边界回归、D1 回归验证与文档收口。
 
 ## 已准备依赖
 

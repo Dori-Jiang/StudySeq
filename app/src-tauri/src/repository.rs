@@ -1,6 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::{
+    io::Read,
+    path::{Component, Path, PathBuf},
+};
 
-use base64::{engine::general_purpose, Engine as _};
 use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
 use chrono::Utc;
 use encoding_rs::UTF_8;
@@ -10,13 +12,17 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::models::{
     CreateLearningContentInput, LearningContent, LearningDetail, MaterialItem, MaterialKind,
-    MaterialLibraryCleanupReport, MaterialLibraryStats, MaterialPreview, MaterialPreviewKind,
-    MaterialReadingState, MaterialSubtreeCount, Note, StudyStatus,
+    MaterialLibraryCleanupReport, MaterialLibraryLocation, MaterialLibraryStats,
+    MaterialOpenPositionKind, MaterialPreview, MaterialPreviewKind, MaterialReadingState,
+    MaterialSubtreeCount, Note, RecentMaterialOpenPosition, RecentMaterialOpenSummary, StudyStatus,
 };
 
 pub struct LearningContentRepository {
     connection: Connection,
 }
+
+const MATERIAL_LIBRARY_DIR_SETTING_KEY: &str = "material_library_dir";
+const MAX_TEXT_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
 
 impl LearningContentRepository {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, AppError> {
@@ -58,6 +64,7 @@ impl LearningContentRepository {
             created_at: now.clone(),
             updated_at: now,
             last_opened_at: None,
+            recent_open: None,
         };
 
         self.connection.execute(
@@ -81,6 +88,20 @@ impl LearningContentRepository {
     }
 
     pub fn list(&self) -> Result<Vec<LearningContent>, AppError> {
+        self.list_contents_with_recent_open(None)
+    }
+
+    pub fn list_with_material_library(
+        &self,
+        material_library_dir: impl AsRef<Path>,
+    ) -> Result<Vec<LearningContent>, AppError> {
+        self.list_contents_with_recent_open(Some(material_library_dir.as_ref()))
+    }
+
+    fn list_contents_with_recent_open(
+        &self,
+        material_library_dir: Option<&Path>,
+    ) -> Result<Vec<LearningContent>, AppError> {
         let mut statement = self.connection.prepare(
             "SELECT id, name, status, deadline, estimated_hours, progress, created_at, updated_at, last_opened_at
              FROM learning_contents
@@ -98,10 +119,17 @@ impl LearningContentRepository {
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
                 last_opened_at: row.get(8)?,
+                recent_open: None,
             })
         })?;
 
-        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+        let mut contents = rows.collect::<Result<Vec<_>, _>>()?;
+        for content in &mut contents {
+            content.recent_open =
+                self.get_recent_material_open_summary(&content.id, material_library_dir)?;
+        }
+
+        Ok(contents)
     }
 
     pub fn update_learning_content(
@@ -146,6 +174,7 @@ impl LearningContentRepository {
             ],
         )?;
 
+        let recent_open = self.get_recent_material_open_summary(id, None)?;
         Ok(LearningContent {
             name,
             status,
@@ -153,6 +182,7 @@ impl LearningContentRepository {
             deadline,
             estimated_hours,
             updated_at: now,
+            recent_open,
             ..existing
         })
     }
@@ -177,7 +207,8 @@ impl LearningContentRepository {
     ) -> Result<(), AppError> {
         // 按表批量删除而不是逐项递归，避免文件夹子树被重复删除报 MaterialNotFound
         let materials = self.list_materials(id)?;
-        self.remove_material_file_copies(&materials, material_library_dir.as_ref())?;
+        let file_cleanup_paths =
+            collect_material_file_cleanup_paths(&materials, material_library_dir.as_ref())?;
         // DB 删除段单事务提交，避免中途崩溃留下悬空记录
         let transaction = self.connection.unchecked_transaction()?;
         transaction.execute(
@@ -196,6 +227,7 @@ impl LearningContentRepository {
         )?;
         transaction.execute("DELETE FROM learning_contents WHERE id = ?1", params![id])?;
         transaction.commit()?;
+        remove_material_file_paths_best_effort(&file_cleanup_paths);
         Ok(())
     }
 
@@ -376,19 +408,26 @@ impl LearningContentRepository {
         };
 
         // 文件夹是纯逻辑层级：先递归收集子树，文件行删磁盘副本，所有行删记录与阅读状态
-        let subtree = self.collect_material_subtree(&material)?;
-        self.remove_material_file_copies(&subtree, material_library_dir.as_ref())?;
+        let mut subtree = self.collect_material_subtree(&material)?;
+        let file_cleanup_paths =
+            collect_material_file_cleanup_paths(&subtree, material_library_dir.as_ref())?;
+        let depths = subtree
+            .iter()
+            .map(|item| (item.id.clone(), material_depth(item, &subtree)))
+            .collect::<std::collections::HashMap<_, _>>();
+        subtree.sort_by_key(|item| std::cmp::Reverse(*depths.get(&item.id).unwrap_or(&0)));
 
         // DB 删除段单事务提交，避免中途崩溃留下悬空的子树记录
         let transaction = self.connection.unchecked_transaction()?;
         for item in &subtree {
-            transaction.execute("DELETE FROM material_items WHERE id = ?1", params![item.id])?;
             transaction.execute(
                 "DELETE FROM material_reading_states WHERE material_id = ?1",
                 params![item.id],
             )?;
+            transaction.execute("DELETE FROM material_items WHERE id = ?1", params![item.id])?;
         }
         transaction.commit()?;
+        remove_material_file_paths_best_effort(&file_cleanup_paths);
 
         Ok(())
     }
@@ -571,6 +610,7 @@ impl LearningContentRepository {
                 mime_type: None,
                 text: None,
                 data_url: None,
+                asset_path: None,
                 encoding: None,
             });
         };
@@ -583,47 +623,71 @@ impl LearningContentRepository {
         }
         let mime_type = resolve_preview_mime(material.mime_type.as_deref(), &stored_path);
         let kind = preview_kind(mime_type.as_deref());
+        if matches!(
+            kind,
+            MaterialPreviewKind::Image | MaterialPreviewKind::Pdf | MaterialPreviewKind::Video
+        ) {
+            ensure_material_file_exists(&stored_path_buf)?;
+        }
 
-        match kind {
+        let preview = match kind {
             MaterialPreviewKind::Text => {
-                let bytes = read_material_preview_bytes(&stored_path_buf)?;
+                let bytes = read_text_preview_bytes_with_limit(&stored_path_buf)?;
                 let (text, encoding) = decode_text(&bytes);
-                Ok(MaterialPreview {
+                MaterialPreview {
                     material_id: material.id,
-                    kind,
+                    kind: MaterialPreviewKind::Text,
                     mime_type,
                     text: Some(text),
                     data_url: None,
+                    asset_path: None,
                     encoding: Some(encoding),
-                })
+                }
             }
-            MaterialPreviewKind::Image | MaterialPreviewKind::Pdf => {
-                let bytes = read_material_preview_bytes(&stored_path_buf)?;
-                let mime = mime_type
-                    .clone()
-                    .unwrap_or_else(|| "application/octet-stream".to_string());
-                Ok(MaterialPreview {
-                    material_id: material.id,
-                    kind,
-                    mime_type,
-                    text: None,
-                    data_url: Some(format!(
-                        "data:{mime};base64,{}",
-                        general_purpose::STANDARD.encode(bytes)
-                    )),
-                    encoding: None,
-                })
-            }
-            // 视频走前端 asset 协议流式播放，不支持格式不需要内容：都不读文件字节
-            MaterialPreviewKind::Video | MaterialPreviewKind::Unsupported => Ok(MaterialPreview {
+            MaterialPreviewKind::Image => MaterialPreview {
                 material_id: material.id,
-                kind,
+                kind: MaterialPreviewKind::Image,
                 mime_type,
                 text: None,
                 data_url: None,
+                asset_path: Some(stored_path),
                 encoding: None,
-            }),
+            },
+            // PDF/视频走前端 asset 协议读取，不把大文件通过 invoke 搬进前端
+            MaterialPreviewKind::Pdf => MaterialPreview {
+                material_id: material.id,
+                kind: MaterialPreviewKind::Pdf,
+                mime_type,
+                text: None,
+                data_url: None,
+                asset_path: Some(stored_path),
+                encoding: None,
+            },
+            MaterialPreviewKind::Video => MaterialPreview {
+                material_id: material.id,
+                kind: MaterialPreviewKind::Video,
+                mime_type,
+                text: None,
+                data_url: None,
+                asset_path: Some(stored_path),
+                encoding: None,
+            },
+            MaterialPreviewKind::Unsupported => MaterialPreview {
+                material_id: material.id,
+                kind: MaterialPreviewKind::Unsupported,
+                mime_type,
+                text: None,
+                data_url: None,
+                asset_path: None,
+                encoding: None,
+            },
+        };
+
+        if preview.kind != MaterialPreviewKind::Unsupported {
+            self.record_material_open(&preview.material_id)?;
         }
+
+        Ok(preview)
     }
 
     pub fn get_material_reading_state(
@@ -632,7 +696,8 @@ impl LearningContentRepository {
     ) -> Result<Option<MaterialReadingState>, AppError> {
         self.connection
             .query_row(
-                "SELECT material_id, page_number, scale, updated_at
+                "SELECT material_id, page_number, scale, last_opened_at, position_kind,
+                        video_position_seconds, updated_at
                  FROM material_reading_states
                  WHERE material_id = ?1",
                 params![material_id],
@@ -641,7 +706,12 @@ impl LearningContentRepository {
                         material_id: row.get(0)?,
                         page_number: row.get(1)?,
                         scale: row.get(2)?,
-                        updated_at: row.get(3)?,
+                        last_opened_at: row.get(3)?,
+                        position_kind: material_open_position_kind_from_str(
+                            row.get::<_, String>(4)?.as_str(),
+                        ),
+                        video_position_seconds: row.get(5)?,
+                        updated_at: row.get(6)?,
                     })
                 },
             )
@@ -654,17 +724,39 @@ impl LearningContentRepository {
         material_id: &str,
         page_number: i64,
         scale: f64,
+        material_library_dir: impl AsRef<Path>,
     ) -> Result<MaterialReadingState, AppError> {
+        let material = self.ensure_previewable_file_material(material_id)?;
+        let Some(stored_path) = material.stored_path.as_deref() else {
+            return Err(AppError::MaterialNotFound);
+        };
+        let stored_path_buf = PathBuf::from(stored_path);
+        if !is_material_preview_path_inside_library(
+            &stored_path_buf,
+            material_library_dir.as_ref(),
+        )? {
+            return Err(AppError::MaterialPathOutsideLibrary);
+        }
+        let resolved_mime = resolve_preview_mime(material.mime_type.as_deref(), stored_path);
+        if preview_kind(resolved_mime.as_deref()) != MaterialPreviewKind::Pdf {
+            return Err(AppError::MaterialNotFound);
+        }
+        ensure_material_file_exists(&stored_path_buf)?;
+
         let page_number = page_number.max(1);
         let scale = scale.clamp(0.6, 2.4);
         let now = Utc::now().to_rfc3339();
         self.connection.execute(
             "INSERT INTO material_reading_states (
-                material_id, page_number, scale, updated_at
-            ) VALUES (?1, ?2, ?3, ?4)
+                material_id, page_number, scale, last_opened_at, position_kind,
+                video_position_seconds, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, 'pdf_page', NULL, ?4)
             ON CONFLICT(material_id) DO UPDATE SET
                 page_number = excluded.page_number,
                 scale = excluded.scale,
+                last_opened_at = excluded.last_opened_at,
+                position_kind = excluded.position_kind,
+                video_position_seconds = excluded.video_position_seconds,
                 updated_at = excluded.updated_at",
             params![material_id, page_number, scale, now],
         )?;
@@ -673,8 +765,80 @@ impl LearningContentRepository {
             material_id: material_id.to_string(),
             page_number,
             scale,
+            last_opened_at: Some(now.clone()),
+            position_kind: MaterialOpenPositionKind::PdfPage,
+            video_position_seconds: None,
             updated_at: now,
         })
+    }
+
+    pub fn save_video_playback_state(
+        &self,
+        material_id: &str,
+        position_seconds: f64,
+        material_library_dir: impl AsRef<Path>,
+    ) -> Result<MaterialReadingState, AppError> {
+        let material = self.ensure_previewable_file_material(material_id)?;
+        if !position_seconds.is_finite() || position_seconds < 0.0 {
+            return Err(AppError::InvalidPlaybackPosition);
+        }
+        let Some(stored_path) = material.stored_path.as_deref() else {
+            return Err(AppError::MaterialNotFound);
+        };
+        let stored_path_buf = PathBuf::from(stored_path);
+        if !is_material_preview_path_inside_library(
+            &stored_path_buf,
+            material_library_dir.as_ref(),
+        )? {
+            return Err(AppError::MaterialPathOutsideLibrary);
+        }
+        let resolved_mime = resolve_preview_mime(material.mime_type.as_deref(), stored_path);
+        if preview_kind(resolved_mime.as_deref()) != MaterialPreviewKind::Video {
+            return Err(AppError::MaterialNotFound);
+        }
+        ensure_material_file_exists(&stored_path_buf)?;
+
+        let position_seconds = position_seconds.max(0.0);
+        let now = Utc::now().to_rfc3339();
+        self.connection.execute(
+            "INSERT INTO material_reading_states (
+                material_id, page_number, scale, last_opened_at, position_kind,
+                video_position_seconds, updated_at
+            ) VALUES (?1, 1, 1.0, NULL, 'video_second', ?2, ?3)
+            ON CONFLICT(material_id) DO UPDATE SET
+                position_kind = excluded.position_kind,
+                video_position_seconds = excluded.video_position_seconds,
+                updated_at = excluded.updated_at",
+            params![material_id, position_seconds, now],
+        )?;
+
+        let state = self
+            .get_material_reading_state(material_id)?
+            .ok_or(AppError::MaterialNotFound)?;
+        Ok(state)
+    }
+
+    pub fn record_material_open(
+        &self,
+        material_id: &str,
+    ) -> Result<MaterialReadingState, AppError> {
+        self.ensure_previewable_file_material(material_id)?;
+        let now = Utc::now().to_rfc3339();
+        self.connection.execute(
+            "INSERT INTO material_reading_states (
+                material_id, page_number, scale, last_opened_at, position_kind,
+                video_position_seconds, updated_at
+            ) VALUES (?1, 1, 1.0, ?2, 'none', NULL, ?2)
+            ON CONFLICT(material_id) DO UPDATE SET
+                last_opened_at = excluded.last_opened_at,
+                updated_at = excluded.updated_at",
+            params![material_id, now],
+        )?;
+
+        let state = self
+            .get_material_reading_state(material_id)?
+            .ok_or(AppError::MaterialNotFound)?;
+        Ok(state)
     }
 
     pub fn get_material_library_stats(
@@ -724,6 +888,52 @@ impl LearningContentRepository {
         })
     }
 
+    pub fn get_material_library_location(
+        &self,
+        default_material_library_dir: impl AsRef<Path>,
+    ) -> Result<MaterialLibraryLocation, AppError> {
+        let default_path = default_material_library_dir.as_ref();
+        let path = self
+            .get_app_setting(MATERIAL_LIBRARY_DIR_SETTING_KEY)?
+            .map(PathBuf::from)
+            .unwrap_or_else(|| default_path.to_path_buf());
+        validate_supported_material_library_location(&path, default_path)?;
+
+        Ok(MaterialLibraryLocation {
+            is_default: same_path_string(&path, default_path),
+            path: path.to_string_lossy().to_string(),
+        })
+    }
+
+    pub fn set_material_library_location(
+        &self,
+        current_material_library_dir: impl AsRef<Path>,
+        default_material_library_dir: impl AsRef<Path>,
+        target_material_library_dir: impl AsRef<Path>,
+    ) -> Result<MaterialLibraryLocation, AppError> {
+        let current_dir = current_material_library_dir.as_ref();
+        let default_dir = default_material_library_dir.as_ref();
+        let target_dir = target_material_library_dir.as_ref();
+        validate_supported_material_library_location(target_dir, default_dir)?;
+
+        if same_path_string(current_dir, target_dir) {
+            return Ok(MaterialLibraryLocation {
+                path: current_dir.to_string_lossy().to_string(),
+                is_default: same_path_string(current_dir, default_dir),
+            });
+        }
+
+        let migration_plan =
+            migrate_material_library_files(current_dir, target_dir, &self.list_all_materials()?)?;
+        self.update_material_library_paths_and_setting(current_dir, default_dir, target_dir)?;
+        cleanup_migrated_material_files(&migration_plan, current_dir);
+
+        Ok(MaterialLibraryLocation {
+            path: target_dir.to_string_lossy().to_string(),
+            is_default: same_path_string(target_dir, default_dir),
+        })
+    }
+
     pub fn cleanup_material_library(
         &self,
         material_library_dir: impl AsRef<Path>,
@@ -754,25 +964,8 @@ impl LearningContentRepository {
         }
 
         let orphan_materials = self.list_orphan_materials()?;
-        for material in &orphan_materials {
-            // 孤儿 folder 行没有磁盘实体，只删记录
-            if let Some(stored_path) = material.stored_path.as_deref() {
-                let stored_path = PathBuf::from(stored_path);
-                if is_path_inside_directory(&stored_path, material_library_dir)? {
-                    if let Ok(metadata) = std::fs::metadata(&stored_path) {
-                        let size = metadata.len() as i64;
-                        match std::fs::remove_file(&stored_path) {
-                            Ok(()) => {
-                                deleted_orphan_file_count += 1;
-                                deleted_bytes += size;
-                            }
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                            Err(_) => failed_paths.push(stored_path.to_string_lossy().to_string()),
-                        }
-                    }
-                }
-            }
-        }
+        let orphan_material_file_paths =
+            collect_material_file_cleanup_paths(&orphan_materials, material_library_dir)?;
         let deleted_orphan_database_record_count = orphan_materials.len() as i64;
         if !orphan_materials.is_empty() {
             let transaction = self.connection.unchecked_transaction()?;
@@ -787,6 +980,19 @@ impl LearningContentRepository {
                 )?;
             }
             transaction.commit()?;
+        }
+        for stored_path in orphan_material_file_paths {
+            if let Ok(metadata) = std::fs::metadata(&stored_path) {
+                let size = metadata.len() as i64;
+                match std::fs::remove_file(&stored_path) {
+                    Ok(()) => {
+                        deleted_orphan_file_count += 1;
+                        deleted_bytes += size;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => failed_paths.push(stored_path.to_string_lossy().to_string()),
+                }
+            }
         }
 
         Ok(MaterialLibraryCleanupReport {
@@ -821,6 +1027,66 @@ impl LearningContentRepository {
             .map_err(AppError::from)
     }
 
+    fn get_recent_material_open_summary(
+        &self,
+        learning_content_id: &str,
+        material_library_dir: Option<&Path>,
+    ) -> Result<Option<RecentMaterialOpenSummary>, AppError> {
+        let mut statement = self.connection.prepare(
+            "SELECT material_items.id, material_items.name, material_items.stored_path,
+                        material_reading_states.last_opened_at,
+                        material_reading_states.position_kind, material_reading_states.page_number,
+                        material_reading_states.video_position_seconds
+                 FROM material_reading_states
+                 INNER JOIN material_items ON material_items.id = material_reading_states.material_id
+                 WHERE material_items.learning_content_id = ?1
+                   AND material_items.kind = 'file'
+                   AND material_reading_states.last_opened_at IS NOT NULL
+                 ORDER BY material_reading_states.last_opened_at DESC, material_reading_states.updated_at DESC
+                 LIMIT 10",
+        )?;
+        let rows = statement.query_map(params![learning_content_id], |row| {
+            let position_kind =
+                material_open_position_kind_from_str(row.get::<_, String>(4)?.as_str());
+            let page_number = row.get::<_, i64>(5)?;
+            let video_position_seconds = row.get::<_, Option<f64>>(6)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                recent_open_position(position_kind, page_number, video_position_seconds),
+            ))
+        })?;
+
+        for row in rows {
+            let (material_id, material_name, stored_path, opened_at, position) = row?;
+            if let Some(directory) = material_library_dir {
+                let Some(stored_path) = stored_path.as_deref() else {
+                    continue;
+                };
+                let stored_path_buf = PathBuf::from(stored_path);
+                if !is_material_preview_path_inside_library(&stored_path_buf, directory)? {
+                    continue;
+                }
+                match ensure_material_file_exists(&stored_path_buf) {
+                    Ok(()) => {}
+                    Err(AppError::MaterialFileMissing) => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+
+            return Ok(Some(RecentMaterialOpenSummary {
+                material_id,
+                material_name,
+                opened_at,
+                position,
+            }));
+        }
+
+        Ok(None)
+    }
+
     fn get_learning_content(&self, id: &str) -> Result<Option<LearningContent>, AppError> {
         self.connection
             .query_row(
@@ -839,6 +1105,7 @@ impl LearningContentRepository {
                         created_at: row.get(6)?,
                         updated_at: row.get(7)?,
                         last_opened_at: row.get(8)?,
+                        recent_open: None,
                     })
                 },
             )
@@ -858,6 +1125,92 @@ impl LearningContentRepository {
         let rows = statement.query_map(params![learning_content_id], material_item_from_row)?;
 
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    }
+
+    fn ensure_previewable_file_material(
+        &self,
+        material_id: &str,
+    ) -> Result<MaterialItem, AppError> {
+        let Some(material) = self.get_material(material_id)? else {
+            return Err(AppError::MaterialNotFound);
+        };
+        if material.kind != MaterialKind::File {
+            return Err(AppError::MaterialNotFound);
+        }
+        Ok(material)
+    }
+
+    fn get_app_setting(&self, key: &str) -> Result<Option<String>, AppError> {
+        self.connection
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(AppError::from)
+    }
+
+    fn update_material_library_paths_and_setting(
+        &self,
+        current_dir: &Path,
+        default_dir: &Path,
+        target_dir: &Path,
+    ) -> Result<(), AppError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let mut statement = transaction
+            .prepare("SELECT id, stored_path FROM material_items WHERE stored_path IS NOT NULL")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let path_updates = rows.collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        for (material_id, stored_path) in path_updates {
+            let old_path = PathBuf::from(stored_path);
+            if has_relative_dir_component(&old_path) {
+                return Err(AppError::MaterialPathOutsideLibrary);
+            }
+            if !is_path_inside_directory(&old_path, current_dir)? {
+                return Err(AppError::MaterialPathOutsideLibrary);
+            }
+            let current_canonical = current_dir.canonicalize()?;
+            let old_canonical = old_path.canonicalize()?;
+            let relative_path = old_canonical
+                .strip_prefix(current_canonical)
+                .map_err(|_| AppError::MaterialPathOutsideLibrary)?;
+            let new_path = target_dir.join(relative_path);
+            if !is_material_preview_path_inside_library(&new_path, target_dir)? {
+                return Err(AppError::MaterialPathOutsideLibrary);
+            }
+            transaction.execute(
+                "UPDATE material_items SET stored_path = ?1 WHERE id = ?2",
+                params![new_path.to_string_lossy().to_string(), material_id],
+            )?;
+        }
+
+        if same_path_string(target_dir, default_dir) {
+            transaction.execute(
+                "DELETE FROM app_settings WHERE key = ?1",
+                params![MATERIAL_LIBRARY_DIR_SETTING_KEY],
+            )?;
+        } else {
+            transaction.execute(
+                "INSERT INTO app_settings (key, value, updated_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at",
+                params![
+                    MATERIAL_LIBRARY_DIR_SETTING_KEY,
+                    target_dir.to_string_lossy().to_string(),
+                    Utc::now().to_rfc3339(),
+                ],
+            )?;
+        }
+
+        transaction.commit()?;
+        Ok(())
     }
 
     fn get_material(&self, material_id: &str) -> Result<Option<MaterialItem>, AppError> {
@@ -1012,33 +1365,6 @@ impl LearningContentRepository {
         Ok(())
     }
 
-    /// 删除一组资料行的 App 管理磁盘副本。
-    /// 只删除位于资料库目录内的文件，绝不触碰用户原始文件或目录外路径；
-    /// 已不存在的文件视为成功（删除操作可重试收敛）。
-    fn remove_material_file_copies(
-        &self,
-        materials: &[MaterialItem],
-        material_library_dir: &Path,
-    ) -> Result<(), AppError> {
-        for item in materials {
-            if item.kind != MaterialKind::File {
-                continue;
-            }
-            let Some(stored_path) = item.stored_path.as_deref() else {
-                continue;
-            };
-            if !is_path_inside_directory(Path::new(stored_path), material_library_dir)? {
-                continue;
-            }
-            match std::fs::remove_file(stored_path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(AppError::Io(error)),
-            }
-        }
-        Ok(())
-    }
-
     /// 返回以 root 为根的整棵子树（含 root 自身），文件行直接返回单元素。
     /// 用 visited 集合防御损坏数据中的 parent 环。
     fn collect_material_subtree(&self, root: &MaterialItem) -> Result<Vec<MaterialItem>, AppError> {
@@ -1106,6 +1432,12 @@ impl LearningContentRepository {
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             ",
         )?;
 
@@ -1122,6 +1454,9 @@ impl LearningContentRepository {
                     material_id TEXT PRIMARY KEY,
                     page_number INTEGER NOT NULL DEFAULT 1,
                     scale REAL NOT NULL DEFAULT 1.0,
+                    last_opened_at TEXT,
+                    position_kind TEXT NOT NULL DEFAULT 'none',
+                    video_position_seconds REAL,
                     updated_at TEXT NOT NULL
                 );
                 ",
@@ -1172,6 +1507,41 @@ impl LearningContentRepository {
             )?;
             self.connection.pragma_update(None, "user_version", 4)?;
         }
+        if user_version < 5 {
+            if !self.material_reading_states_has_column("last_opened_at")? {
+                self.connection.execute_batch(
+                    "ALTER TABLE material_reading_states ADD COLUMN last_opened_at TEXT;",
+                )?;
+            }
+            if !self.material_reading_states_has_column("position_kind")? {
+                self.connection.execute_batch(
+                    "ALTER TABLE material_reading_states
+                     ADD COLUMN position_kind TEXT NOT NULL DEFAULT 'none';",
+                )?;
+            }
+            if !self.material_reading_states_has_column("video_position_seconds")? {
+                self.connection.execute_batch(
+                    "ALTER TABLE material_reading_states ADD COLUMN video_position_seconds REAL;",
+                )?;
+            }
+            self.connection.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_material_reading_states_last_opened
+                 ON material_reading_states(last_opened_at DESC);",
+            )?;
+            self.connection.pragma_update(None, "user_version", 5)?;
+        }
+        if user_version < 6 {
+            self.connection.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                ",
+            )?;
+            self.connection.pragma_update(None, "user_version", 6)?;
+        }
 
         Ok(())
     }
@@ -1179,6 +1549,15 @@ impl LearningContentRepository {
     fn material_items_has_column(&self, column: &str) -> Result<bool, AppError> {
         let count: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('material_items') WHERE name = ?1",
+            params![column],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    fn material_reading_states_has_column(&self, column: &str) -> Result<bool, AppError> {
+        let count: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('material_reading_states') WHERE name = ?1",
             params![column],
             |row| row.get(0),
         )?;
@@ -1223,7 +1602,9 @@ fn next_available_path(directory: &Path, preferred_name: &str) -> PathBuf {
         return candidate;
     }
 
-    next_duplicate_name(preferred_name, |name| directory.join(name).exists()).into()
+    directory.join(next_duplicate_name(preferred_name, |name| {
+        directory.join(name).exists()
+    }))
 }
 
 fn next_duplicate_name(name: &str, exists: impl Fn(&str) -> bool) -> String {
@@ -1256,6 +1637,12 @@ struct MaterialLibraryScan {
     library_bytes: i64,
     orphan_bytes: i64,
     orphan_files: Vec<PathBuf>,
+}
+
+#[derive(Debug)]
+struct MaterialLibraryMigrationFile {
+    source_path: PathBuf,
+    target_path: PathBuf,
 }
 
 fn validate_material_file_name(name: &str) -> Result<&str, AppError> {
@@ -1348,6 +1735,311 @@ fn scan_directory_for_materials(
     Ok(())
 }
 
+fn validate_supported_material_library_location(
+    target_dir: &Path,
+    default_dir: &Path,
+) -> Result<(), AppError> {
+    if !target_dir.is_absolute() {
+        return Err(AppError::InvalidMaterialLibraryLocation);
+    }
+    if has_parent_dir_component(target_dir) {
+        return Err(AppError::InvalidMaterialLibraryLocation);
+    }
+    if same_path_string(target_dir, default_dir) {
+        return Ok(());
+    }
+
+    if !has_app_managed_material_library_suffix(target_dir) {
+        return Err(AppError::InvalidMaterialLibraryLocation);
+    }
+    let storage_root = storage_root_for_app_managed_material_library(target_dir)
+        .ok_or(AppError::InvalidMaterialLibraryLocation)?;
+    if is_unsafe_material_storage_root(storage_root) {
+        return Err(AppError::InvalidMaterialLibraryLocation);
+    }
+
+    Ok(())
+}
+
+fn has_parent_dir_component(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, Component::ParentDir))
+}
+
+fn has_relative_dir_component(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+}
+
+fn has_app_managed_material_library_suffix(path: &Path) -> bool {
+    let Some(file_name) = path.file_name() else {
+        return false;
+    };
+    if !path_segment_eq(file_name, "materials") {
+        return false;
+    }
+
+    let Some(parent_name) = path.parent().and_then(Path::file_name) else {
+        return false;
+    };
+    path_segment_eq(parent_name, "StudySeqData")
+}
+
+fn storage_root_for_app_managed_material_library(path: &Path) -> Option<&Path> {
+    path.parent()?.parent()
+}
+
+fn path_segment_eq(segment: &std::ffi::OsStr, expected: &str) -> bool {
+    segment
+        .to_str()
+        .is_some_and(|value| value.eq_ignore_ascii_case(expected))
+}
+
+#[cfg(windows)]
+fn is_unsafe_material_storage_root(storage_root: &Path) -> bool {
+    windows_unsafe_storage_roots()
+        .iter()
+        .any(|unsafe_root| path_starts_with_case_insensitive(storage_root, unsafe_root))
+}
+
+#[cfg(not(windows))]
+fn is_unsafe_material_storage_root(_storage_root: &Path) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn windows_unsafe_storage_roots() -> Vec<PathBuf> {
+    let mut roots = [
+        std::env::var_os("WINDIR").map(PathBuf::from),
+        std::env::var_os("ProgramFiles").map(PathBuf::from),
+        std::env::var_os("ProgramFiles(x86)").map(PathBuf::from),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+
+    roots.push(PathBuf::from(r"C:\Windows"));
+    roots.push(PathBuf::from(r"C:\Program Files"));
+    roots.push(PathBuf::from(r"C:\Program Files (x86)"));
+    roots
+}
+
+#[cfg(windows)]
+fn path_starts_with_case_insensitive(path: &Path, directory: &Path) -> bool {
+    let normalized_path = normalize_path_string(path);
+    let normalized_directory = normalize_path_string(directory);
+    normalized_path == normalized_directory
+        || normalized_path
+            .strip_prefix(&format!("{normalized_directory}/"))
+            .is_some()
+}
+
+fn migrate_material_library_files(
+    current_dir: &Path,
+    target_dir: &Path,
+    materials: &[MaterialItem],
+) -> Result<Vec<MaterialLibraryMigrationFile>, AppError> {
+    let target_absolute = canonicalize_material_library_target(target_dir)?;
+    if !current_dir.exists() {
+        std::fs::create_dir_all(&target_absolute)?;
+        return Ok(Vec::new());
+    }
+    let current_canonical = current_dir.canonicalize()?;
+    std::fs::create_dir_all(&target_absolute)?;
+
+    if target_absolute.starts_with(&current_canonical)
+        || current_canonical.starts_with(&target_absolute)
+    {
+        return Err(AppError::InvalidMaterialLibraryLocation);
+    }
+
+    let plan =
+        build_material_library_migration_plan(&current_canonical, &target_absolute, materials)?;
+    for file in &plan {
+        copy_material_library_file(file)?;
+    }
+
+    Ok(plan)
+}
+
+fn canonicalize_material_library_target(target_dir: &Path) -> Result<PathBuf, AppError> {
+    let target_parent = target_dir
+        .parent()
+        .ok_or(AppError::InvalidMaterialLibraryLocation)?;
+    std::fs::create_dir_all(target_parent)?;
+    let target_parent_canonical = target_parent.canonicalize()?;
+    Ok(target_parent_canonical.join(
+        target_dir
+            .file_name()
+            .ok_or(AppError::InvalidMaterialLibraryLocation)?,
+    ))
+}
+
+fn build_material_library_migration_plan(
+    current_dir: &Path,
+    target_dir: &Path,
+    materials: &[MaterialItem],
+) -> Result<Vec<MaterialLibraryMigrationFile>, AppError> {
+    let mut plan = Vec::new();
+    for material in materials
+        .iter()
+        .filter(|item| item.kind == MaterialKind::File)
+    {
+        let Some(stored_path) = material.stored_path.as_deref() else {
+            continue;
+        };
+        let source_path = PathBuf::from(stored_path);
+        if has_relative_dir_component(&source_path) {
+            return Err(AppError::MaterialPathOutsideLibrary);
+        }
+        if !is_path_inside_directory(&source_path, current_dir)? {
+            return Err(AppError::MaterialPathOutsideLibrary);
+        }
+        ensure_material_file_exists(&source_path)?;
+        let canonical_source_path = source_path.canonicalize()?;
+        let relative_path = canonical_source_path
+            .strip_prefix(current_dir)
+            .map_err(|_| AppError::MaterialPathOutsideLibrary)?;
+        let target_path = target_dir.join(relative_path);
+        if !is_material_preview_path_inside_library(&target_path, target_dir)? {
+            return Err(AppError::MaterialPathOutsideLibrary);
+        }
+        plan.push(MaterialLibraryMigrationFile {
+            source_path,
+            target_path,
+        });
+    }
+
+    Ok(plan)
+}
+
+fn copy_material_library_file(file: &MaterialLibraryMigrationFile) -> Result<(), AppError> {
+    if let Some(parent) = file.target_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if file.target_path.exists() {
+        if material_files_match(&file.source_path, &file.target_path)? {
+            return Ok(());
+        }
+        return Err(AppError::MaterialLibraryMigrationFailed);
+    }
+    std::fs::copy(&file.source_path, &file.target_path)?;
+    Ok(())
+}
+
+fn material_files_match(left: &Path, right: &Path) -> Result<bool, AppError> {
+    let left_metadata = std::fs::metadata(left)?;
+    let right_metadata = std::fs::metadata(right)?;
+    if !left_metadata.is_file() || !right_metadata.is_file() {
+        return Ok(false);
+    }
+    if left_metadata.len() != right_metadata.len() {
+        return Ok(false);
+    }
+
+    let mut left_file = std::fs::File::open(left)?;
+    let mut right_file = std::fs::File::open(right)?;
+    let mut left_buffer = [0_u8; 64 * 1024];
+    let mut right_buffer = [0_u8; 64 * 1024];
+    loop {
+        let left_read = left_file.read(&mut left_buffer)?;
+        let right_read = right_file.read(&mut right_buffer)?;
+        if left_read != right_read {
+            return Ok(false);
+        }
+        if left_read == 0 {
+            return Ok(true);
+        }
+        if left_buffer[..left_read] != right_buffer[..right_read] {
+            return Ok(false);
+        }
+    }
+}
+
+fn cleanup_migrated_material_files(plan: &[MaterialLibraryMigrationFile], library_root: &Path) {
+    let Ok(canonical_library_root) = library_root.canonicalize() else {
+        return;
+    };
+    for file in plan {
+        let _ = std::fs::remove_file(&file.source_path);
+        cleanup_empty_ancestor_dirs(
+            file.source_path.parent().map(Path::to_path_buf),
+            &canonical_library_root,
+        );
+    }
+}
+
+fn cleanup_empty_ancestor_dirs(mut directory: Option<PathBuf>, canonical_library_root: &Path) {
+    while let Some(path) = directory.as_deref() {
+        let Ok(canonical_path) = path.canonicalize() else {
+            return;
+        };
+        if canonical_path == canonical_library_root
+            || !canonical_path.starts_with(canonical_library_root)
+        {
+            return;
+        }
+
+        match std::fs::remove_dir(&canonical_path) {
+            Ok(()) => {
+                directory = canonical_path.parent().map(Path::to_path_buf);
+            }
+            Err(_) => return,
+        }
+    }
+}
+
+fn collect_material_file_cleanup_paths(
+    materials: &[MaterialItem],
+    material_library_dir: &Path,
+) -> Result<Vec<PathBuf>, AppError> {
+    let mut paths = Vec::new();
+    for item in materials {
+        if item.kind != MaterialKind::File {
+            continue;
+        }
+        let Some(stored_path) = item.stored_path.as_deref() else {
+            continue;
+        };
+        let path = PathBuf::from(stored_path);
+        if is_path_inside_directory(&path, material_library_dir)? {
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
+fn remove_material_file_paths_best_effort(paths: &[PathBuf]) {
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn material_depth(item: &MaterialItem, subtree: &[MaterialItem]) -> usize {
+    let mut depth = 0;
+    let mut current_parent = item.parent_id.as_deref();
+    while let Some(parent_id) = current_parent {
+        let Some(parent) = subtree.iter().find(|candidate| candidate.id == parent_id) else {
+            break;
+        };
+        depth += 1;
+        current_parent = parent.parent_id.as_deref();
+    }
+
+    depth
+}
+
+fn same_path_string(left: &Path, right: &Path) -> bool {
+    normalize_path_string(left).eq_ignore_ascii_case(&normalize_path_string(right))
+}
+
+fn normalize_path_string(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_string()
+}
+
 fn is_path_inside_directory(path: &Path, directory: &Path) -> Result<bool, AppError> {
     let canonical_path = match path.canonicalize() {
         Ok(value) => value,
@@ -1369,17 +2061,53 @@ fn is_material_preview_path_inside_library(
 ) -> Result<bool, AppError> {
     match is_path_inside_directory(path, directory) {
         Ok(true) => Ok(true),
-        Ok(false) if !path.exists() => {
-            let Some(parent) = path.parent() else {
-                return Ok(false);
-            };
-            is_path_inside_directory(parent, directory)
-        }
+        Ok(false) if !path.exists() => is_missing_path_still_inside_directory(path, directory),
         other => other,
     }
 }
 
-fn read_material_preview_bytes(path: &Path) -> Result<Vec<u8>, AppError> {
+fn is_missing_path_still_inside_directory(path: &Path, directory: &Path) -> Result<bool, AppError> {
+    let canonical_directory = match directory.canonicalize() {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(AppError::Io(error)),
+    };
+
+    let mut existing_ancestor = path;
+    let mut missing_components = Vec::new();
+    while !existing_ancestor.exists() {
+        let Some(file_name) = existing_ancestor.file_name() else {
+            return Ok(false);
+        };
+        missing_components.push(file_name.to_os_string());
+        let Some(parent) = existing_ancestor.parent() else {
+            return Ok(false);
+        };
+        existing_ancestor = parent;
+    }
+
+    let mut reconstructed_path = existing_ancestor.canonicalize()?;
+    for component in missing_components.iter().rev() {
+        reconstructed_path.push(component);
+    }
+
+    Ok(reconstructed_path.starts_with(canonical_directory))
+}
+
+fn read_text_preview_bytes_with_limit(path: &Path) -> Result<Vec<u8>, AppError> {
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            AppError::MaterialFileMissing
+        } else {
+            AppError::Io(error)
+        }
+    })?;
+    if !metadata.is_file() {
+        return Err(AppError::MaterialFileMissing);
+    }
+    if metadata.len() > MAX_TEXT_PREVIEW_BYTES {
+        return Err(AppError::TextPreviewTooLarge);
+    }
     std::fs::read(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             AppError::MaterialFileMissing
@@ -1387,6 +2115,17 @@ fn read_material_preview_bytes(path: &Path) -> Result<Vec<u8>, AppError> {
             AppError::Io(error)
         }
     })
+}
+
+fn ensure_material_file_exists(path: &Path) -> Result<(), AppError> {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        Ok(_) => Err(AppError::MaterialFileMissing),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(AppError::MaterialFileMissing)
+        }
+        Err(error) => Err(AppError::Io(error)),
+    }
 }
 
 fn guess_mime_type(path: &Path) -> Option<String> {
@@ -1421,6 +2160,30 @@ fn preview_kind(mime_type: Option<&str>) -> MaterialPreviewKind {
         Some("video/mp4") | Some("video/webm") => MaterialPreviewKind::Video,
         Some(value) if value.starts_with("image/") => MaterialPreviewKind::Image,
         _ => MaterialPreviewKind::Unsupported,
+    }
+}
+
+fn material_open_position_kind_from_str(value: &str) -> MaterialOpenPositionKind {
+    match value {
+        "pdf_page" => MaterialOpenPositionKind::PdfPage,
+        "video_second" => MaterialOpenPositionKind::VideoSecond,
+        _ => MaterialOpenPositionKind::None,
+    }
+}
+
+fn recent_open_position(
+    kind: MaterialOpenPositionKind,
+    page_number: i64,
+    video_position_seconds: Option<f64>,
+) -> RecentMaterialOpenPosition {
+    match kind {
+        MaterialOpenPositionKind::PdfPage => RecentMaterialOpenPosition::PdfPage {
+            page_number: page_number.max(1),
+        },
+        MaterialOpenPositionKind::VideoSecond => RecentMaterialOpenPosition::VideoSecond {
+            seconds: video_position_seconds.unwrap_or(0.0).max(0.0),
+        },
+        MaterialOpenPositionKind::None => RecentMaterialOpenPosition::None,
     }
 }
 
@@ -1599,7 +2362,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let database_path = temp_dir.path().join("studyseq.sqlite");
         let material_library_dir = temp_dir.path().join("materials");
-        let source_file = temp_dir.path().join("source.txt");
+        let source_file = temp_dir.path().join("source.pdf");
         std::fs::write(&source_file, "hello").expect("write source file");
 
         let repository = LearningContentRepository::open(&database_path).expect("open db");
@@ -1639,7 +2402,7 @@ mod tests {
         assert_eq!(detail.learning_content.id, learning_content.id);
         assert_eq!(detail.materials.len(), 1);
         assert_eq!(detail.materials[0].id, material.id);
-        assert_eq!(detail.materials[0].name, "source.txt");
+        assert_eq!(detail.materials[0].name, "source.pdf");
         assert!(std::path::Path::new(
             detail.materials[0]
                 .stored_path
@@ -1706,7 +2469,7 @@ mod tests {
         let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
             .expect("open db");
         let material_library_dir = temp_dir.path().join("materials");
-        let source_file = temp_dir.path().join("source.txt");
+        let source_file = temp_dir.path().join("source.pdf");
         std::fs::write(&source_file, "hello").expect("write source file");
         let learning_content = repository
             .create(CreateLearningContentInput {
@@ -1726,7 +2489,7 @@ mod tests {
             .expect("import material");
         let stored_path = material.stored_path.clone().expect("stored path");
         repository
-            .save_material_reading_state(&material.id, 2, 1.4)
+            .save_material_reading_state(&material.id, 2, 1.4, &material_library_dir)
             .expect("save material reading state");
         repository
             .create_note(
@@ -1795,7 +2558,7 @@ mod tests {
     }
 
     #[test]
-    fn previews_image_and_pdf_materials_as_data_urls() {
+    fn previews_image_and_pdf_as_asset_paths_without_inline_bytes() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
             .expect("open db");
@@ -1835,17 +2598,310 @@ mod tests {
             image_preview.kind,
             crate::models::MaterialPreviewKind::Image
         );
-        assert!(image_preview
-            .data_url
-            .as_deref()
-            .expect("image data url")
-            .starts_with("data:image/png;base64,"));
+        assert_eq!(image_preview.data_url, None);
+        assert_eq!(image_preview.asset_path, image.stored_path);
         assert_eq!(pdf_preview.kind, crate::models::MaterialPreviewKind::Pdf);
-        assert!(pdf_preview
-            .data_url
-            .as_deref()
-            .expect("pdf data url")
-            .starts_with("data:application/pdf;base64,"));
+        assert_eq!(pdf_preview.mime_type.as_deref(), Some("application/pdf"));
+        assert_eq!(pdf_preview.data_url, None);
+        assert_eq!(pdf_preview.asset_path, pdf.stored_path);
+    }
+
+    #[test]
+    fn preview_rejects_oversized_text_without_recording_recent_open() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("large.txt");
+        std::fs::write(
+            &source_file,
+            vec![b'a'; (MAX_TEXT_PREVIEW_BYTES + 1) as usize],
+        )
+        .expect("write oversized text");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "超大文本".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(
+                &learning_content.id,
+                &source_file,
+                &material_library_dir,
+                None,
+            )
+            .expect("import material");
+
+        let error = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect_err("oversized text should fail");
+
+        assert!(matches!(error, AppError::TextPreviewTooLarge));
+        assert_eq!(repository.list().expect("list")[0].recent_open, None);
+    }
+
+    #[test]
+    fn material_library_location_defaults_and_migrates_files() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let default_library_dir = temp_dir.path().join("default-materials");
+        let target_library_dir = temp_dir
+            .path()
+            .join("target")
+            .join("StudySeqData")
+            .join("materials");
+        let user_sidecar_file = default_library_dir.join("手动放置.txt");
+        let source_file = temp_dir.path().join("source.pdf");
+        std::fs::create_dir_all(&default_library_dir).expect("create default library");
+        std::fs::write(&user_sidecar_file, b"user").expect("write sidecar file");
+        std::fs::write(&source_file, b"%PDF").expect("write source file");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "资料库迁移".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(
+                &learning_content.id,
+                &source_file,
+                &default_library_dir,
+                None,
+            )
+            .expect("import material");
+        let old_stored_path = PathBuf::from(material.stored_path.as_deref().expect("stored path"));
+
+        let initial_location = repository
+            .get_material_library_location(&default_library_dir)
+            .expect("get initial location");
+        assert!(initial_location.is_default);
+        assert_eq!(
+            initial_location.path,
+            default_library_dir.to_string_lossy().to_string()
+        );
+
+        let migrated_location = repository
+            .set_material_library_location(
+                &default_library_dir,
+                &default_library_dir,
+                &target_library_dir,
+            )
+            .expect("migrate library");
+
+        assert!(!migrated_location.is_default);
+        assert_eq!(
+            migrated_location.path,
+            target_library_dir.to_string_lossy().to_string()
+        );
+        assert!(!old_stored_path.exists());
+        let detail = repository
+            .get_detail(&learning_content.id)
+            .expect("get detail")
+            .expect("detail exists");
+        let new_stored_path = PathBuf::from(
+            detail.materials[0]
+                .stored_path
+                .as_deref()
+                .expect("new stored path"),
+        );
+        assert!(new_stored_path.starts_with(&target_library_dir));
+        assert!(new_stored_path.exists());
+        assert!(user_sidecar_file.exists());
+
+        let preview = repository
+            .preview_material_file(&material.id, &target_library_dir)
+            .expect("preview migrated material");
+        assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Pdf);
+    }
+
+    #[test]
+    fn material_library_location_allows_retry_when_target_copy_already_matches() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let default_library_dir = temp_dir.path().join("default-materials");
+        let target_library_dir = temp_dir
+            .path()
+            .join("target")
+            .join("StudySeqData")
+            .join("materials");
+        let source_file = temp_dir.path().join("source.pdf");
+        std::fs::write(&source_file, b"%PDF retry").expect("write source file");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "资料库迁移重试".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(
+                &learning_content.id,
+                &source_file,
+                &default_library_dir,
+                None,
+            )
+            .expect("import material");
+        let old_stored_path = PathBuf::from(material.stored_path.as_deref().expect("stored path"));
+        let target_copy = target_library_dir
+            .join(&learning_content.id)
+            .join(old_stored_path.file_name().expect("file name"));
+        std::fs::create_dir_all(target_copy.parent().expect("target parent"))
+            .expect("create target parent");
+        std::fs::copy(&old_stored_path, &target_copy).expect("precopy matching target");
+
+        repository
+            .set_material_library_location(
+                &default_library_dir,
+                &default_library_dir,
+                &target_library_dir,
+            )
+            .expect("retry migration should accept matching target copy");
+
+        assert!(!old_stored_path.exists());
+        let detail = repository
+            .get_detail(&learning_content.id)
+            .expect("get detail")
+            .expect("detail exists");
+        assert_eq!(
+            detail.materials[0].stored_path.as_deref(),
+            Some(target_copy.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn material_library_location_rejects_stored_path_with_parent_directory_component() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let default_library_dir = temp_dir.path().join("default-materials");
+        let target_library_dir = temp_dir
+            .path()
+            .join("target")
+            .join("StudySeqData")
+            .join("materials");
+        let source_file = temp_dir.path().join("source.pdf");
+        std::fs::write(&source_file, b"%PDF parent").expect("write source file");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "拒绝异常路径".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(
+                &learning_content.id,
+                &source_file,
+                &default_library_dir,
+                None,
+            )
+            .expect("import material");
+        let stored_path = PathBuf::from(material.stored_path.as_deref().expect("stored path"));
+        let tampered_path = stored_path
+            .parent()
+            .expect("stored parent")
+            .join("nested")
+            .join("..")
+            .join(stored_path.file_name().expect("file name"));
+        repository
+            .connection
+            .execute(
+                "UPDATE material_items SET stored_path = ?1 WHERE id = ?2",
+                params![tampered_path.to_string_lossy().to_string(), material.id],
+            )
+            .expect("tamper stored path");
+
+        let error = repository
+            .set_material_library_location(
+                &default_library_dir,
+                &default_library_dir,
+                &target_library_dir,
+            )
+            .expect_err("tampered path should fail");
+
+        assert!(matches!(error, AppError::MaterialPathOutsideLibrary));
+        assert!(stored_path.exists());
+    }
+
+    #[test]
+    fn material_library_location_accepts_user_selected_storage_root() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let default_library_dir = temp_dir.path().join("default-materials");
+        let selected_storage_root = temp_dir.path().join("selected-storage");
+        let target_library_dir = selected_storage_root.join("StudySeqData").join("materials");
+
+        let location = repository
+            .set_material_library_location(
+                &default_library_dir,
+                &default_library_dir,
+                &target_library_dir,
+            )
+            .expect("custom storage root should be accepted");
+
+        assert!(!location.is_default);
+        assert_eq!(
+            location.path,
+            target_library_dir.to_string_lossy().to_string()
+        );
+    }
+
+    #[test]
+    fn material_library_location_rejects_selected_root_itself() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let default_library_dir = temp_dir.path().join("default-materials");
+        let selected_storage_root = temp_dir.path().join("selected-storage");
+
+        let error = repository
+            .set_material_library_location(
+                &default_library_dir,
+                &default_library_dir,
+                &selected_storage_root,
+            )
+            .expect_err("selected root should not be treated as the cleanup root");
+
+        assert!(matches!(error, AppError::InvalidMaterialLibraryLocation));
+    }
+
+    #[test]
+    fn material_library_location_rejects_unsafe_saved_setting() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let default_library_dir = temp_dir.path().join("default-materials");
+        repository
+            .connection
+            .execute(
+                "INSERT INTO app_settings (key, value, updated_at)
+                 VALUES (?1, ?2, '2026-06-14T00:00:00Z')",
+                params![
+                    MATERIAL_LIBRARY_DIR_SETTING_KEY,
+                    temp_dir
+                        .path()
+                        .join("unsupported-materials")
+                        .to_string_lossy()
+                        .to_string()
+                ],
+            )
+            .expect("insert unsupported setting");
+
+        let error = repository
+            .get_material_library_location(&default_library_dir)
+            .expect_err("unsupported saved setting should fail");
+
+        assert!(matches!(error, AppError::InvalidMaterialLibraryLocation));
     }
 
     #[test]
@@ -2009,6 +3065,49 @@ mod tests {
     }
 
     #[test]
+    fn preview_missing_pdf_parent_directory_returns_stable_file_error() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("source.pdf");
+        std::fs::write(&source_file, b"%PDF-1.7").expect("write source pdf");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "缺失 PDF 目录".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(
+                &learning_content.id,
+                &source_file,
+                &material_library_dir,
+                None,
+            )
+            .expect("import pdf");
+        let missing_pdf_path = material_library_dir
+            .join("missing-parent")
+            .join("source.pdf");
+        repository
+            .connection
+            .execute(
+                "UPDATE material_items SET stored_path = ?1 WHERE id = ?2",
+                params![missing_pdf_path.to_string_lossy().to_string(), material.id],
+            )
+            .expect("point stored path at missing child directory");
+
+        let error = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect_err("missing pdf parent directory should fail as missing file");
+
+        assert!(matches!(error, AppError::MaterialFileMissing));
+        assert!(source_file.exists());
+    }
+
+    #[test]
     fn preview_folder_row_stays_unsupported_without_path_check_failure() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
@@ -2133,22 +3232,41 @@ mod tests {
 
         let repository = LearningContentRepository::open(&database_path).expect("migrate db");
 
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_a = temp_dir.path().join("material-a.pdf");
+        let source_b = temp_dir.path().join("material-b.pdf");
+        std::fs::write(&source_a, b"%PDF-a").expect("write material a");
+        std::fs::write(&source_b, b"%PDF-b").expect("write material b");
+        let content = repository
+            .create(CreateLearningContentInput {
+                name: "旧库迁移内容".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material_a = repository
+            .import_material_file(&content.id, &source_a, &material_library_dir, None)
+            .expect("import material a");
+        let material_b = repository
+            .import_material_file(&content.id, &source_b, &material_library_dir, None)
+            .expect("import material b");
         repository
-            .save_material_reading_state("material-a", 3, 1.4)
+            .save_material_reading_state(&material_a.id, 3, 1.4, &material_library_dir)
             .expect("save material a state");
         repository
-            .save_material_reading_state("material-b", 1, 1.0)
+            .save_material_reading_state(&material_b.id, 1, 1.0, &material_library_dir)
             .expect("save material b state");
         drop(repository);
 
         let reopened_repository =
             LearningContentRepository::open(&database_path).expect("reopen migrated db");
         let material_a_state = reopened_repository
-            .get_material_reading_state("material-a")
+            .get_material_reading_state(&material_a.id)
             .expect("get material a state")
             .expect("material a state exists");
         let material_b_state = reopened_repository
-            .get_material_reading_state("material-b")
+            .get_material_reading_state(&material_b.id)
             .expect("get material b state")
             .expect("material b state exists");
         let reading_states_table_count: i64 = reopened_repository
@@ -2160,16 +3278,20 @@ mod tests {
             )
             .expect("query old reading states table");
 
-        assert_eq!(material_a_state.material_id, "material-a");
+        assert_eq!(material_a_state.material_id, material_a.id);
         assert_eq!(material_a_state.page_number, 3);
         assert_eq!(material_a_state.scale, 1.4);
         assert_eq!(material_b_state.page_number, 1);
         assert_eq!(material_b_state.scale, 1.0);
+        assert_eq!(
+            material_a_state.position_kind,
+            MaterialOpenPositionKind::PdfPage
+        );
         assert_eq!(reading_states_table_count, 0);
     }
 
     #[test]
-    fn migrates_v3_database_to_v4_tree_model_keeping_materials_at_root() {
+    fn migrates_v3_database_to_v5_tree_and_recent_open_schema() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let database_path = temp_dir.path().join("studyseq.sqlite");
         {
@@ -2236,15 +3358,27 @@ mod tests {
                 .expect("create v3 schema with data");
         }
 
-        let repository = LearningContentRepository::open(&database_path).expect("migrate to v4");
+        let repository = LearningContentRepository::open(&database_path).expect("migrate to v6");
 
         let user_version: i64 = repository
             .connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read user version");
         let materials = repository.list_materials("lc-1").expect("list materials");
+        let reading_state = repository
+            .get_material_reading_state("mat-1")
+            .expect("get migrated reading state")
+            .expect("migrated reading state exists");
+        let last_opened_column_count: i64 = repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('material_reading_states') WHERE name = 'last_opened_at'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check last_opened_at column");
 
-        assert_eq!(user_version, 4);
+        assert_eq!(user_version, 6);
         assert_eq!(materials.len(), 1);
         assert_eq!(materials[0].id, "mat-1");
         assert_eq!(materials[0].name, "旧资料.pdf");
@@ -2260,10 +3394,16 @@ mod tests {
         );
         assert_eq!(materials[0].mime_type.as_deref(), Some("application/pdf"));
         assert_eq!(materials[0].size_bytes, 9);
+        assert_eq!(reading_state.page_number, 7);
+        assert_eq!(reading_state.scale, 1.6);
+        assert_eq!(reading_state.last_opened_at, None);
+        assert_eq!(reading_state.position_kind, MaterialOpenPositionKind::None);
+        assert_eq!(reading_state.video_position_seconds, None);
+        assert_eq!(last_opened_column_count, 1);
     }
 
     #[test]
-    fn fresh_database_initializes_v4_tree_schema() {
+    fn fresh_database_initializes_v6_settings_and_recent_open_schema() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
             .expect("open db");
@@ -2280,9 +3420,28 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("check parent_id column");
+        let position_kind_column_count: i64 = repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('material_reading_states') WHERE name = 'position_kind'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check position_kind column");
 
-        assert_eq!(user_version, 4);
+        let app_settings_table_count: i64 = repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check app_settings table");
+
+        assert_eq!(user_version, 6);
         assert_eq!(parent_id_column_count, 1);
+        assert_eq!(position_kind_column_count, 1);
+        assert_eq!(app_settings_table_count, 1);
     }
 
     #[test]
@@ -2346,6 +3505,283 @@ mod tests {
         assert_eq!(stats.orphan_database_record_count, 0);
         assert_eq!(stats.orphan_bytes, 6);
         assert!(stats.library_bytes >= first_material.size_bytes + 6);
+    }
+
+    #[test]
+    fn recent_open_summary_tracks_plain_pdf_and_video_positions() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let text_source = temp_dir.path().join("讲义.txt");
+        let pdf_source = temp_dir.path().join("讲义.pdf");
+        let video_source = temp_dir.path().join("课程.mp4");
+        std::fs::write(&text_source, "hello").expect("write text");
+        std::fs::write(&pdf_source, b"%PDF").expect("write pdf");
+        std::fs::write(&video_source, b"video").expect("write video");
+        let content = create_content(&repository, "最近打开");
+        let text = repository
+            .import_material_file(&content.id, &text_source, &material_library_dir, None)
+            .expect("import text");
+        let pdf = repository
+            .import_material_file(&content.id, &pdf_source, &material_library_dir, None)
+            .expect("import pdf");
+        let video = repository
+            .import_material_file(&content.id, &video_source, &material_library_dir, None)
+            .expect("import video");
+
+        let initial = repository.list().expect("list initial");
+        assert_eq!(initial[0].recent_open, None);
+
+        repository
+            .preview_material_file(&text.id, &material_library_dir)
+            .expect("preview text");
+        let after_text = repository.list().expect("list after text");
+        let text_summary = after_text[0].recent_open.as_ref().expect("text summary");
+        assert_eq!(text_summary.material_id, text.id);
+        assert_eq!(text_summary.material_name, "讲义.txt");
+        assert!(matches!(
+            text_summary.position,
+            RecentMaterialOpenPosition::None
+        ));
+
+        repository
+            .save_material_reading_state(&pdf.id, 14, 1.25, &material_library_dir)
+            .expect("save pdf state");
+        let after_pdf = repository.list().expect("list after pdf");
+        let pdf_summary = after_pdf[0].recent_open.as_ref().expect("pdf summary");
+        assert_eq!(pdf_summary.material_id, pdf.id);
+        assert_eq!(pdf_summary.material_name, "讲义.pdf");
+        assert!(matches!(
+            pdf_summary.position,
+            RecentMaterialOpenPosition::PdfPage { page_number: 14 }
+        ));
+
+        repository
+            .preview_material_file(&video.id, &material_library_dir)
+            .expect("preview video");
+        repository
+            .save_video_playback_state(&video.id, 1458.4, &material_library_dir)
+            .expect("save video state");
+        let after_video = repository.list().expect("list after video");
+        let video_summary = after_video[0].recent_open.as_ref().expect("video summary");
+        assert_eq!(video_summary.material_id, video.id);
+        assert_eq!(video_summary.material_name, "课程.mp4");
+        match video_summary.position {
+            RecentMaterialOpenPosition::VideoSecond { seconds } => {
+                assert_eq!(seconds, 1458.4);
+            }
+            _ => panic!("expected video position"),
+        }
+    }
+
+    #[test]
+    fn deleting_recent_material_removes_home_summary_reference() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source = write_source(&temp_dir, "资料.txt");
+        let content = create_content(&repository, "删除最近打开");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import material");
+        repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("record open");
+        assert!(repository.list().expect("list")[0].recent_open.is_some());
+
+        repository
+            .delete_material_item(&material.id, &material_library_dir)
+            .expect("delete material");
+
+        assert_eq!(
+            repository
+                .debug_count_material_reading_states()
+                .expect("count states"),
+            0
+        );
+        assert_eq!(repository.list().expect("list")[0].recent_open, None);
+    }
+
+    #[test]
+    fn material_open_state_rejects_missing_folder_and_invalid_video_position() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let content = create_content(&repository, "状态校验");
+        let folder = repository
+            .create_material_folder(&content.id, None, "第一章")
+            .expect("create folder");
+        let text_source = write_source(&temp_dir, "资料.txt");
+        let text = repository
+            .import_material_file(&content.id, &text_source, &material_library_dir, None)
+            .expect("import text");
+
+        assert!(matches!(
+            repository
+                .save_material_reading_state("missing", 1, 1.0, &material_library_dir)
+                .expect_err("missing material should fail"),
+            AppError::MaterialNotFound
+        ));
+        assert!(matches!(
+            repository
+                .record_material_open(&folder.id)
+                .expect_err("folder should fail"),
+            AppError::MaterialNotFound
+        ));
+        assert!(matches!(
+            repository
+                .save_video_playback_state(&text.id, -1.0, &material_library_dir)
+                .expect_err("invalid position should fail"),
+            AppError::InvalidPlaybackPosition
+        ));
+        assert!(matches!(
+            repository
+                .save_video_playback_state(&text.id, 10.0, &material_library_dir)
+                .expect_err("non-video should fail"),
+            AppError::MaterialNotFound
+        ));
+    }
+
+    #[test]
+    fn pdf_state_requires_pdf_material_inside_existing_library_copy() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let content = create_content(&repository, "PDF 状态校验");
+        let text_source = write_source(&temp_dir, "资料.txt");
+        let pdf_source = write_source(&temp_dir, "资料.pdf");
+        let text = repository
+            .import_material_file(&content.id, &text_source, &material_library_dir, None)
+            .expect("import text");
+        let pdf = repository
+            .import_material_file(&content.id, &pdf_source, &material_library_dir, None)
+            .expect("import pdf");
+
+        assert!(matches!(
+            repository
+                .save_material_reading_state(&text.id, 2, 1.0, &material_library_dir)
+                .expect_err("text material should not accept pdf state"),
+            AppError::MaterialNotFound
+        ));
+
+        let pdf_stored_path = pdf.stored_path.as_deref().expect("pdf stored path");
+        std::fs::remove_file(pdf_stored_path).expect("remove pdf copy");
+        assert!(matches!(
+            repository
+                .save_material_reading_state(&pdf.id, 2, 1.0, &material_library_dir)
+                .expect_err("missing pdf copy should fail"),
+            AppError::MaterialFileMissing
+        ));
+        assert_eq!(repository.list().expect("list")[0].recent_open, None);
+    }
+
+    #[test]
+    fn video_preview_requires_existing_copy_and_progress_save_keeps_opened_at() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let content = create_content(&repository, "视频打开校验");
+        let video_source = temp_dir.path().join("课程.mp4");
+        std::fs::write(&video_source, b"video").expect("write video");
+        let video = repository
+            .import_material_file(&content.id, &video_source, &material_library_dir, None)
+            .expect("import video");
+
+        repository
+            .preview_material_file(&video.id, &material_library_dir)
+            .expect("preview video");
+        let opened_at = repository
+            .get_material_reading_state(&video.id)
+            .expect("get video state")
+            .expect("state exists")
+            .last_opened_at
+            .expect("opened at exists");
+
+        repository
+            .save_video_playback_state(&video.id, 15.0, &material_library_dir)
+            .expect("save video position");
+        let state_after_position_save = repository
+            .get_material_reading_state(&video.id)
+            .expect("get video state")
+            .expect("state exists");
+        assert_eq!(
+            state_after_position_save.last_opened_at.as_deref(),
+            Some(opened_at.as_str())
+        );
+        assert_eq!(state_after_position_save.video_position_seconds, Some(15.0));
+
+        let video_stored_path = video.stored_path.as_deref().expect("video stored path");
+        std::fs::remove_file(video_stored_path).expect("remove video copy");
+        assert!(matches!(
+            repository
+                .preview_material_file(&video.id, &material_library_dir)
+                .expect_err("missing video copy should fail"),
+            AppError::MaterialFileMissing
+        ));
+        assert!(matches!(
+            repository
+                .save_video_playback_state(&video.id, 20.0, &material_library_dir)
+                .expect_err("missing video copy should reject progress save"),
+            AppError::MaterialFileMissing
+        ));
+        assert_eq!(
+            repository
+                .list_with_material_library(&material_library_dir)
+                .expect("list with library")[0]
+                .recent_open,
+            None
+        );
+    }
+
+    #[test]
+    fn video_progress_save_rejects_stored_path_outside_material_library() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let content = create_content(&repository, "视频路径校验");
+        let video_source = temp_dir.path().join("source.mp4");
+        let outside_video = temp_dir.path().join("outside.mp4");
+        std::fs::write(&video_source, b"video").expect("write video source");
+        std::fs::write(&outside_video, b"outside").expect("write outside video");
+        let video = repository
+            .import_material_file(&content.id, &video_source, &material_library_dir, None)
+            .expect("import video");
+        repository
+            .preview_material_file(&video.id, &material_library_dir)
+            .expect("preview video");
+        assert!(repository
+            .list_with_material_library(&material_library_dir)
+            .expect("list before tamper")[0]
+            .recent_open
+            .is_some());
+
+        repository
+            .connection
+            .execute(
+                "UPDATE material_items SET stored_path = ?1 WHERE id = ?2",
+                params![outside_video.to_string_lossy().to_string(), video.id],
+            )
+            .expect("tamper stored path");
+
+        assert!(matches!(
+            repository
+                .save_video_playback_state(&video.id, 12.0, &material_library_dir)
+                .expect_err("outside video path should reject progress save"),
+            AppError::MaterialPathOutsideLibrary
+        ));
+        assert_eq!(
+            repository
+                .list_with_material_library(&material_library_dir)
+                .expect("list after tamper")[0]
+                .recent_open,
+            None
+        );
     }
 
     #[test]
@@ -2461,7 +3897,14 @@ mod tests {
             )
             .expect("insert orphan material");
         repository
-            .save_material_reading_state("orphan-material", 3, 1.2)
+            .connection
+            .execute(
+                "INSERT INTO material_reading_states (
+                    material_id, page_number, scale, last_opened_at, position_kind,
+                    video_position_seconds, updated_at
+                ) VALUES (?1, 3, 1.2, ?2, 'pdf_page', NULL, ?2)",
+                params!["orphan-material", "2026-06-10T00:00:00Z"],
+            )
             .expect("insert orphan reading state");
         repository
             .connection
@@ -2647,10 +4090,6 @@ mod tests {
                 None,
             )
             .expect("import mp4");
-        // 删除磁盘副本来证明视频预览不读文件字节：流式播放由前端走 asset 协议
-        std::fs::remove_file(material.stored_path.as_deref().expect("stored path"))
-            .expect("remove stored copy");
-
         let preview = repository
             .preview_material_file(&material.id, &material_library_dir)
             .expect("preview video");
@@ -2860,6 +4299,10 @@ mod tests {
         // 目标内已有同名文件，移动后追加后缀
         assert_eq!(occupied.name, "笔记.txt");
         assert_eq!(moved.name, "笔记 (1).txt");
+        let moved_stored_path = moved.stored_path.as_deref().expect("moved stored path");
+        assert!(Path::new(moved_stored_path).starts_with(&material_library_dir));
+        assert!(Path::new(moved_stored_path).exists());
+        assert!(!Path::new("笔记 (1).txt").exists());
 
         let moved_back = repository
             .move_material_item(&moved.id, None)
@@ -2935,7 +4378,7 @@ mod tests {
         let material_library_dir = temp_dir.path().join("materials");
         let content = create_content(&repository, "递归删除");
         let outer_source = write_source(&temp_dir, "外层文件.pdf");
-        let inner_source = write_source(&temp_dir, "内层文件.txt");
+        let inner_source = write_source(&temp_dir, "内层文件.pdf");
         let root_source = write_source(&temp_dir, "根文件.txt");
 
         let outer = repository
@@ -2964,7 +4407,7 @@ mod tests {
             .import_material_file(&content.id, &root_source, &material_library_dir, None)
             .expect("import root file");
         repository
-            .save_material_reading_state(&outer_file.id, 3, 1.2)
+            .save_material_reading_state(&outer_file.id, 3, 1.2, &material_library_dir)
             .expect("save reading state");
 
         let count = repository
@@ -3000,13 +4443,50 @@ mod tests {
     }
 
     #[test]
+    fn delete_material_item_keeps_file_when_database_delete_fails() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let content = create_content(&repository, "删除失败保护");
+        let source = write_source(&temp_dir, "文件.txt");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import material");
+        let stored_path = PathBuf::from(material.stored_path.as_deref().expect("stored path"));
+        repository
+            .connection
+            .execute_batch(
+                "
+                CREATE TRIGGER fail_material_delete
+                BEFORE DELETE ON material_items
+                BEGIN
+                    SELECT RAISE(FAIL, 'blocked material delete');
+                END;
+                ",
+            )
+            .expect("create failing trigger");
+
+        let error = repository
+            .delete_material_item(&material.id, &material_library_dir)
+            .expect_err("db delete should fail");
+
+        assert!(matches!(error, AppError::Database(_)));
+        assert!(stored_path.exists());
+        assert_eq!(
+            repository.debug_count_materials().expect("count materials"),
+            1
+        );
+    }
+
+    #[test]
     fn delete_learning_content_with_nested_folders_leaves_no_residue() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
             .expect("open db");
         let material_library_dir = temp_dir.path().join("materials");
         let content = create_content(&repository, "级联删除含文件夹");
-        let source = write_source(&temp_dir, "文件.txt");
+        let source = write_source(&temp_dir, "文件.pdf");
 
         let outer = repository
             .create_material_folder(&content.id, None, "外层")
@@ -3018,7 +4498,7 @@ mod tests {
             .import_material_file(&content.id, &source, &material_library_dir, Some(&inner.id))
             .expect("import file");
         repository
-            .save_material_reading_state(&file.id, 2, 1.0)
+            .save_material_reading_state(&file.id, 2, 1.0, &material_library_dir)
             .expect("save reading state");
 
         repository
@@ -3037,6 +4517,47 @@ mod tests {
         );
         assert!(!std::path::Path::new(file.stored_path.as_deref().expect("stored")).exists());
         assert!(source.exists());
+    }
+
+    #[test]
+    fn delete_learning_content_keeps_files_when_database_delete_fails() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let content = create_content(&repository, "学习内容删除失败保护");
+        let source = write_source(&temp_dir, "文件.txt");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import material");
+        let stored_path = PathBuf::from(material.stored_path.as_deref().expect("stored path"));
+        repository
+            .connection
+            .execute_batch(
+                "
+                CREATE TRIGGER fail_learning_content_delete
+                BEFORE DELETE ON learning_contents
+                BEGIN
+                    SELECT RAISE(FAIL, 'blocked learning content delete');
+                END;
+                ",
+            )
+            .expect("create failing trigger");
+
+        let error = repository
+            .delete_learning_content(&content.id, &material_library_dir)
+            .expect_err("db delete should fail");
+
+        assert!(matches!(error, AppError::Database(_)));
+        assert!(stored_path.exists());
+        assert_eq!(
+            repository.debug_count_materials().expect("count materials"),
+            1
+        );
+        assert!(repository
+            .get_detail(&content.id)
+            .expect("get detail")
+            .is_some());
     }
 
     #[test]

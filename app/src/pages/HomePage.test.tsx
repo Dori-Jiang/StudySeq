@@ -12,6 +12,11 @@ const listLearningContents = vi.mocked(learningContentApi.listLearningContents);
 const createLearningContent = vi.mocked(learningContentApi.createLearningContent);
 const deleteLearningContent = vi.mocked(learningContentApi.deleteLearningContent);
 const updateLearningContent = vi.mocked(learningContentApi.updateLearningContent);
+const chooseMaterialLibraryStorageRoot = vi.mocked(
+  learningContentApi.chooseMaterialLibraryStorageRoot,
+);
+const getMaterialLibraryLocation = vi.mocked(learningContentApi.getMaterialLibraryLocation);
+const setMaterialLibraryLocation = vi.mocked(learningContentApi.setMaterialLibraryLocation);
 
 describe("HomePage", () => {
   beforeEach(() => {
@@ -19,6 +24,13 @@ describe("HomePage", () => {
     createLearningContent.mockReset();
     deleteLearningContent.mockReset();
     updateLearningContent.mockReset();
+    chooseMaterialLibraryStorageRoot.mockReset();
+    getMaterialLibraryLocation.mockReset();
+    setMaterialLibraryLocation.mockReset();
+    getMaterialLibraryLocation.mockResolvedValue({
+      path: "C:/Users/123/AppData/Roaming/com.studyseq.desktop/materials",
+      isDefault: true,
+    });
     vi.restoreAllMocks();
   });
 
@@ -34,6 +46,7 @@ describe("HomePage", () => {
         createdAt: "2026-06-08T00:00:00Z",
         updatedAt: "2026-06-08T00:00:00Z",
         lastOpenedAt: null,
+        recentOpen: null,
       },
     ]);
 
@@ -48,7 +61,7 @@ describe("HomePage", () => {
     expect(screen.getByText("2026-07-01")).toBeInTheDocument();
   });
 
-  it("keeps the home list focused on status, progress, and deadline only", async () => {
+  it("keeps the home list free of calendar and statistics modules", async () => {
     listLearningContents.mockResolvedValueOnce([
       {
         id: "study-1",
@@ -60,6 +73,7 @@ describe("HomePage", () => {
         createdAt: "2026-06-08T00:00:00Z",
         updatedAt: "2026-06-08T00:00:00Z",
         lastOpenedAt: null,
+        recentOpen: null,
       },
     ]);
 
@@ -69,10 +83,77 @@ describe("HomePage", () => {
     expect(screen.getByText(/进行中/)).toBeInTheDocument();
     expect(screen.getByText("45%")).toBeInTheDocument();
     expect(screen.getByText("2026-07-01")).toBeInTheDocument();
+    expect(screen.getByText("暂无打开记录")).toBeInTheDocument();
     expect(screen.queryByText(/小时/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/资料/)).not.toBeInTheDocument();
     expect(screen.queryByText(/笔记/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/最近学习/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/日历/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/连续学习/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/学习时长/)).not.toBeInTheDocument();
+  });
+
+  it("renders recent PDF and video positions inside the study row", async () => {
+    listLearningContents.mockResolvedValueOnce([
+      {
+        id: "study-1",
+        name: "PDF 课程",
+        status: "active",
+        deadline: null,
+        estimatedHours: 12,
+        progress: 45,
+        createdAt: "2026-06-08T00:00:00Z",
+        updatedAt: "2026-06-08T00:00:00Z",
+        lastOpenedAt: null,
+        recentOpen: {
+          materialId: "mat-pdf",
+          materialName: "很长很长的课程讲义.pdf",
+          openedAt: "2026-06-14T10:35:00Z",
+          position: { kind: "pdf_page", pageNumber: 14 },
+        },
+      },
+      {
+        id: "study-2",
+        name: "视频课程",
+        status: "active",
+        deadline: null,
+        estimatedHours: 6,
+        progress: 20,
+        createdAt: "2026-06-08T00:00:00Z",
+        updatedAt: "2026-06-08T00:00:00Z",
+        lastOpenedAt: null,
+        recentOpen: {
+          materialId: "mat-video",
+          materialName: "课程视频 03.mp4",
+          openedAt: "2026-06-14T11:00:00Z",
+          position: { kind: "video_second", seconds: 1458 },
+        },
+      },
+    ]);
+
+    renderHomePage();
+
+    expect(await screen.findByText("PDF 课程")).toBeInTheDocument();
+    expect(screen.getByText("很长很长的课程讲义.pdf")).toHaveClass(
+      "study-recent-open-file",
+    );
+    expect(screen.getByText("第 14 页")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "打开 PDF 课程" })).toHaveAttribute(
+      "aria-describedby",
+      "study-recent-open-study-1",
+    );
+    expect(screen.getByText("很长很长的课程讲义.pdf").closest("p")).toHaveAttribute(
+      "id",
+      "study-recent-open-study-1",
+    );
+    expect(screen.getByText("课程视频 03.mp4")).toBeInTheDocument();
+    expect(screen.getByText("24:18")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "继续 PDF 课程" })).toHaveAttribute(
+      "href",
+      "/studies/study-1?continue=1&materialId=mat-pdf",
+    );
+    expect(screen.getByRole("link", { name: "继续 视频课程" })).toHaveAttribute(
+      "href",
+      "/studies/study-2?continue=1&materialId=mat-video",
+    );
   });
 
   it("makes the whole learning content row navigate to detail", async () => {
@@ -87,6 +168,7 @@ describe("HomePage", () => {
         createdAt: "2026-06-08T00:00:00Z",
         updatedAt: "2026-06-08T00:00:00Z",
         lastOpenedAt: null,
+        recentOpen: null,
       },
     ]);
 
@@ -97,6 +179,7 @@ describe("HomePage", () => {
       "href",
       "/studies/study-1",
     );
+    expect(screen.queryByRole("link", { name: "继续 Rust 入门" })).not.toBeInTheDocument();
   });
 
   it("creates a learning content and shows it in the home list", async () => {
@@ -111,6 +194,7 @@ describe("HomePage", () => {
       createdAt: "2026-06-08T00:00:00Z",
       updatedAt: "2026-06-08T00:00:00Z",
       lastOpenedAt: null,
+      recentOpen: null,
     });
 
     renderHomePage();
@@ -131,6 +215,69 @@ describe("HomePage", () => {
     expect(await screen.findByText("TypeScript 练习")).toBeInTheDocument();
   });
 
+  it("chooses a material library location from the home page", async () => {
+    listLearningContents.mockResolvedValueOnce([]);
+    chooseMaterialLibraryStorageRoot.mockResolvedValueOnce("D:/LearningData");
+    setMaterialLibraryLocation.mockResolvedValueOnce({
+      path: "D:/LearningData/StudySeqData/materials",
+      isDefault: false,
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderHomePage();
+    expect(await screen.findByText(/当前 C:\/Users\/123/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "选择资料库位置" }));
+
+    expect(chooseMaterialLibraryStorageRoot).toHaveBeenCalledWith();
+    expect(window.confirm).toHaveBeenCalledWith(
+      expect.stringContaining("D:/LearningData/StudySeqData/materials"),
+    );
+    expect(setMaterialLibraryLocation).toHaveBeenCalledWith({
+      path: "D:/LearningData/StudySeqData/materials",
+    });
+    expect(
+      await screen.findByText("资料库位置已更新为 D:/LearningData/StudySeqData/materials"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/当前 D:\/LearningData\/StudySeqData\/materials/)).toBeInTheDocument();
+  });
+
+  it("does not migrate the material library when folder selection is cancelled", async () => {
+    listLearningContents.mockResolvedValueOnce([]);
+    chooseMaterialLibraryStorageRoot.mockResolvedValueOnce(null);
+
+    renderHomePage();
+    await screen.findByText(/当前 C:\/Users\/123/);
+    await userEvent.click(screen.getByRole("button", { name: "选择资料库位置" }));
+
+    expect(setMaterialLibraryLocation).not.toHaveBeenCalled();
+  });
+
+  it("moves the material library back to the default location from the home page", async () => {
+    getMaterialLibraryLocation.mockResolvedValueOnce({
+      path: "D:/LearningData/StudySeqData/materials",
+      isDefault: false,
+    });
+    listLearningContents.mockResolvedValueOnce([]);
+    setMaterialLibraryLocation.mockResolvedValueOnce({
+      path: "C:/Users/123/AppData/Roaming/com.studyseq.desktop/materials",
+      isDefault: true,
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderHomePage();
+    await screen.findByText(/当前 D:\/LearningData/);
+
+    await userEvent.click(screen.getByRole("button", { name: "迁回默认位置" }));
+
+    expect(setMaterialLibraryLocation).toHaveBeenCalledWith({ path: "DEFAULT" });
+    expect(
+      await screen.findByText(
+        "资料库位置已更新为 C:/Users/123/AppData/Roaming/com.studyseq.desktop/materials",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("shows an in-app confirmation before deleting a learning content", async () => {
     listLearningContents.mockResolvedValueOnce([
       {
@@ -143,6 +290,7 @@ describe("HomePage", () => {
         createdAt: "2026-06-08T00:00:00Z",
         updatedAt: "2026-06-08T00:00:00Z",
         lastOpenedAt: null,
+        recentOpen: null,
       },
     ]);
     deleteLearningContent.mockResolvedValueOnce();
@@ -181,6 +329,7 @@ describe("HomePage", () => {
         createdAt: "2026-06-08T00:00:00Z",
         updatedAt: "2026-06-08T00:00:00Z",
         lastOpenedAt: null,
+        recentOpen: null,
       },
     ]);
 
@@ -210,6 +359,7 @@ describe("HomePage", () => {
         createdAt: "2026-06-08T00:00:00Z",
         updatedAt: "2026-06-08T00:00:00Z",
         lastOpenedAt: null,
+        recentOpen: null,
       },
     ]);
     deleteLearningContent.mockRejectedValueOnce({
@@ -242,6 +392,7 @@ describe("HomePage", () => {
         createdAt: "2026-06-08T00:00:00Z",
         updatedAt: "2026-06-08T00:00:00Z",
         lastOpenedAt: null,
+        recentOpen: null,
       },
     ]);
     deleteLearningContent.mockRejectedValueOnce(new Error("C:\\Users\\123\\secret.sqlite"));
@@ -270,6 +421,7 @@ describe("HomePage", () => {
         createdAt: "2026-06-08T00:00:00Z",
         updatedAt: "2026-06-08T00:00:00Z",
         lastOpenedAt: null,
+        recentOpen: null,
       },
     ]);
     updateLearningContent.mockResolvedValueOnce({
@@ -282,6 +434,7 @@ describe("HomePage", () => {
       createdAt: "2026-06-08T00:00:00Z",
       updatedAt: "2026-06-08T00:01:00Z",
       lastOpenedAt: null,
+      recentOpen: null,
     });
 
     renderHomePage();

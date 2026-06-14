@@ -22,6 +22,7 @@ pub struct LearningContent {
     pub created_at: String,
     pub updated_at: String,
     pub last_opened_at: Option<String>,
+    pub recent_open: Option<RecentMaterialOpenSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,6 +96,9 @@ pub struct MaterialReadingState {
     pub material_id: String,
     pub page_number: i64,
     pub scale: f64,
+    pub last_opened_at: Option<String>,
+    pub position_kind: MaterialOpenPositionKind,
+    pub video_position_seconds: Option<f64>,
     pub updated_at: String,
 }
 
@@ -104,6 +108,42 @@ pub struct SaveMaterialReadingStateInput {
     pub material_id: String,
     pub page_number: i64,
     pub scale: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveVideoPlaybackStateInput {
+    pub material_id: String,
+    pub position_seconds: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaterialOpenPositionKind {
+    None,
+    PdfPage,
+    VideoSecond,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentMaterialOpenSummary {
+    pub material_id: String,
+    pub material_name: String,
+    pub opened_at: String,
+    pub position: RecentMaterialOpenPosition,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum RecentMaterialOpenPosition {
+    None,
+    PdfPage { page_number: i64 },
+    VideoSecond { seconds: f64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +168,19 @@ pub struct MaterialLibraryCleanupReport {
     pub deleted_bytes: i64,
     pub failed_paths: Vec<String>,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterialLibraryLocation {
+    pub path: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMaterialLibraryLocationInput {
+    pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -174,6 +227,7 @@ pub struct MaterialPreview {
     pub mime_type: Option<String>,
     pub text: Option<String>,
     pub data_url: Option<String>,
+    pub asset_path: Option<String>,
     pub encoding: Option<String>,
 }
 

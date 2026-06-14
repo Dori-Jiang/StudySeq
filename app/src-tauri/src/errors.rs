@@ -15,6 +15,8 @@ pub enum AppError {
     SourceFileMissing,
     #[error("资料副本不存在")]
     MaterialFileMissing,
+    #[error("文本资料过大，无法预览")]
+    TextPreviewTooLarge,
     #[error("资料不存在")]
     MaterialNotFound,
     #[error("资料名称不能为空")]
@@ -27,6 +29,12 @@ pub enum AppError {
     FolderNotFound,
     #[error("无法移动到该位置")]
     InvalidMoveTarget,
+    #[error("播放位置无效")]
+    InvalidPlaybackPosition,
+    #[error("资料库位置无效")]
+    InvalidMaterialLibraryLocation,
+    #[error("资料库迁移失败")]
+    MaterialLibraryMigrationFailed,
     #[error("笔记标题不能为空")]
     EmptyNoteTitle,
     #[error("笔记不存在")]
@@ -63,12 +71,16 @@ impl AppError {
             AppError::LearningContentNotFound => "learning_content_not_found",
             AppError::SourceFileMissing => "source_file_missing",
             AppError::MaterialFileMissing => "material_file_missing",
+            AppError::TextPreviewTooLarge => "text_preview_too_large",
             AppError::MaterialNotFound => "material_not_found",
             AppError::EmptyMaterialName => "empty_material_name",
             AppError::InvalidMaterialName => "invalid_material_name",
             AppError::MaterialPathOutsideLibrary => "material_path_outside_library",
             AppError::FolderNotFound => "folder_not_found",
             AppError::InvalidMoveTarget => "invalid_move_target",
+            AppError::InvalidPlaybackPosition => "invalid_playback_position",
+            AppError::InvalidMaterialLibraryLocation => "invalid_material_library_location",
+            AppError::MaterialLibraryMigrationFailed => "material_library_migration_failed",
             AppError::EmptyNoteTitle => "empty_note_title",
             AppError::NoteNotFound => "note_not_found",
             AppError::Database(_) => "database_error",
@@ -85,12 +97,18 @@ impl AppError {
             AppError::LearningContentNotFound => "学习内容不存在",
             AppError::SourceFileMissing => "资料文件不存在",
             AppError::MaterialFileMissing => "资料副本不存在，请重新导入",
+            AppError::TextPreviewTooLarge => "文本资料过大，无法在 App 内预览",
             AppError::MaterialNotFound => "资料不存在",
             AppError::EmptyMaterialName => "资料名称不能为空",
             AppError::InvalidMaterialName => "资料名称不能包含路径",
             AppError::MaterialPathOutsideLibrary => "资料路径超出 App 管理目录，已拒绝访问",
             AppError::FolderNotFound => "文件夹不存在",
             AppError::InvalidMoveTarget => "无法移动到该位置",
+            AppError::InvalidPlaybackPosition => "播放位置无效",
+            AppError::InvalidMaterialLibraryLocation => {
+                "资料库位置无效，请选择一个可写入的位置，App 会使用其中的 StudySeqData\\materials 目录"
+            }
+            AppError::MaterialLibraryMigrationFailed => "资料库迁移失败，原资料库仍保持可用",
             AppError::EmptyNoteTitle => "笔记标题不能为空",
             AppError::NoteNotFound => "笔记不存在",
             AppError::Database(_) => "数据库操作失败，请稍后重试",

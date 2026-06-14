@@ -1,7 +1,8 @@
-import type { MaterialLibraryStats } from "../../shared/types";
+import type { MaterialLibraryLocation, MaterialLibraryStats } from "../../shared/types";
 import { formatBytes } from "./format";
 
 type MaterialLibraryStatsPanelProps = {
+  location: MaterialLibraryLocation | null;
   message: string | null;
   onCleanup: () => void;
   onRefresh: () => void;
@@ -9,6 +10,7 @@ type MaterialLibraryStatsPanelProps = {
 };
 
 export function MaterialLibraryStatsPanel({
+  location,
   message,
   onCleanup,
   onRefresh,
@@ -24,6 +26,11 @@ export function MaterialLibraryStatsPanel({
           清理无引用资料
         </button>
       </div>
+      <p className="muted-text">
+        {location
+          ? `当前位置 ${location.path}${location.isDefault ? "（默认）" : ""}`
+          : "正在读取资料库位置"}
+      </p>
       {stats ? (
         <div className="material-library-stats">
           <span>{`资料数量 ${stats.materialCount}`}</span>

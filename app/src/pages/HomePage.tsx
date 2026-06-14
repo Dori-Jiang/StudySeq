@@ -5,11 +5,14 @@ import { Link } from "react-router";
 import {
   createLearningContent,
   deleteLearningContent,
+  chooseMaterialLibraryStorageRoot,
+  getMaterialLibraryLocation,
   listLearningContents,
+  setMaterialLibraryLocation,
   updateLearningContent,
 } from "../shared/api/learningContentApi";
 import { toUserMessage } from "../shared/api/errors";
-import type { LearningContent, StudyStatus } from "../shared/types";
+import type { LearningContent, MaterialLibraryLocation, StudyStatus } from "../shared/types";
 
 const statusLabels: Record<LearningContent["status"], string> = {
   planned: "计划中",
@@ -29,6 +32,10 @@ export function HomePage() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [materialLibraryLocation, setMaterialLibraryLocationState] =
+    useState<MaterialLibraryLocation | null>(null);
+  const [isMigratingMaterialLibrary, setIsMigratingMaterialLibrary] = useState(false);
+  const [materialLibraryMessage, setMaterialLibraryMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -48,6 +55,22 @@ export function HomePage() {
         if (isMounted) {
           setIsLoading(false);
         }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    getMaterialLibraryLocation()
+      .then((location) => {
+        if (isMounted) setMaterialLibraryLocationState(location);
+      })
+      .catch((locationError: unknown) => {
+        if (isMounted) setError(toUserMessage(locationError));
       });
 
     return () => {
@@ -147,6 +170,40 @@ export function HomePage() {
     setError(null);
   }
 
+  async function handleChooseMaterialLibraryLocation() {
+    try {
+      const selected = await chooseMaterialLibraryStorageRoot();
+      if (selected === null) return;
+
+      await handleMoveMaterialLibrary(buildMaterialLibraryPath(selected));
+    } catch (chooseError: unknown) {
+      setError(toUserMessage(chooseError));
+    }
+  }
+
+  async function handleMoveMaterialLibrary(path: string, label = path) {
+    if (
+      !window.confirm(
+        `确定将资料库迁移到 ${label} 吗？迁移期间请不要关闭应用，完成后新导入资料会写入该位置。`,
+      )
+    ) {
+      return;
+    }
+
+    setIsMigratingMaterialLibrary(true);
+    setMaterialLibraryMessage(null);
+    try {
+      const location = await setMaterialLibraryLocation({ path });
+      setMaterialLibraryLocationState(location);
+      setMaterialLibraryMessage(`资料库位置已更新为 ${location.path}`);
+      setError(null);
+    } catch (migrationError: unknown) {
+      setError(toUserMessage(migrationError));
+    } finally {
+      setIsMigratingMaterialLibrary(false);
+    }
+  }
+
   return (
     <main className="home-shell">
       <section className="home-header">
@@ -179,6 +236,39 @@ export function HomePage() {
         <button type="submit">新建</button>
       </form>
 
+      <section className="home-material-library-panel" aria-label="资料库位置设置">
+        <div>
+          <h2>资料库位置</h2>
+          <p className="muted-text">
+            {materialLibraryLocation
+              ? `当前 ${materialLibraryLocation.path}${materialLibraryLocation.isDefault ? "（默认）" : ""}`
+              : "正在读取资料库位置"}
+          </p>
+          {materialLibraryMessage ? (
+            <p className="muted-text">{materialLibraryMessage}</p>
+          ) : null}
+        </div>
+        <div className="home-material-library-actions">
+          <button
+            type="button"
+            onClick={handleChooseMaterialLibraryLocation}
+            disabled={isMigratingMaterialLibrary}
+          >
+            选择资料库位置
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => {
+              void handleMoveMaterialLibrary("DEFAULT", "默认位置");
+            }}
+            disabled={isMigratingMaterialLibrary || materialLibraryLocation?.isDefault !== false}
+          >
+            迁回默认位置
+          </button>
+        </div>
+      </section>
+
       {error ? <p className="error-message">{error}</p> : null}
       {isLoading ? <p className="empty-state">正在加载学习内容</p> : null}
 
@@ -198,6 +288,7 @@ export function HomePage() {
             ) : (
               <>
                 <Link
+                  aria-describedby={`study-recent-open-${content.id}`}
                   aria-label={`打开 ${content.name}`}
                   className="study-row-link"
                   to={`/studies/${content.id}`}
@@ -205,6 +296,7 @@ export function HomePage() {
                   <div className="study-row-main">
                     <h2>{content.name}</h2>
                     <p>{statusLabels[content.status]}</p>
+                    <RecentOpenSummary content={content} />
                     <div
                       aria-label={`${content.name} 进度`}
                       aria-valuemax={100}
@@ -222,6 +314,15 @@ export function HomePage() {
                   </div>
                 </Link>
                 <div className="study-row-actions">
+                  {content.recentOpen ? (
+                    <Link
+                      aria-label={`继续 ${content.name}`}
+                      className="secondary-button study-row-continue"
+                      to={buildContinueHref(content)}
+                    >
+                      继续
+                    </Link>
+                  ) : null}
                   <button
                     className="secondary-button"
                     type="button"
@@ -285,6 +386,99 @@ export function HomePage() {
         : null}
     </main>
   );
+}
+
+function buildContinueHref(content: LearningContent) {
+  if (!content.recentOpen) return `/studies/${content.id}`;
+  const materialId = encodeURIComponent(content.recentOpen.materialId);
+  return `/studies/${content.id}?continue=1&materialId=${materialId}`;
+}
+
+function buildMaterialLibraryPath(storageRoot: string) {
+  const separator = storageRoot.includes("\\") && !storageRoot.includes("/") ? "\\" : "/";
+  const trimmedRoot = storageRoot.replace(/[\\/]+$/, "");
+  const normalizedRoot = trimmedRoot.replace(/\\/g, "/");
+  if (normalizedRoot.endsWith("/StudySeqData/materials")) {
+    return trimmedRoot;
+  }
+  if (normalizedRoot.endsWith("/StudySeqData")) {
+    return `${trimmedRoot}${separator}materials`;
+  }
+  return `${trimmedRoot}${separator}StudySeqData${separator}materials`;
+}
+
+function RecentOpenSummary({ content }: { content: LearningContent }) {
+  const recentOpen = content.recentOpen;
+  const summaryId = `study-recent-open-${content.id}`;
+  if (!recentOpen) {
+    return (
+      <p className="study-recent-open study-recent-open-empty" id={summaryId}>
+        暂无打开记录
+      </p>
+    );
+  }
+
+  const positionText = formatRecentOpenPosition(recentOpen.position);
+
+  return (
+    <p className="study-recent-open" id={summaryId}>
+      <span>{formatRecentOpenTime(recentOpen.openedAt)}</span>
+      <span className="study-recent-open-file">{recentOpen.materialName}</span>
+      {positionText ? <span>{positionText}</span> : null}
+    </p>
+  );
+}
+
+function formatRecentOpenPosition(
+  position: NonNullable<LearningContent["recentOpen"]>["position"],
+) {
+  if (position.kind === "pdf_page") {
+    return `第 ${position.pageNumber} 页`;
+  }
+  if (position.kind === "video_second") {
+    return formatPlaybackTime(position.seconds);
+  }
+  return "";
+}
+
+function formatPlaybackTime(totalSeconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+  const parts = hours > 0 ? [hours, minutes, seconds] : [minutes, seconds];
+  return parts.map((part) => String(part).padStart(2, "0")).join(":");
+}
+
+function formatRecentOpenTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const now = new Date();
+  const timeText = new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+  if (date.toDateString() === now.toDateString()) {
+    return `今天 ${timeText}`;
+  }
+
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) {
+    return `昨天 ${timeText}`;
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 function StudyRowEditForm({

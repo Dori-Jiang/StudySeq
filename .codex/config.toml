@@ -27,6 +27,10 @@ config_file = "agents/typescript-reviewer.toml"
 description = "审查未来 UI 大改、React 组件边界、交互状态和视觉回归。"
 config_file = "agents/react-reviewer.toml"
 
+[agents.ui-ux-designer]
+description = "用于 StudySeq UI/UX 方向设计、页面信息架构、视觉质量把关和概念稿审查。"
+config_file = "agents/ui-ux-designer.toml"
+
 [agents.react-build-resolver]
 description = "React/Vite/Vitest/TypeScript 构建或测试失败时使用，专注前端最小修复。"
 config_file = "agents/react-build-resolver.toml"

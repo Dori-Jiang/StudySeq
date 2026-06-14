@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 
 import {
   countMaterialSubtree,
@@ -18,6 +18,7 @@ import {
   deleteMaterialItem,
   deleteNote,
   getLearningDetail,
+  getMaterialLibraryLocation,
   getMaterialReadingState,
   getMaterialLibraryStats,
   importMaterialFile,
@@ -25,6 +26,7 @@ import {
   previewMaterialFile,
   renameMaterialItem,
   saveMaterialReadingState,
+  saveVideoPlaybackState,
   updateNote,
 } from "../shared/api/learningContentApi";
 import { MaterialPreviewPane } from "./MaterialPreviewPane";
@@ -37,6 +39,7 @@ import { toUserMessage } from "../shared/api/errors";
 import type {
   LearningDetail,
   MaterialItem,
+  MaterialLibraryLocation,
   MaterialLibraryStats,
   MaterialPreview,
   Note,
@@ -58,13 +61,23 @@ const statusLabels: Record<StudyStatus, string> = {
 
 export function StudyDetailPage() {
   const { studyId } = useParams<{ studyId: string }>();
+  const [searchParams] = useSearchParams();
   const detailGridRef = useRef<HTMLDivElement | null>(null);
   const isDetailSplitDraggingRef = useRef(false);
+  const materialOpenRequestIdRef = useRef(0);
+  const selectedMaterialIdRef = useRef<string | null>(null);
+  const handledContinueMaterialIdRef = useRef<string | null>(null);
   const [detail, setDetail] = useState<LearningDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [continueMessage, setContinueMessage] = useState<string | null>(null);
   const [noteTitle, setNoteTitle] = useState("");
   const [noteBody, setNoteBody] = useState("");
+  const [noteSaveStatus, setNoteSaveStatus] = useState<
+    | { kind: "saved"; savedAt: string }
+    | { kind: "error"; message: string }
+    | null
+  >(null);
   const [pendingDeletedMaterialIds, setPendingDeletedMaterialIds] = useState<string[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [selectedMaterialId, setSelectedMaterialId] = useState<string | null>(null);
@@ -75,6 +88,8 @@ export function StudyDetailPage() {
     pageNumber: number;
     scale: number;
   } | null>(null);
+  const [selectedMaterialVideoPositionSeconds, setSelectedMaterialVideoPositionSeconds] =
+    useState<number | null>(null);
   const [pendingPdfState, setPendingPdfState] = useState<{
     materialId: string;
     pageNumber: number;
@@ -83,6 +98,8 @@ export function StudyDetailPage() {
   const [materialLibraryStats, setMaterialLibraryStats] = useState<MaterialLibraryStats | null>(
     null,
   );
+  const [materialLibraryLocation, setMaterialLibraryLocationState] =
+    useState<MaterialLibraryLocation | null>(null);
   const [statsMessage, setStatsMessage] = useState<string | null>(null);
   const [detailSplitRatio, setDetailSplitRatio] = useState(DEFAULT_DETAIL_SPLIT_RATIO);
   const [currentMaterialFolderId, setCurrentMaterialFolderId] = useState<string | null>(null);
@@ -94,6 +111,10 @@ export function StudyDetailPage() {
   const materialParentById = useMemo(() => {
     return new Map(detail?.materials.map((material) => [material.id, material.parentId]) ?? []);
   }, [detail?.materials]);
+
+  useEffect(() => {
+    selectedMaterialIdRef.current = selectedMaterialId;
+  }, [selectedMaterialId]);
 
   useEffect(() => {
     if (currentMaterialFolderId === null) return;
@@ -138,6 +159,21 @@ export function StudyDetailPage() {
       isMounted = false;
     };
   }, [studyId]);
+
+  useEffect(() => {
+    let isMounted = true;
+    getMaterialLibraryLocation()
+      .then((location) => {
+        if (isMounted) setMaterialLibraryLocationState(location);
+      })
+      .catch((locationError: unknown) => {
+        if (isMounted) setError(toUserMessage(locationError));
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     function handlePointerMove(event: PointerEvent) {
@@ -252,14 +288,24 @@ export function StudyDetailPage() {
   }
 
   async function handleOpenMaterial(material: MaterialItem) {
+    const requestId = materialOpenRequestIdRef.current + 1;
+    materialOpenRequestIdRef.current = requestId;
+    selectedMaterialIdRef.current = material.id;
     setSelectedMaterialId(material.id);
     setSelectedMaterialPreview(null);
     setSelectedMaterialPdfState(null);
+    setSelectedMaterialVideoPositionSeconds(null);
     try {
       const [preview, readingState] = await Promise.all([
         previewMaterialFile(material.id),
         getMaterialReadingState(material.id).catch(() => null),
       ]);
+      if (
+        materialOpenRequestIdRef.current !== requestId ||
+        selectedMaterialIdRef.current !== material.id
+      ) {
+        return;
+      }
       setSelectedMaterialPreview(preview);
       setSelectedMaterialPdfState(
         readingState
@@ -269,16 +315,26 @@ export function StudyDetailPage() {
             }
           : null,
       );
+      setSelectedMaterialVideoPositionSeconds(readingState?.videoPositionSeconds ?? null);
       setError(null);
     } catch (previewError: unknown) {
+      if (
+        materialOpenRequestIdRef.current !== requestId ||
+        selectedMaterialIdRef.current !== material.id
+      ) {
+        return;
+      }
       setError(toUserMessage(previewError));
     }
   }
 
   function handleReturnToMaterialList() {
+    materialOpenRequestIdRef.current += 1;
+    selectedMaterialIdRef.current = null;
     setSelectedMaterialId(null);
     setSelectedMaterialPreview(null);
     setSelectedMaterialPdfState(null);
+    setSelectedMaterialVideoPositionSeconds(null);
   }
 
   const handlePdfStateChange = useCallback(
@@ -316,6 +372,42 @@ export function StudyDetailPage() {
     return () => window.clearTimeout(timeoutId);
   }, [pendingPdfState]);
 
+  const handleVideoPositionChange = useCallback(
+    (positionSeconds: number) => {
+      if (!selectedMaterialId) return;
+      setSelectedMaterialVideoPositionSeconds(positionSeconds);
+      saveVideoPlaybackState({
+        materialId: selectedMaterialId,
+        positionSeconds,
+      }).catch((saveError: unknown) => {
+        setError(toUserMessage(saveError));
+      });
+    },
+    [selectedMaterialId],
+  );
+
+  useEffect(() => {
+    if (!detail) return;
+    if (searchParams.get("continue") !== "1") return;
+    const materialId = searchParams.get("materialId");
+    if (!materialId || handledContinueMaterialIdRef.current === materialId) return;
+    handledContinueMaterialIdRef.current = materialId;
+
+    const material = detail.materials.find((currentMaterial) => currentMaterial.id === materialId);
+    if (!material) {
+      setContinueMessage("最近打开资料已不可用");
+      return;
+    }
+    if (material.kind !== "file") {
+      setContinueMessage("最近打开资料已不可预览");
+      return;
+    }
+
+    setCurrentMaterialFolderId(material.parentId);
+    setContinueMessage(null);
+    void handleOpenMaterial(material);
+  }, [detail, searchParams]);
+
   async function handleSaveNote(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!studyId) return;
@@ -323,6 +415,7 @@ export function StudyDetailPage() {
     const title = noteTitle.trim();
     if (!title) {
       setError("笔记标题不能为空");
+      setNoteSaveStatus({ kind: "error", message: "笔记标题不能为空" });
       return;
     }
 
@@ -350,9 +443,12 @@ export function StudyDetailPage() {
       setSelectedNoteId(saved.id);
       setNoteTitle(saved.title);
       setNoteBody(saved.body);
+      setNoteSaveStatus({ kind: "saved", savedAt: formatClockTime(new Date()) });
       setError(null);
     } catch (saveError: unknown) {
-      setError(toUserMessage(saveError));
+      const message = toUserMessage(saveError);
+      setNoteSaveStatus({ kind: "error", message });
+      setError(message);
     }
   }
 
@@ -481,7 +577,11 @@ export function StudyDetailPage() {
       setStatsMessage(
         `已清理 ${report.deletedOrphanFileCount} 个无引用文件，释放 ${formatBytes(report.deletedBytes)}`,
       );
-      setError(report.failedPaths.length > 0 ? `部分路径清理失败：${report.failedPaths.join("、")}` : null);
+      setError(
+        report.failedPaths.length > 0
+          ? `有 ${report.failedPaths.length} 个路径清理失败，可稍后重试。`
+          : null,
+      );
     } catch (cleanupError: unknown) {
       setError(toUserMessage(cleanupError));
     }
@@ -544,6 +644,7 @@ export function StudyDetailPage() {
     setSelectedNoteId(note.id);
     setNoteTitle(note.title);
     setNoteBody(note.body);
+    setNoteSaveStatus(null);
     setError(null);
   }
 
@@ -561,6 +662,7 @@ export function StudyDetailPage() {
     setSelectedNoteId(null);
     setNoteTitle("");
     setNoteBody("");
+    setNoteSaveStatus(null);
     setError(null);
   }
 
@@ -610,6 +712,7 @@ export function StudyDetailPage() {
       </section>
 
       {error ? <p className="error-message">{error}</p> : null}
+      {continueMessage ? <p className="empty-state">{continueMessage}</p> : null}
 
       <div
         className="detail-grid"
@@ -625,6 +728,8 @@ export function StudyDetailPage() {
               preview={selectedMaterialPreview}
               pdfState={selectedMaterialPdfState}
               onPdfStateChange={handlePdfStateChange}
+              videoPositionSeconds={selectedMaterialVideoPositionSeconds}
+              onVideoPositionChange={handleVideoPositionChange}
               onReturn={handleReturnToMaterialList}
             />
           ) : (
@@ -652,6 +757,7 @@ export function StudyDetailPage() {
               />
               <MaterialLibraryStatsPanel
                 stats={materialLibraryStats}
+                location={materialLibraryLocation}
                 message={statsMessage}
                 onCleanup={handleCleanupMaterialLibrary}
                 onRefresh={handleRefreshMaterialStats}
@@ -700,17 +806,33 @@ export function StudyDetailPage() {
               aria-label="笔记标题"
               className="note-document-title"
               value={noteTitle}
-              onChange={(event) => setNoteTitle(event.target.value)}
+              onChange={(event) => {
+                setNoteTitle(event.target.value);
+                setNoteSaveStatus(null);
+              }}
               placeholder="无标题笔记"
             />
             <textarea
               aria-label="笔记正文"
               className="note-document-body"
               value={noteBody}
-              onChange={(event) => setNoteBody(event.target.value)}
+              onChange={(event) => {
+                setNoteBody(event.target.value);
+                setNoteSaveStatus(null);
+              }}
               placeholder="开始记录..."
             />
             <div className="note-document-actions">
+              {noteSaveStatus ? (
+                <span
+                  className={`note-save-status note-save-status-${noteSaveStatus.kind}`}
+                  role={noteSaveStatus.kind === "error" ? "alert" : undefined}
+                >
+                  {noteSaveStatus.kind === "saved"
+                    ? `已保存 ${noteSaveStatus.savedAt}`
+                    : noteSaveStatus.message}
+                </span>
+              ) : null}
               <button type="submit">保存笔记</button>
             </div>
           </form>
@@ -724,14 +846,18 @@ function MaterialInlineReader({
   material,
   onPdfStateChange,
   onReturn,
+  onVideoPositionChange,
   pdfState,
   preview,
+  videoPositionSeconds,
 }: {
   material: MaterialItem;
   onPdfStateChange: (state: { pageNumber: number; scale: number }) => void;
   onReturn: () => void;
+  onVideoPositionChange: (positionSeconds: number) => void;
   pdfState: { pageNumber: number; scale: number } | null;
   preview: MaterialPreview | null;
+  videoPositionSeconds: number | null;
 }) {
   return (
     <section className="material-inline-reader" aria-label={`正在阅读：${material.name}`}>
@@ -754,6 +880,8 @@ function MaterialInlineReader({
         preview={preview}
         pdfState={pdfState}
         onPdfStateChange={onPdfStateChange}
+        videoPositionSeconds={videoPositionSeconds}
+        onVideoPositionChange={onVideoPositionChange}
       />
     </section>
   );
@@ -822,6 +950,14 @@ function NoteSelector({
 
 function formatHours(hours: number) {
   return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} 小时`;
+}
+
+function formatClockTime(date: Date) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 function upsertNote(notes: Note[], savedNote: Note) {

@@ -30,6 +30,14 @@ StudySeq 面向需要持续推进学习内容的人：
 
 当前主线已完成到 V1.8.1。
 
+## 下载
+
+- 最新版本：[StudySeq v1.8.1 Release](https://github.com/Dori-Jiang/StudySeq/releases/tag/v1.8.1)
+- Windows 安装程序：[StudySeq_1.8.1_x64-setup.exe](https://github.com/Dori-Jiang/StudySeq/releases/download/v1.8.1/StudySeq_1.8.1_x64-setup.exe)
+- Windows MSI 安装包：[StudySeq_1.8.1_x64_en-US.msi](https://github.com/Dori-Jiang/StudySeq/releases/download/v1.8.1/StudySeq_1.8.1_x64_en-US.msi)
+
+日常安装建议下载 `.exe` 安装程序；需要 Windows 标准安装包或批量部署时使用 `.msi`。
+
 V1.8 引入 DOCX / PPTX / XLSX 转 PDF 的最小闭环；V1.8.1 是稳定补丁，重点提升 Office 转 PDF 的可靠性：
 
 - Office 类型判断改为 MIME 优先，重命名资料后不影响转换识别。

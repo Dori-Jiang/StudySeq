@@ -10,22 +10,33 @@
 
 ## 当前阶段
 
-当前进入 **V1.7 开发、验证与发包收口完成阶段**。
+当前进入 **V1.8.1 稳定补丁完成态**。
 
-V1.5 已完成自动化开发和用户手测；V1.6 已按“资料库安全边界与隐私收口”完成自动化实现、自动化验证、正式 release 发包和真实 App 手测。V1.7 已按“当前学习内容资料定位增强”完成自动化实现、自动化验证、隔离真实 App 手测、debug/release 发包和文档收口。
+V1.7 已按“当前学习内容资料定位增强”完成自动化实现、自动化验证、隔离真实 App 手测、debug/release 发包和文档收口。用户已确认 V1.8 可以做“更完整能力更新”，当前 V1.8 收敛为 Office 转 PDF 最小闭环；自动化实现、代码审查修复、debug/release 发包验证已完成，真实 App 手测反馈中的 XLSX 显示问题已完成修复。当前 V1.8.1 以稳定当前软件为主体，不扩展 Office 能力；核心代码补丁、自动化 release gate、正式 release 发包和隔离真实 App 固定样本复查均已完成。
 
-V1.6 不做新学习功能，不做大 UI 改版，不新增 SQLite schema；优先处理 V1.5 安全审查留下的两个后续项：资料库位置设置不再让前端传任意路径字符串，资料库清理结果不再向前端返回失败绝对路径。
+V1.8 目标是在不引入 Office 原生预览、不依赖系统 Office / LibreOffice、不改 SQLite schema 的前提下，让 App 管理资料库中的 DOCX / PPTX / XLSX 可以转换为派生 PDF，并复用现有 `PdfPreview` 完成 App 内阅读。
 
-V1.6 目标是在 V1.5 稳定闭环上收紧本地资料库维护边界：
+V1.8 当前链路：
 
 ```text
-资料库位置准备
--> Rust 选择目录并生成一次性 token
--> 前端只做确认并提交 token
--> Rust 校验、迁移、更新 state 和 asset scope
--> cleanup 只返回失败数量
--> UI 提示可重试但不展示绝对路径
--> 回归验证与文档收口
+导入 DOCX / PPTX / XLSX
+-> App 管理资料库保存 Office 源文件
+-> 预览时用 office2pdf 0.6.0 转换派生 PDF
+-> DOCX/PPTX 派生 PDF 写入 .derived/office-pdf
+-> XLSX 派生 PDF 写入 .derived/office-pdf-xlsx-wide-v1
+-> 复用现有 PdfPreview 阅读
+-> 回归验证与发包确认
+```
+
+V1.8.1 当前收口链路：
+
+```text
+稳定 Office 类型判断
+-> 派生 PDF 原子写入和坏缓存收口
+-> 删除 / 重命名 / 迁移 / cleanup 派生缓存生命周期收口
+-> Office 转换错误终态和脱敏回归
+-> 固定样本真实 App 手测
+-> 版本号、文档和发包收口
 ```
 
 ## 版本目标
@@ -267,7 +278,7 @@ V1.7 成功口径：
 - 递归搜索、逻辑路径和防环保护在 `app/src/pages/materials/materialTree.ts` 中以纯函数实现。
 - `MaterialExplorer` 增加搜索范围分段控件；当前学习内容搜索态使用紧凑列表，空搜索且类型为全部时不铺出全库。
 - `StudyDetailPage` 增加资料预览失败终态，并在返回资料列表时 flush 待保存 PDF 页码 / 缩放。
-- `office2pdf` 仍只保留在 `spikes/office2pdf/`，不接 App 依赖、Tauri command、正式 UI 或 release gate。
+- V1.7 当时 `office2pdf` 只保留在 `spikes/office2pdf/`，不接 App 依赖、Tauri command、正式 UI 或 release gate；V1.8 已重新立项并正式接入 DOCX / PPTX / XLSX 转 PDF。
 
 V1.7 验证记录（2026-06-15）：
 
@@ -281,18 +292,108 @@ V1.7 不进入：
 
 - 全文搜索、PDF 文本抽取、OCR。
 - 跨学习内容全局搜索。
-- Office 预览、Office 转 PDF、Office 外部打开兜底。
+- Office 预览、Office 转 PDF、Office 外部打开兜底（已在 V1.8 重新评估，其中 DOCX / PPTX / XLSX 转 PDF 进入 V1.8 最小闭环）。
 - 打包 LibreOffice。
 - 整文件夹导入、目录同步、文件监听。
 - 打开原文件、打开所在文件夹。
 - 新增 SQLite schema、SQLite FTS 或 `PRAGMA user_version` 迁移。
 - 恢复旧独立阅读页或 `/studies/:studyId/read` 路由。
 
+### V1.8：Office 转 PDF 最小闭环
+
+V1.8 目标：让 App 管理资料库中的 DOCX / PPTX / XLSX 可在预览时转换为派生 PDF，并复用现有 PDF 阅读器完成 App 内阅读。
+
+V1.8 独立开发文档：[`studyseq-v1.8-development-plan.md`](studyseq-v1.8-development-plan.md)。
+
+当前状态（2026-06-15）：V1.8 自动化实现、代码审查修复、自动化验证和 debug/release 发包验证已完成；版本号已统一为 `1.8.0`。实现使用 `office2pdf = 0.6.0`，预览时将 App 管理资料库中的 Office 源文件转换为派生 PDF，再复用现有 `PdfPreview`。本版无 SQLite schema 变更，不提升 `PRAGMA user_version`。
+
+V1.8 成功口径：
+
+- DOCX / PPTX / XLSX 资料可作为 App 管理库文件被预览。
+- 预览 Office 资料时，Rust 侧将源文件转换为派生 PDF。
+- DOCX / PPTX 派生 PDF 路径固定为 `<material_library_dir>/<learning_content_id>/.derived/office-pdf/<material_id>.pdf`。
+- XLSX 派生 PDF 路径固定为 `<material_library_dir>/<learning_content_id>/.derived/office-pdf-xlsx-wide-v1/<material_id>.pdf`，用于失效早期窄版式缓存。
+- 前端阅读体验复用现有 `PdfPreview`，不新建 Office 原生阅读器。
+- PDF 页码、缩放、返回资料列表等现有 PDF 阅读主线不回退。
+- 旧库可直接使用 V1.8，不需要 SQLite 迁移。
+
+当前实现说明：
+
+- 正式依赖接入 `office2pdf 0.6.0`，不再停留在 `spikes/office2pdf/` 隔离实验口径。
+- 转换输入只面向 App 管理资料库中的 Office 源文件；不读取或转换用户原始来源文件。
+- 派生 PDF 属于 App 管理资料库内的衍生产物，用于预览复用，不改变原 Office 源文件记录。
+- 派生 PDF 缓存复用会同时校验修改时间和 `%PDF` 文件头；坏缓存会重新转换。
+- 派生 PDF 已纳入资料库统计和清理引用集合，删除 Office 资料时会同步清理对应派生 PDF；XLSX 删除时会同时清理新旧派生 PDF 缓存目录。
+- 预览层继续走当前详情页内嵌阅读主线和现有 `PdfPreview`；`PdfPreview` 会按 PDF 当前页真实宽高比计算页面外框，不再固定为 A4 竖版，以适配 PPTX 横版和 XLSX 宽表格转出的 PDF。
+- XLSX 转 PDF 使用 `office2pdf 0.6.0` 的 `paper_size` + `landscape` 选项，生成宽横向页面（1190.56pt x 841.89pt）以改善真实表格被压成窄列的问题；前端仍对 `.xlsx` 派生 PDF 使用 140% 阅读缩放下限，普通 PDF 不受影响。
+
+V1.8 验证状态（2026-06-15）：
+
+- `npm.cmd test` 通过：11 个前端测试文件、159 个测试通过；jsdom canvas 未实现提示为测试环境噪声，退出码为 0。
+- `npm.cmd run typecheck` 通过。
+- `npm.cmd run build` 通过。
+- `cargo fmt --check` 通过。
+- `cargo test` 通过：81 个 Rust 测试通过。
+- `cargo clippy -- -D warnings` 通过。
+- `npm.cmd run tauri -- build --debug` 通过，debug MSI/NSIS 已重新生成。
+- `npm.cmd run tauri -- build` 通过，正式 release MSI/NSIS 已重新生成。
+- Rust 审查未发现 CRITICAL/HIGH；已修复两个 MEDIUM 风险：坏派生 PDF 缓存复用、派生 PDF 被误判 orphan 或删除 Office 资料后残留。
+- 真实 App 手测需复查本轮 XLSX 显示修复：XLSX 应重新生成到 `office-pdf-xlsx-wide-v1`，不复用旧 `office-pdf` 窄版式缓存；已保存为 70% 等过低缩放的 XLSX 派生 PDF，再打开时应抬升到 140%；普通 PDF 的低缩放恢复不应被改变。
+
+V1.8 不进入：
+
+- `doc` / `ppt` / `xls` 老 Office 格式。
+- Office 原生预览或编辑。
+- LibreOffice、system Office 或外部命令依赖。
+- Office 外部打开兜底、打开原文件或打开所在文件夹。
+- 批量转换、后台转换队列、转换进度中心。
+- 文件夹同步、目录监听或整文件夹导入。
+- OCR、全文搜索、PDF 文本抽取。
+- 新增 SQLite schema 或 `PRAGMA user_version` 迁移。
+
+### V1.8.1：Office 转 PDF 稳定补丁
+
+V1.8.1 目标：不扩展 Office 能力，只围绕 V1.8 已完成的 DOCX / PPTX / XLSX 转 PDF 主线做稳定性修复、真实 App 复查、回归验证和文档收口。
+
+V1.8.1 独立开发文档：[`studyseq-v1.8.1-development-plan.md`](studyseq-v1.8.1-development-plan.md)。
+
+当前状态（2026-06-15）：已召集 `planner`、`architect`、`e2e-runner`、`security-reviewer` 进行规划，并补充 `rust-reviewer`、`typescript-reviewer` 做代码级只读复核。结论继续收敛为“小修稳定版”：保留 V1.8 架构，不新增依赖，不新增 SQLite schema，不恢复旧独立阅读页。A1-A6、自动化 release gate、正式 release 发包和隔离真实 App 固定样本复查均已完成。
+
+V1.8.1 成功口径：
+
+- DOCX / PPTX / XLSX 仍通过 App 管理资料库内源文件转换为派生 PDF。
+- 转换后仍复用现有 `PdfPreview`，不新建 Office 阅读器。
+- Office 资料重命名后，转换识别和 XLSX 阅读缩放不因显示名变化而漂移。
+- 派生 PDF 写入过程不会留下可被误复用的半成品缓存。
+- 删除、重命名、资料库迁移和 cleanup 对 Office 派生 PDF 的处理更一致。
+- Office 转换失败、坏缓存、过大文件、缺失副本和库外路径都进入稳定错误终态，不永久 loading，不泄露本机路径。
+- V1.8 的 XLSX 宽横向页面、`office-pdf-xlsx-wide-v1` 缓存和 140% 初始缩放下限继续生效。
+- txt、图片、普通 PDF、视频、资料文件夹、搜索、继续学习、笔记和资料库位置设置不回退。
+
+V1.8.1 阶段计划：
+
+- A1：Office 类型判断稳定化。已完成：Rust 和前端均改为 MIME 优先，缺失或 octet-stream 时才回退扩展名。
+- A2：派生 PDF 写入和坏缓存收口。已完成：同目录临时文件、校验后替换；旧缓存替换前会先备份，目标不是普通文件时直接失败；缓存复用要求 `%PDF` 头和 `%%EOF` 尾。
+- A3：派生缓存生命周期收口。已完成：Office 重命名清理派生 PDF，清理失败返回脱敏数量并由前端提示稍后重试；资料库迁移计划纳入既有派生 PDF。
+- A4：错误终态和 UI 回归。已完成：补齐 XLSX 缩放、旧 Office 提示、重命名清理失败脱敏提示回归测试；坏 DOCX 转换失败已通过隔离真实 App 复查。
+- A5：真实 App 稳定复查。已完成：使用临时 identifier `com.studyseq.desktop.v181test` 和隔离数据目录验证 DOCX / PPTX / XLSX、普通 PDF、txt、图片、WebM、嵌套文件夹、笔记、继续学习、断网 smoke、重复打开缓存复用、删除 Office 不伤原始来源文件、重启恢复。
+- A6：文档、版本和发包收口。已完成：版本号已统一为 `1.8.1`，完整 release gate 已通过，正式 release 产物已生成；临时 debug 产物和隔离 A5 debug 产物已生成。
+
+V1.8.1 不进入：
+
+- 旧版 `.doc`、`.ppt`、`.xls`。
+- Office 原生预览、编辑、外部打开兜底。
+- LibreOffice、system Office 或外部命令。
+- 批量转换、后台转换队列、转换进度条、取消转换。
+- 全文搜索、PDF 文本抽取、OCR。
+- 新增 SQLite schema 或 `PRAGMA user_version` 迁移。
+- 新依赖、大型 repository 重构或 asset 协议令牌化大改造。
+
 ### V2：后续扩展候选
 
 V2 以后再评估：
 
-- Office 转 PDF 后 App 内阅读。
+- Office 老格式、Office 原生预览或更完整转换治理。
 - 视频转码或播放内核。
 - PDF 全文搜索。
 - 复杂资料树和拖拽移动。
@@ -724,8 +825,9 @@ npm.cmd run tauri -- build
 
 ## 下一步
 
-1. 提交、推送，并按项目节奏创建 V1.7 tag。
-2. 后续版本继续评估 Office 转 PDF 产品化、全文搜索或跨学习内容搜索，但不要并入 V1.7。
+1. 真实 App 复查固定样本：DOCX / PPTX / XLSX、中文文件名、坏文件失败提示、重复打开缓存、迁移/删除/重命名缓存处理、断网流程。
+2. 真实 App 复查通过后，准备提交、推送和 tag 收口。
+3. 若需要重新生成主 target debug 包，先关闭正在占用 `app/src-tauri/target/debug/studyseq.exe` 的 App 进程；本轮已用临时 `CARGO_TARGET_DIR` 生成 debug 包。
 
 ## 推迟项
 
@@ -737,8 +839,8 @@ npm.cmd run tauri -- build
 - 学习节点拆解。
 - Markdown 或复杂富文本笔记。
 - SQLite 加密。
-- Office 资料预览。
-- Office 转 PDF。
+- Office 原生预览或编辑。
+- Office 老格式 `doc` / `ppt` / `xls` 转换。
 - 新视频格式支持。
 - PDF 全文搜索。
 - 复杂资料树和拖拽移动。
@@ -747,6 +849,8 @@ npm.cmd run tauri -- build
 - 笔记分组。
 - PDF 滚动位置精细恢复。
 - Office 外部打开兜底。
+- LibreOffice / system Office 依赖。
+- 批量 Office 转换和后台转换队列。
 - 资料全文搜索。
 - PDF 文本抽取。
 - OCR。
@@ -863,3 +967,13 @@ npm.cmd run tauri -- build
 - 2026-06-15：V1.6 收口审查修复三个阻塞项：资料重命名回滚失败不再静默吞错；资料导入改为 Rust command 内部打开文件选择器，前端不再持有源文件路径 authority；`MaterialItem.originalPath` 不再序列化给前端。重新验证通过：前端 137 测试、Rust 72 测试、typecheck、build、fmt、clippy、Tauri debug build、Tauri release build 均通过；debug 包和正式 release 包均已重新生成；导入资料链路补充真实 App smoke test 已通过，V1.6 可进入提交/tag 收口。
 - 2026-06-15：召集 `planner`、`architect`、`react-reviewer`、`security-reviewer`、`tdd-guide` 评估 V1.7；结论收敛为“当前学习内容资料定位增强”，即资料区支持 `当前文件夹 / 当前学习内容` 两档资料名和扩展名搜索，结果只显示逻辑资料树路径，不做全文搜索、PDF 提取、OCR 或跨学习内容全局搜索。新增 V1.7 独立开发计划 `product/docs/studyseq-v1.7-development-plan.md`；`office2pdf` 只保留为 `spikes/office2pdf/` 隔离实验，不进入正式功能和 release gate。
 - 2026-06-15：完成 V1.7 自动化实现、自动化验证、隔离真实 App 手测和发包验证：当前学习内容搜索可递归命中根/一级/二级资料，结果只显示逻辑路径；点击嵌套 PDF 可打开内嵌阅读并返回父文件夹；PDF 缩放快速返回会写入阅读状态；pending-deleted 子树在搜索中隐藏且撤回后恢复；预览失败显示失败终态。重新验证通过：前端 154 测试、Rust 72 测试、typecheck、build、fmt、clippy、Tauri debug build、Tauri release build；`spikes/office2pdf` 自检仍通过且保持隔离。
+- 2026-06-15：确认 V1.8 做“更完整能力更新”，正式接入 Office 转 PDF 最小闭环：DOCX / PPTX / XLSX 预览时转换为 App 管理目录内派生 PDF，并复用现有 `PdfPreview`；不支持 `doc` / `ppt` / `xls`、Office 原生预览、LibreOffice / system Office、外部打开、批量转换、OCR 或全文搜索。
+- 2026-06-15：完成 V1.8 自动化实现、Rust 审查修复和发包验证：依赖 `office2pdf = 0.6.0` 已进入正式 App；DOCX/PPTX 派生 PDF 路径为 `<material_library_dir>/<learning_content_id>/.derived/office-pdf/<material_id>.pdf`，XLSX 路径后续按手测反馈改为版本化宽页面缓存；坏缓存会重新转换，派生 PDF不被 cleanup 当作 orphan，删除 Office 资料会同步删除派生 PDF。重新验证通过：前端 155 测试、Rust 78 测试、typecheck、build、fmt、clippy、Tauri debug build、Tauri release build；debug/release 包均已生成。
+- 2026-06-15：按真实 App 手测反馈优化 V1.8 阅读区适配：`PdfPreview` 不再用固定 A4 竖版比例计算页面外框，改为读取当前 PDF 页真实宽高比；PPTX 横版、XLSX 宽表格转 PDF 后能匹配阅读区。重新验证通过：`PdfPreview.test.tsx` 10 测试、`VideoPreview.test.tsx` 14 测试、前端全量 156 测试、typecheck、build。
+- 2026-06-15：继续按真实 App 手测反馈修复 XLSX 内容过小问题：前端对 `.xlsx` 派生 PDF 使用 140% 阅读缩放下限，普通 PDF 继续尊重保存低缩放。重新验证通过：`PdfPreview.test.tsx` 11 测试、`StudyDetailPage.test.tsx` 50 测试、前端全量 159 测试、typecheck、build、Tauri debug build、Tauri release build；debug/release 包均已重新生成。
+- 2026-06-15：继续按真实 App 手测截图修复 XLSX 版式怪问题：确认 `office2pdf 0.6.0` 暴露 `paper_size` 和 `landscape`，Rust 转换端对 XLSX 使用宽横向自定义页面（1190.56pt x 841.89pt），并将 XLSX 派生 PDF 缓存目录切到 `.derived/office-pdf-xlsx-wide-v1`，避免复用旧窄版式缓存；删除 XLSX 资料时同时清理新旧派生 PDF 缓存。重新验证通过：Rust 全量 81 测试、前端全量 159 测试、typecheck、build、fmt、clippy。
+- 2026-06-15：召集 `planner`、`architect`、`e2e-runner`、`security-reviewer` 规划 V1.8.1；结论收敛为“Office 转 PDF 稳定补丁”，不扩展 Office 能力、不新增依赖、不新增 SQLite schema。新增 V1.8.1 独立开发计划 `product/docs/studyseq-v1.8.1-development-plan.md`，阶段为 A1 Office 类型判断稳定化、A2 派生 PDF 写入和坏缓存收口、A3 派生缓存生命周期、A4 错误终态和 UI 回归、A5 真实 App 稳定复查、A6 文档版本和发包收口。
+- 2026-06-15：完成 V1.8.1 核心稳定补丁实现：Office 类型判断改为 MIME 优先，派生 PDF 写入改为临时文件校验后替换，旧缓存替换前会先备份，缓存复用同时校验 `%PDF` 头和 `%%EOF` 尾，Office 重命名会清理派生 PDF 且清理失败返回脱敏数量，资料库迁移计划会纳入既有 Office 派生 PDF；前端 XLSX 缩放和旧 Office 提示也改为 MIME 优先。版本号已统一为 `1.8.1`，自动化 release gate 和正式 release 发包已完成，随后已完成隔离真实 App 固定样本复查。
+- 2026-06-15：完成 V1.8.1 自动化 release gate 和正式发包验证：`npm.cmd test`（11 文件、163 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`cargo fmt --check`、`cargo test`（88 测试）、`cargo clippy -- -D warnings`、Windows 子系统静态检查、`npm.cmd audit --audit-level=high`、`cargo tree -i office2pdf`、`npm.cmd run tauri -- build` 均通过；`cargo-audit` 本机未安装未运行。正式产物为 `app/src-tauri/target/release/studyseq.exe`、`app/src-tauri/target/release/bundle/msi/StudySeq_1.8.1_x64_en-US.msi`、`app/src-tauri/target/release/bundle/nsis/StudySeq_1.8.1_x64-setup.exe`。主 debug exe 被运行中进程占用，本轮用临时 `CARGO_TARGET_DIR` 生成 debug 包。
+- 2026-06-15：完成 V1.8.1 隔离真实 App 固定样本复查：使用临时 identifier `com.studyseq.desktop.v181test` 和隔离数据目录，验证真实 Tauri App 中 DOCX/PPTX/XLSX 均转 PDF 并渲染到 `PdfPreview`，XLSX 使用 `office-pdf-xlsx-wide-v1` 和 140% 缩放，普通 PDF 保持第 2 页和 80% 缩放，txt、图片、WebM、嵌套文件夹返回、坏 DOCX 失败终态、重复打开缓存复用、删除 Office 不删除原始来源文件、重启恢复和 CDP offline 模式本地阅读均通过。证据文件位于 `C:\Users\123\AppData\Local\Temp\studyseq-v181-a5\`；本轮通过预置隔离库验证 App 管理资料主链路，未自动化覆盖系统文件选择器导入。
+- 2026-06-15：完成 V1.8.1 completion audit 复跑：再次通过前端 163 测试、typecheck、生产 build、Rust fmt/test/clippy、Windows 子系统静态检查、`npm.cmd audit --audit-level=high`、`cargo tree -i office2pdf`、Tauri debug no-bundle 构建和正式 release 构建；本轮 debug 复跑使用 `CARGO_TARGET_DIR=C:\Users\123\AppData\Local\Temp\studyseq-v181-audit-debug-target`，正式 release MSI/NSIS 已重新生成。

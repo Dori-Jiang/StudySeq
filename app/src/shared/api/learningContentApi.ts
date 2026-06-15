@@ -21,6 +21,7 @@ import type {
   MoveMaterialItemInput,
   Note,
   RenameMaterialItemInput,
+  RenameMaterialItemReport,
   RecentMaterialOpenPosition,
   SaveMaterialReadingStateInput,
   SaveVideoPlaybackStateInput,
@@ -128,8 +129,10 @@ export function applyMaterialLibraryLocationChange(
   );
 }
 
-export function renameMaterialItem(input: RenameMaterialItemInput): Promise<MaterialItem> {
-  return invoke<MaterialItem>("rename_material_item", { input });
+export function renameMaterialItem(
+  input: RenameMaterialItemInput,
+): Promise<RenameMaterialItemReport> {
+  return invoke<unknown>("rename_material_item", { input }).then(decodeRenameMaterialItemReport);
 }
 
 export function createMaterialFolder(
@@ -251,6 +254,14 @@ function decodeMaterialLibraryLocationChangeReport(
   const record = asRecord(value);
   return {
     location: decodeMaterialLibraryLocation(record.location),
+    failedCleanupPathCount: finiteNumber(record.failedCleanupPathCount),
+  };
+}
+
+function decodeRenameMaterialItemReport(value: unknown): RenameMaterialItemReport {
+  const record = asRecord(value);
+  return {
+    material: record.material as MaterialItem,
     failedCleanupPathCount: finiteNumber(record.failedCleanupPathCount),
   };
 }

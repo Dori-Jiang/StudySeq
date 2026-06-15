@@ -658,6 +658,170 @@ describe("StudyDetailPage", () => {
     }, { timeout: 1500 });
   });
 
+  it("opens XLSX-derived PDF with a readable minimum scale", async () => {
+    getLearningDetail.mockResolvedValueOnce({
+      ...baseDetail,
+      materials: [
+        {
+          ...baseDetail.materials[0],
+          id: "mat-xlsx",
+          name: "生活开支.xlsx",
+          storedPath: "C:/app/生活开支.xlsx",
+          mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        },
+      ],
+    });
+    getMaterialReadingState.mockResolvedValueOnce({
+      materialId: "mat-xlsx",
+      pageNumber: 1,
+      scale: 0.7,
+      lastOpenedAt: "2026-06-15T00:00:00Z",
+      positionKind: "pdf_page",
+      videoPositionSeconds: null,
+      updatedAt: "2026-06-15T00:00:00Z",
+    });
+    previewMaterialFile.mockResolvedValueOnce({
+      materialId: "mat-xlsx",
+      kind: "pdf",
+      mimeType: "application/pdf",
+      text: null,
+      dataUrl: null,
+      assetPath: "C:/app/.derived/office-pdf/mat-xlsx.pdf",
+      encoding: null,
+    });
+
+    renderDetailPage();
+    await screen.findByText("生活开支.xlsx");
+
+    await userEvent.click(screen.getByRole("button", { name: "打开资料：生活开支.xlsx" }));
+
+    expect(await screen.findByText("第 1 / 3 页")).toBeInTheDocument();
+    expect(screen.getByText("140%")).toBeInTheDocument();
+  });
+
+  it("keeps XLSX-derived PDF minimum scale after the material display name changes", async () => {
+    getLearningDetail.mockResolvedValueOnce({
+      ...baseDetail,
+      materials: [
+        {
+          ...baseDetail.materials[0],
+          id: "mat-xlsx",
+          name: "生活开支",
+          storedPath: "C:/app/生活开支",
+          mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        },
+      ],
+    });
+    getMaterialReadingState.mockResolvedValueOnce({
+      materialId: "mat-xlsx",
+      pageNumber: 1,
+      scale: 0.7,
+      lastOpenedAt: "2026-06-15T00:00:00Z",
+      positionKind: "pdf_page",
+      videoPositionSeconds: null,
+      updatedAt: "2026-06-15T00:00:00Z",
+    });
+    previewMaterialFile.mockResolvedValueOnce({
+      materialId: "mat-xlsx",
+      kind: "pdf",
+      mimeType: "application/pdf",
+      text: null,
+      dataUrl: null,
+      assetPath: "C:/app/.derived/office-pdf-xlsx-wide-v1/mat-xlsx.pdf",
+      encoding: null,
+    });
+
+    renderDetailPage();
+    await screen.findByText("生活开支");
+
+    await userEvent.click(screen.getByRole("button", { name: "打开资料：生活开支" }));
+
+    expect(await screen.findByText("第 1 / 3 页")).toBeInTheDocument();
+    expect(screen.getByText("140%")).toBeInTheDocument();
+  });
+
+  it("keeps low saved scale for ordinary PDF materials", async () => {
+    getLearningDetail.mockResolvedValueOnce({
+      ...baseDetail,
+      materials: [
+        {
+          ...baseDetail.materials[0],
+          id: "mat-pdf",
+          name: "资料.pdf",
+          storedPath: "C:/app/low-scale.pdf",
+          mimeType: "application/pdf",
+        },
+      ],
+    });
+    getMaterialReadingState.mockResolvedValueOnce({
+      materialId: "mat-pdf",
+      pageNumber: 1,
+      scale: 0.7,
+      lastOpenedAt: "2026-06-15T00:00:00Z",
+      positionKind: "pdf_page",
+      videoPositionSeconds: null,
+      updatedAt: "2026-06-15T00:00:00Z",
+    });
+    previewMaterialFile.mockResolvedValueOnce({
+      materialId: "mat-pdf",
+      kind: "pdf",
+      mimeType: "application/pdf",
+      text: null,
+      dataUrl: null,
+      assetPath: "C:/app/low-scale.pdf",
+      encoding: null,
+    });
+
+    renderDetailPage();
+    await screen.findByText("资料.pdf");
+
+    await userEvent.click(screen.getByRole("button", { name: "打开资料：资料.pdf" }));
+
+    expect(await screen.findByText("第 1 / 3 页")).toBeInTheDocument();
+    expect(screen.getByText("70%")).toBeInTheDocument();
+  });
+
+  it("does not treat a renamed ordinary PDF as XLSX by display name", async () => {
+    getLearningDetail.mockResolvedValueOnce({
+      ...baseDetail,
+      materials: [
+        {
+          ...baseDetail.materials[0],
+          id: "mat-pdf",
+          name: "资料.xlsx",
+          storedPath: "C:/app/资料.xlsx",
+          mimeType: "application/pdf",
+        },
+      ],
+    });
+    getMaterialReadingState.mockResolvedValueOnce({
+      materialId: "mat-pdf",
+      pageNumber: 1,
+      scale: 0.7,
+      lastOpenedAt: "2026-06-15T00:00:00Z",
+      positionKind: "pdf_page",
+      videoPositionSeconds: null,
+      updatedAt: "2026-06-15T00:00:00Z",
+    });
+    previewMaterialFile.mockResolvedValueOnce({
+      materialId: "mat-pdf",
+      kind: "pdf",
+      mimeType: "application/pdf",
+      text: null,
+      dataUrl: null,
+      assetPath: "C:/app/renamed.pdf",
+      encoding: null,
+    });
+
+    renderDetailPage();
+    await screen.findByText("资料.xlsx");
+
+    await userEvent.click(screen.getByRole("button", { name: "打开资料：资料.xlsx" }));
+
+    expect(await screen.findByText("第 1 / 3 页")).toBeInTheDocument();
+    expect(screen.getByText("70%")).toBeInTheDocument();
+  });
+
   it("saves the latest PDF state when returning to the material list immediately", async () => {
     getLearningDetail.mockResolvedValueOnce({
       ...baseDetail,
@@ -1105,10 +1269,13 @@ describe("StudyDetailPage", () => {
     getLearningDetail.mockResolvedValueOnce(baseDetail);
     vi.spyOn(window, "prompt").mockReturnValue("新资料.txt");
     renameMaterialItem.mockResolvedValueOnce({
-      ...baseDetail.materials[0],
-      name: "新资料.txt",
-      storedPath: "C:/app/新资料.txt",
-      updatedAt: "2026-06-09T00:00:00Z",
+      material: {
+        ...baseDetail.materials[0],
+        name: "新资料.txt",
+        storedPath: "C:/app/新资料.txt",
+        updatedAt: "2026-06-09T00:00:00Z",
+      },
+      failedCleanupPathCount: 0,
     });
 
     renderDetailPage();
@@ -1124,6 +1291,32 @@ describe("StudyDetailPage", () => {
     });
     expect(screen.getByText("新资料.txt")).toBeInTheDocument();
     expect(screen.queryByText("资料.txt")).not.toBeInTheDocument();
+  });
+
+  it("reports renamed material cleanup failures without exposing paths", async () => {
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    vi.spyOn(window, "prompt").mockReturnValue("新资料.txt");
+    renameMaterialItem.mockResolvedValueOnce({
+      material: {
+        ...baseDetail.materials[0],
+        name: "新资料.txt",
+        storedPath: "C:/app/新资料.txt",
+        updatedAt: "2026-06-09T00:00:00Z",
+      },
+      failedCleanupPathCount: 1,
+    });
+
+    renderDetailPage();
+    await screen.findByText("资料.txt");
+    const menu = await openMaterialMenu("资料.txt");
+    await userEvent.click(within(menu).getByRole("menuitem", { name: "重命名" }));
+
+    expect(
+      await screen.findByText(
+        "资料已重命名，但有 1 个 Office 预览缓存未清理，可稍后在资料库清理中重试。",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/C:\/Users\/123\/secret/)).not.toBeInTheDocument();
   });
 
   it("keeps failed material deletes pending with a retryable error", async () => {

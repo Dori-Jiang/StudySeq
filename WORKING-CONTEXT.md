@@ -2,7 +2,7 @@
 
 ## 当前重点
 
-把 Planassiant 设置成一套“ECC 思路 + Codex 实际用法”的项目结构。
+收口 StudySeq / 知序 V1.8.1 稳定补丁：以稳定当前软件为主体，围绕 V1.8 Office 转 PDF 主线完成代码级风险修复、真实 App 固定样本复查、完整 release gate 和文档收口。
 
 ## 稳定决策
 
@@ -49,7 +49,7 @@
 - 同名资料文件导入时自动追加后缀。
 - 资料区第一版只做根目录文件列表，不做文件夹。
 - 笔记第一版只做标题和纯文本正文，不做分组。
-- 第一批 App 内预览格式为 txt、图片、PDF；Office 和视频后置。
+- 第一批 App 内预览格式为 txt、图片、PDF；视频已在 V1.2 接入；Office DOCX / PPTX / XLSX 在 V1.8 通过转 PDF 接入，Office 原生预览仍后置。
 - 删除学习内容时需要删除关联内容，但必须在删除前给用户明确提示。
 - 阅读页第一版需要支持编辑已有笔记。
 - PDF 预览采用 `pdfjs-dist`。
@@ -57,11 +57,26 @@
 - 阅读状态需要保存当前资料、当前笔记和分栏比例。
 - 详情页是当前主要学习工作台：左栏资料支持点击整行内嵌阅读 txt、图片、PDF，右栏继续管理和编辑笔记。
 - 旧独立阅读页实现和 `/studies/:studyId/read` 路由已删除；后续 PDF 页码/缩放、资料管理和笔记能力必须接入详情页内嵌阅读主线，不能再接到旧独立阅读页。
+- V1.8 Office 转 PDF 是最小闭环：支持 DOCX / PPTX / XLSX -> PDF，不支持 `doc` / `ppt` / `xls`、Office 原生预览或编辑、LibreOffice / system Office、外部打开、批量转换、文件夹同步、OCR 或全文搜索。
+- V1.8 使用 `office2pdf 0.6.0`；预览时只将 App 管理资料库中的 Office 源文件转换为派生 PDF，再复用现有 `PdfPreview`。
+- V1.8 DOCX/PPTX 派生 PDF 路径固定为 `<material_library_dir>/<learning_content_id>/.derived/office-pdf/<material_id>.pdf`。
+- V1.8 XLSX 派生 PDF 使用版本化缓存目录 `<material_library_dir>/<learning_content_id>/.derived/office-pdf-xlsx-wide-v1/<material_id>.pdf`，避免复用早期窄版式缓存。
+- `office2pdf 0.6.0` 暴露 `paper_size` 和 `landscape`；XLSX 转 PDF 使用宽横向自定义页面（1190.56pt x 841.89pt）改善表格版式，前端 140% 初始缩放下限作为阅读兜底保留。
+- V1.8 无 SQLite schema 变更，不提升 `PRAGMA user_version`；版本号应统一为 `1.8.0`。
+- V1.8.1 定位为 V1.8 后的稳定补丁版本，不扩展 Office 能力、不新增依赖、不新增 SQLite schema、不恢复旧独立阅读页。
+- V1.8.1 开发计划已新增：`product/docs/studyseq-v1.8.1-development-plan.md`。
+- V1.8.1 P0 风险包括：Office 类型判断受重命名影响、派生 PDF 非原子写入留下半成品缓存、资料库迁移/删除/重命名后的 Office 派生缓存残留、Office 转换失败终态和错误脱敏。
+- V1.8.1 P1 稳定项包括：真实 App 固定样本手测、普通 PDF/txt/图片/视频/资料文件夹/搜索/继续学习/笔记回归、Windows debug/release 发包检查。
+- V1.8.1 核心稳定补丁已落地：Office 类型判断改为 `mime_type` 优先，只有缺失或 `application/octet-stream` 时才回退 `stored_path` 扩展名；前端 XLSX 缩放和旧 Office 提示也跟随该合同。
+- V1.8.1 派生 PDF 缓存稳定补丁已落地：转换结果写同目录临时文件，校验 PDF 后替换目标；旧缓存替换前会先备份，目标不是普通文件时直接失败；缓存复用同时要求 `%PDF` 头和 `%%EOF` 尾标记；重命名 Office 资料会清理派生 PDF 缓存，清理失败返回脱敏数量，资料库迁移计划会包含既有 Office 派生 PDF。
+- V1.8.1 版本号已统一为 `1.8.1`，范围包括 `app/package.json`、`app/package-lock.json`、`app/src-tauri/Cargo.toml`、`app/src-tauri/Cargo.lock` 和 `app/src-tauri/tauri.conf.json`。
+- V1.8.1 隔离真实 App 固定样本复查已完成：使用临时 identifier `com.studyseq.desktop.v181test` 和隔离数据目录，未触碰正式 `com.studyseq.desktop` 用户数据；已验证真实 Tauri App 中 DOCX/PPTX/XLSX 转 PDF、XLSX 140% 缩放和 `office-pdf-xlsx-wide-v1` 缓存、普通 PDF 第 2 页/80% 缩放恢复、txt、图片、WebM、嵌套文件夹返回上下文、坏 DOCX 友好失败、重复打开缓存复用、删除 Office 不删除原始来源文件、重启恢复、CDP offline 模式本地 txt/PDF 阅读。
+- V1.8.1 A5 证据文件位于 `C:\Users\123\AppData\Local\Temp\studyseq-v181-a5\`，包括 `cdp-evidence-final.json`、`cache-reuse-evidence.json`、`delete-office-evidence-final.json`、`offline-smoke-evidence.json`、`restart-evidence.json`；本轮通过预置隔离库验证 App 管理资料主链路，未自动化覆盖系统文件选择器导入。
 
 ## 下一步
 
 - 当前没有需要更新或重新确认的 hooks。
-- 按已确认的产品设计继续推进实现规划或前端落地。
+- V1.8.1 已完成开发、自动化验证、正式 release 发包和隔离真实 App 固定样本复查；下一步可按需要提交、推送并创建 V1.8.1 tag。
 - 后续查看当前设计时，以当前 App 实现、`product/docs/studyseq-project-progress.md`、`product/docs/studyseq-v1-technical-design.md` 和保留的原始 UI 概念 HTML 为参考；涉及实现时以当前 App 主线为准。
 - 后续进入新阶段前，先读取本文件。
 - 每次阶段结束、上下文压缩前或会话结束前，把新的稳定决策和下一步写回本文件。
@@ -150,6 +165,16 @@
 - V1.7 稳定性修复已完成：资料预览失败会显示失败终态，不再卡在“正在加载资料预览”；PDF 翻页或缩放后立即返回资料列表会 flush 最后页码 / 缩放。
 - V1.7 版本号已统一为 `1.7.0`。已验证：`npm.cmd test`（11 文件、154 测试）、V1.7 目标测试（3 文件、71 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`cargo fmt --check`、`cargo test`（72 测试）、`cargo clippy -- -D warnings`、`npm.cmd run tauri -- build --debug`、`npm.cmd run tauri -- build` 均通过；debug 与正式 release 包均已生成。
 - V1.7 隔离真实 App 手测已完成：使用临时 identifier `com.studyseq.desktop.v17test`，未触碰正式 `com.studyseq.desktop` 用户数据。已验证当前文件夹不递归、当前学习内容递归搜索根/一级/二级资料、`pdf/.pdf/PDF` 扩展名匹配、搜索结果不泄露本机路径、点击嵌套 PDF 打开内嵌阅读、返回后停在父文件夹、PDF 缩放 `120%` 写入 SQLite、点击文件夹只进入文件夹、pending-deleted 子树隐藏且撤回恢复、预览失败显示“资料副本不存在，请重新导入”且不再卡 loading。临时 App 关闭后已重新生成官方 debug/release 构建产物。
+- 用户已确认 V1.8 可以做“更完整能力更新”；当前 V1.8 收敛为 Office 转 PDF 最小闭环，DOCX / PPTX / XLSX 进入正式功能口径。
+- V1.8 自动化实现、Rust 审查修复、自动化验证和 debug/release 发包验证已完成；真实 App 手测反馈正在收口。
+- V1.8 审查修复已落地：派生 PDF 缓存复用会校验 `%PDF` 文件头，坏缓存会重新转换；派生 PDF 参与资料库 stats/cleanup 引用判定，删除 Office material 时会同步清理派生 PDF，其中 XLSX 会同时清理新旧派生 PDF 缓存目录。
+- V1.8 阅读区适配修复已落地：`PdfPreview` 按当前 PDF 页真实宽高比计算页面外框，不再固定 A4 竖版比例，用于适配 PPTX 横版和 XLSX 宽表格转出的 PDF。
+- V1.8 XLSX 显示修复已落地：Rust 转换端对 `.xlsx` 使用宽横向 PDF 页面并写入 `office-pdf-xlsx-wide-v1` 版本化缓存目录，前端首次打开 `.xlsx` 派生 PDF 仍使用 140% 阅读缩放下限，覆盖旧的 70% 等过低保存缩放；普通 PDF 仍保留用户保存的低缩放。
+- V1.8 版本号已统一为 `1.8.0`。已验证：`PdfPreview.test.tsx` 11 测试、`StudyDetailPage.test.tsx` 50 测试、`npm.cmd test`（11 文件、159 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`npm.cmd run tauri -- build --debug`、`npm.cmd run tauri -- build` 均通过；debug 与正式 release 包均已重新生成。Rust 转换链路本轮未改动，上轮 `cargo test`（78 测试）和 `cargo clippy -- -D warnings` 仍有效。
+- V1.8.1 自动化实现和自动化验证已完成：补齐 Office MIME 优先类型判断、派生 PDF 原子写入和完整性校验、Office 派生缓存重命名清理失败脱敏报告和迁移纳入、前端 XLSX 缩放/旧 Office 提示 MIME 优先回归测试。已验证：`npm.cmd test`（11 文件、163 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`cargo fmt --check`、`cargo test`（88 测试）、`cargo clippy -- -D warnings`、`tests/check-tauri-windows-subsystem.ps1`、`npm.cmd audit --audit-level=high`、`cargo tree -i office2pdf`、`npm.cmd run tauri -- build --debug --no-bundle`、`npm.cmd run tauri -- build` 均通过；`cargo-audit` 本机未安装，未运行。debug 主 target 因 `target/debug/studyseq.exe` 被占用，改用临时 `CARGO_TARGET_DIR` 成功生成 debug 包；正式 release 包已重新生成。
+- V1.8.1 正式 release 产物：`app/src-tauri/target/release/studyseq.exe`、`app/src-tauri/target/release/bundle/msi/StudySeq_1.8.1_x64_en-US.msi`、`app/src-tauri/target/release/bundle/nsis/StudySeq_1.8.1_x64-setup.exe`。
+- V1.8.1 临时 debug 产物：`C:\Users\123\AppData\Local\Temp\studyseq-v181-debug-20260615223223\debug\studyseq.exe`、`C:\Users\123\AppData\Local\Temp\studyseq-v181-debug-20260615223223\debug\bundle\msi\StudySeq_1.8.1_x64_en-US.msi`、`C:\Users\123\AppData\Local\Temp\studyseq-v181-debug-20260615223223\debug\bundle\nsis\StudySeq_1.8.1_x64-setup.exe`。
+- V1.8.1 completion audit 临时 debug 产物：`C:\Users\123\AppData\Local\Temp\studyseq-v181-audit-debug-target\debug\studyseq.exe`。
 
 ## 已准备依赖
 

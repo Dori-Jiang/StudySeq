@@ -1,11 +1,13 @@
 use std::{
-    io::Read,
+    collections::HashSet,
+    io::{Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
 };
 
 use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
 use chrono::Utc;
 use encoding_rs::UTF_8;
+use office2pdf::config::{ConvertOptions, Format, PaperSize};
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
@@ -15,12 +17,17 @@ use crate::models::{
     MaterialItem, MaterialKind, MaterialLibraryCleanupReport, MaterialLibraryLocation,
     MaterialLibraryLocationChangeReport, MaterialLibraryStats, MaterialOpenPositionKind,
     MaterialPreview, MaterialPreviewKind, MaterialReadingState, MaterialSubtreeCount, Note,
-    RecentMaterialOpenPosition, RecentMaterialOpenSummary, StudyStatus,
+    RecentMaterialOpenPosition, RecentMaterialOpenSummary, RenameMaterialItemReport, StudyStatus,
 };
 
 pub struct LearningContentRepository {
     connection: Connection,
 }
+
+const OFFICE_CONVERSION_MAX_BYTES: u64 = 50 * 1024 * 1024;
+const XLSX_DERIVED_PDF_CACHE_DIR: &str = "office-pdf-xlsx-wide-v1";
+const XLSX_PREVIEW_WIDTH_PT: f64 = 1190.56;
+const XLSX_PREVIEW_HEIGHT_PT: f64 = 841.89;
 
 #[derive(Debug)]
 pub struct MaterialLibraryLocationChangePlan {
@@ -467,7 +474,7 @@ impl LearningContentRepository {
         material_id: &str,
         name: &str,
         material_library_dir: impl AsRef<Path>,
-    ) -> Result<MaterialItem, AppError> {
+    ) -> Result<RenameMaterialItemReport, AppError> {
         let Some(material) = self.get_material(material_id)? else {
             return Err(AppError::MaterialNotFound);
         };
@@ -486,10 +493,13 @@ impl LearningContentRepository {
                 "UPDATE material_items SET name = ?1, updated_at = ?2 WHERE id = ?3",
                 params![display_name, now, material.id],
             )?;
-            return Ok(MaterialItem {
-                name: display_name,
-                updated_at: now,
-                ..material
+            return Ok(RenameMaterialItemReport {
+                material: MaterialItem {
+                    name: display_name,
+                    updated_at: now,
+                    ..material
+                },
+                failed_cleanup_path_count: 0,
             });
         }
 
@@ -509,6 +519,8 @@ impl LearningContentRepository {
             std::fs::rename(&source_path, &target_path)?;
         }
 
+        let should_cleanup_derived_pdfs = office_format_for_material(&material).is_some()
+            || office_format_for_path(&target_path).is_some();
         let now = Utc::now().to_rfc3339();
         let metadata = match std::fs::metadata(&target_path) {
             Ok(metadata) => metadata,
@@ -535,12 +547,24 @@ impl LearningContentRepository {
             return Err(AppError::Database(error));
         }
 
-        Ok(MaterialItem {
-            name: display_name,
-            stored_path: Some(target_path.to_string_lossy().to_string()),
-            size_bytes: metadata.len() as i64,
-            updated_at: now,
-            ..material
+        let failed_cleanup_path_count = if should_cleanup_derived_pdfs {
+            remove_material_file_paths_best_effort(&derived_office_pdf_cache_paths(
+                material_library_dir.as_ref(),
+                &material,
+            )?) as i64
+        } else {
+            0
+        };
+
+        Ok(RenameMaterialItemReport {
+            material: MaterialItem {
+                name: display_name,
+                stored_path: Some(target_path.to_string_lossy().to_string()),
+                size_bytes: metadata.len() as i64,
+                updated_at: now,
+                ..material
+            },
+            failed_cleanup_path_count,
         })
     }
 
@@ -657,6 +681,25 @@ impl LearningContentRepository {
         }
         let mime_type = resolve_preview_mime(material.mime_type.as_deref(), &stored_path);
         let kind = preview_kind(mime_type.as_deref());
+        if let Some(format) = office_format_for_material(&material) {
+            ensure_material_file_exists(&stored_path_buf)?;
+            let pdf_path = self.convert_office_material_to_pdf(
+                &material,
+                &stored_path_buf,
+                material_library_dir.as_ref(),
+                format,
+            )?;
+            self.record_material_open(&material.id)?;
+            return Ok(MaterialPreview {
+                material_id: material.id,
+                kind: MaterialPreviewKind::Pdf,
+                mime_type: Some("application/pdf".to_string()),
+                text: None,
+                data_url: None,
+                asset_path: Some(pdf_path.to_string_lossy().to_string()),
+                encoding: None,
+            });
+        }
         if matches!(
             kind,
             MaterialPreviewKind::Image | MaterialPreviewKind::Pdf | MaterialPreviewKind::Video
@@ -724,6 +767,39 @@ impl LearningContentRepository {
         Ok(preview)
     }
 
+    fn convert_office_material_to_pdf(
+        &self,
+        material: &MaterialItem,
+        source_path: &Path,
+        material_library_dir: &Path,
+        format: Format,
+    ) -> Result<PathBuf, AppError> {
+        let pdf_path = derived_office_pdf_path(material_library_dir, material)?;
+        if is_fresh_derived_pdf(source_path, &pdf_path)? {
+            return Ok(pdf_path);
+        }
+
+        let metadata = std::fs::metadata(source_path)?;
+        if metadata.len() > OFFICE_CONVERSION_MAX_BYTES {
+            return Err(AppError::OfficeConversionTooLarge);
+        }
+
+        if let Some(parent) = pdf_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let bytes = std::fs::read(source_path)?;
+        let options = office_conversion_options(format);
+        let result = office2pdf::convert_bytes(&bytes, format, &options)
+            .map_err(|_| AppError::OfficeConversionFailed)?;
+        if !result.pdf.starts_with(b"%PDF") {
+            return Err(AppError::OfficeConversionFailed);
+        }
+
+        write_derived_pdf_atomically(&pdf_path, &result.pdf)?;
+        Ok(pdf_path)
+    }
+
     pub fn get_material_reading_state(
         &self,
         material_id: &str,
@@ -772,7 +848,9 @@ impl LearningContentRepository {
             return Err(AppError::MaterialPathOutsideLibrary);
         }
         let resolved_mime = resolve_preview_mime(material.mime_type.as_deref(), stored_path);
-        if preview_kind(resolved_mime.as_deref()) != MaterialPreviewKind::Pdf {
+        if preview_kind(resolved_mime.as_deref()) != MaterialPreviewKind::Pdf
+            && office_format_for_material(&material).is_none()
+        {
             return Err(AppError::MaterialNotFound);
         }
         ensure_material_file_exists(&stored_path_buf)?;
@@ -885,10 +963,8 @@ impl LearningContentRepository {
             .iter()
             .filter(|material| material.kind == MaterialKind::File)
             .collect::<Vec<_>>();
-        let referenced_paths = file_materials
-            .iter()
-            .filter_map(|material| material.stored_path.as_deref().map(PathBuf::from))
-            .collect::<Vec<_>>();
+        let referenced_paths =
+            referenced_material_library_paths(&file_materials, material_library_dir.as_ref())?;
         let referenced_bytes = file_materials
             .iter()
             .map(|material| material.size_bytes)
@@ -994,11 +1070,12 @@ impl LearningContentRepository {
     ) -> Result<MaterialLibraryCleanupReport, AppError> {
         let material_library_dir = material_library_dir.as_ref();
         let materials = self.list_all_materials()?;
-        let referenced_paths = materials
+        let file_materials = materials
             .iter()
             .filter(|material| material.kind == MaterialKind::File)
-            .filter_map(|material| material.stored_path.as_deref().map(PathBuf::from))
             .collect::<Vec<_>>();
+        let referenced_paths =
+            referenced_material_library_paths(&file_materials, material_library_dir)?;
         let library_scan = scan_material_library(material_library_dir, &referenced_paths)?;
         let mut deleted_orphan_file_count = 0;
         let mut deleted_bytes = 0;
@@ -1765,6 +1842,26 @@ fn scan_material_library(
     Ok(scan)
 }
 
+fn referenced_material_library_paths(
+    file_materials: &[&MaterialItem],
+    material_library_dir: &Path,
+) -> Result<Vec<PathBuf>, AppError> {
+    let mut paths = Vec::new();
+    for material in file_materials {
+        if let Some(stored_path) = material.stored_path.as_deref() {
+            paths.push(PathBuf::from(stored_path));
+        }
+        if office_format_for_material(material).is_some() {
+            for pdf_path in derived_office_pdf_paths(material_library_dir, material)? {
+                if pdf_path.exists() {
+                    paths.push(pdf_path);
+                }
+            }
+        }
+    }
+    Ok(paths)
+}
+
 fn scan_directory_for_materials(
     current_dir: &Path,
     material_library_dir: &Path,
@@ -1954,6 +2051,7 @@ fn build_material_library_migration_plan(
     materials: &[MaterialItem],
 ) -> Result<Vec<MaterialLibraryMigrationFile>, AppError> {
     let mut plan = Vec::new();
+    let mut planned_sources = HashSet::new();
     for material in materials
         .iter()
         .filter(|item| item.kind == MaterialKind::File)
@@ -1977,13 +2075,53 @@ fn build_material_library_migration_plan(
         if !is_material_preview_path_inside_library(&target_path, target_dir)? {
             return Err(AppError::MaterialPathOutsideLibrary);
         }
+        push_material_library_migration_file(
+            &mut plan,
+            &mut planned_sources,
+            source_path,
+            target_path,
+        );
+
+        for derived_pdf_path in derived_office_pdf_paths(current_dir, material)? {
+            if !derived_pdf_path.exists() {
+                continue;
+            }
+            if !is_path_inside_directory(&derived_pdf_path, current_dir)? {
+                return Err(AppError::MaterialPathOutsideLibrary);
+            }
+            let canonical_derived_path = derived_pdf_path.canonicalize()?;
+            let derived_relative_path = canonical_derived_path
+                .strip_prefix(current_dir)
+                .map_err(|_| AppError::MaterialPathOutsideLibrary)?;
+            let target_derived_path = target_dir.join(derived_relative_path);
+            if !is_material_preview_path_inside_library(&target_derived_path, target_dir)? {
+                return Err(AppError::MaterialPathOutsideLibrary);
+            }
+            push_material_library_migration_file(
+                &mut plan,
+                &mut planned_sources,
+                derived_pdf_path,
+                target_derived_path,
+            );
+        }
+    }
+
+    Ok(plan)
+}
+
+fn push_material_library_migration_file(
+    plan: &mut Vec<MaterialLibraryMigrationFile>,
+    planned_sources: &mut HashSet<String>,
+    source_path: PathBuf,
+    target_path: PathBuf,
+) {
+    let source_key = normalize_path_string(&source_path).to_ascii_lowercase();
+    if planned_sources.insert(source_key) {
         plan.push(MaterialLibraryMigrationFile {
             source_path,
             target_path,
         });
     }
-
-    Ok(plan)
 }
 
 fn copy_material_library_file(file: &MaterialLibraryMigrationFile) -> Result<(), AppError> {
@@ -2086,6 +2224,13 @@ fn collect_material_file_cleanup_paths(
         let path = PathBuf::from(stored_path);
         if is_path_inside_directory(&path, material_library_dir)? {
             paths.push(path);
+            if office_format_for_material(item).is_some() {
+                for derived_pdf_path in derived_office_pdf_paths(material_library_dir, item)? {
+                    if derived_pdf_path.exists() {
+                        paths.push(derived_pdf_path);
+                    }
+                }
+            }
         }
     }
     Ok(paths)
@@ -2225,6 +2370,9 @@ fn guess_mime_type(path: &Path) -> Option<String> {
         "gif" => "image/gif",
         "webp" => "image/webp",
         "pdf" => "application/pdf",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         // 可内嵌播放的视频格式
         "mp4" => "video/mp4",
         "webm" => "video/webm",
@@ -2249,6 +2397,235 @@ fn preview_kind(mime_type: Option<&str>) -> MaterialPreviewKind {
         Some(value) if value.starts_with("image/") => MaterialPreviewKind::Image,
         _ => MaterialPreviewKind::Unsupported,
     }
+}
+
+fn office_format_for_path(path: &Path) -> Option<Format> {
+    let extension = path.extension()?.to_str()?;
+    Format::from_extension(extension)
+}
+
+fn office_format_for_mime_type(mime_type: Option<&str>) -> Option<Format> {
+    match mime_type {
+        Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document") => {
+            Some(Format::Docx)
+        }
+        Some("application/vnd.openxmlformats-officedocument.presentationml.presentation") => {
+            Some(Format::Pptx)
+        }
+        Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") => {
+            Some(Format::Xlsx)
+        }
+        _ => None,
+    }
+}
+
+fn office_format_for_material(material: &MaterialItem) -> Option<Format> {
+    match material.mime_type.as_deref() {
+        Some(mime_type) => office_format_for_mime_type(Some(mime_type)).or_else(|| {
+            if mime_type == "application/octet-stream" {
+                material
+                    .stored_path
+                    .as_deref()
+                    .and_then(|path| office_format_for_path(Path::new(path)))
+            } else {
+                None
+            }
+        }),
+        None => material
+            .stored_path
+            .as_deref()
+            .and_then(|path| office_format_for_path(Path::new(path))),
+    }
+}
+
+fn derived_office_pdf_cache_paths(
+    material_library_dir: &Path,
+    material: &MaterialItem,
+) -> Result<Vec<PathBuf>, AppError> {
+    ["office-pdf", XLSX_DERIVED_PDF_CACHE_DIR]
+        .into_iter()
+        .map(|cache_dir| {
+            derived_office_pdf_path_in_cache_dir(material_library_dir, material, cache_dir)
+        })
+        .collect()
+}
+
+fn derived_office_pdf_path(
+    material_library_dir: &Path,
+    material: &MaterialItem,
+) -> Result<PathBuf, AppError> {
+    let format = office_format_for_material(material);
+    let cache_dir = format
+        .map(office_derived_pdf_cache_dir)
+        .unwrap_or("office-pdf");
+    derived_office_pdf_path_in_cache_dir(material_library_dir, material, cache_dir)
+}
+
+fn derived_office_pdf_paths(
+    material_library_dir: &Path,
+    material: &MaterialItem,
+) -> Result<Vec<PathBuf>, AppError> {
+    let format = office_format_for_material(material);
+    let Some(format) = format else {
+        return Ok(Vec::new());
+    };
+
+    let mut cache_dirs = vec![office_derived_pdf_cache_dir(format)];
+    if format == Format::Xlsx {
+        cache_dirs.push("office-pdf");
+    }
+
+    cache_dirs
+        .into_iter()
+        .map(|cache_dir| {
+            derived_office_pdf_path_in_cache_dir(material_library_dir, material, cache_dir)
+        })
+        .collect()
+}
+
+fn derived_office_pdf_path_in_cache_dir(
+    material_library_dir: &Path,
+    material: &MaterialItem,
+    cache_dir: &str,
+) -> Result<PathBuf, AppError> {
+    let path = material_library_dir
+        .join(&material.learning_content_id)
+        .join(".derived")
+        .join(cache_dir)
+        .join(format!("{}.pdf", material.id));
+    if is_material_preview_path_inside_library(&path, material_library_dir)? {
+        Ok(path)
+    } else {
+        Err(AppError::MaterialPathOutsideLibrary)
+    }
+}
+
+fn office_derived_pdf_cache_dir(format: Format) -> &'static str {
+    match format {
+        Format::Xlsx => XLSX_DERIVED_PDF_CACHE_DIR,
+        Format::Docx | Format::Pptx => "office-pdf",
+    }
+}
+
+fn office_conversion_options(format: Format) -> ConvertOptions {
+    match format {
+        Format::Xlsx => ConvertOptions {
+            paper_size: Some(PaperSize::Custom {
+                width: XLSX_PREVIEW_WIDTH_PT,
+                height: XLSX_PREVIEW_HEIGHT_PT,
+            }),
+            landscape: Some(true),
+            ..ConvertOptions::default()
+        },
+        Format::Docx | Format::Pptx => ConvertOptions::default(),
+    }
+}
+
+fn is_fresh_derived_pdf(source_path: &Path, pdf_path: &Path) -> Result<bool, AppError> {
+    let Ok(pdf_metadata) = std::fs::metadata(pdf_path) else {
+        return Ok(false);
+    };
+    if !pdf_metadata.is_file() {
+        return Ok(false);
+    }
+    if !path_looks_like_complete_pdf(pdf_path)? {
+        return Ok(false);
+    }
+    let source_modified = std::fs::metadata(source_path)?
+        .modified()
+        .map_err(AppError::Io)?;
+    let pdf_modified = pdf_metadata.modified().map_err(AppError::Io)?;
+    Ok(pdf_modified >= source_modified)
+}
+
+fn write_derived_pdf_atomically(pdf_path: &Path, pdf_bytes: &[u8]) -> Result<(), AppError> {
+    if !pdf_bytes.starts_with(b"%PDF") {
+        return Err(AppError::OfficeConversionFailed);
+    }
+    let parent = pdf_path.parent().ok_or(AppError::OfficeConversionFailed)?;
+    std::fs::create_dir_all(parent)?;
+    let file_name = pdf_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or(AppError::OfficeConversionFailed)?;
+    let temp_path = parent.join(format!(".{file_name}.{}.tmp", Uuid::new_v4()));
+    if let Err(error) = std::fs::write(&temp_path, pdf_bytes) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(AppError::Io(error));
+    }
+    match path_looks_like_complete_pdf(&temp_path) {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(AppError::OfficeConversionFailed);
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(error);
+        }
+    }
+
+    let backup_path = match std::fs::metadata(pdf_path) {
+        Ok(metadata) if metadata.is_file() => {
+            let backup_path = parent.join(format!(".{file_name}.{}.bak", Uuid::new_v4()));
+            if let Err(error) = std::fs::rename(pdf_path, &backup_path) {
+                let _ = std::fs::remove_file(&temp_path);
+                return Err(AppError::Io(error));
+            }
+            Some(backup_path)
+        }
+        Ok(_) => {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(AppError::OfficeConversionFailed);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(AppError::Io(error));
+        }
+    };
+
+    if let Err(error) = std::fs::rename(&temp_path, pdf_path) {
+        let _ = std::fs::remove_file(&temp_path);
+        if let Some(backup_path) = backup_path.as_deref() {
+            if let Err(restore_error) = std::fs::rename(backup_path, pdf_path) {
+                eprintln!(
+                    "failed to restore previous derived PDF cache after replace error: {restore_error}"
+                );
+            }
+        }
+        return Err(AppError::Io(error));
+    }
+    if let Some(backup_path) = backup_path {
+        let _ = std::fs::remove_file(backup_path);
+    }
+    Ok(())
+}
+
+fn path_starts_with_pdf_header(path: &Path) -> Result<bool, AppError> {
+    let mut file = std::fs::File::open(path)?;
+    let mut header = [0; 4];
+    match file.read_exact(&mut header) {
+        Ok(()) => Ok(header == *b"%PDF"),
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(error) => Err(AppError::Io(error)),
+    }
+}
+
+fn path_looks_like_complete_pdf(path: &Path) -> Result<bool, AppError> {
+    if !path_starts_with_pdf_header(path)? {
+        return Ok(false);
+    }
+    let mut file = std::fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+    let tail_len = file_len.min(2048) as usize;
+    if tail_len == 0 {
+        return Ok(false);
+    }
+    file.seek(SeekFrom::End(-(tail_len as i64)))?;
+    let mut tail = vec![0; tail_len];
+    file.read_exact(&mut tail)?;
+    Ok(tail.windows(5).any(|window| window == b"%%EOF"))
 }
 
 fn material_open_position_kind_from_str(value: &str) -> MaterialOpenPositionKind {
@@ -2336,6 +2713,7 @@ fn status_from_str(value: &str) -> StudyStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn created_learning_content_is_restored_after_reopening_database() {
@@ -4215,9 +4593,10 @@ mod tests {
             )
             .expect("import second");
 
-        let renamed = repository
+        let rename_report = repository
             .rename_material_item(&second_material.id, "资料.txt", &material_library_dir)
             .expect("rename material");
+        let renamed = rename_report.material;
 
         let renamed_stored_path = renamed.stored_path.as_deref().expect("renamed stored path");
         assert_eq!(renamed.name, "资料.txt");
@@ -4231,9 +4610,10 @@ mod tests {
         )
         .exists());
 
-        let renamed_again = repository
+        let rename_again_report = repository
             .rename_material_item(&renamed.id, &first_material.name, &material_library_dir)
             .expect("rename duplicate material");
+        let renamed_again = rename_again_report.material;
         assert_eq!(renamed_again.name, "first (1).txt");
         assert!(std::path::Path::new(
             renamed_again
@@ -4882,9 +5262,10 @@ mod tests {
             .create_material_folder(&content.id, None, "第二章")
             .expect("create second");
 
-        let renamed = repository
+        let rename_report = repository
             .rename_material_item(&second.id, "第一章", temp_dir.path().join("materials"))
             .expect("rename folder");
+        let renamed = rename_report.material;
 
         assert_eq!(renamed.kind, MaterialKind::Folder);
         assert_eq!(renamed.name, "第一章 (1)");
@@ -4980,5 +5361,598 @@ mod tests {
         assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Video);
         assert_eq!(preview.mime_type.as_deref(), Some("video/mp4"));
         assert!(preview.data_url.is_none());
+    }
+
+    #[test]
+    fn previews_docx_pptx_and_xlsx_as_derived_pdfs() {
+        for (file_name, data) in [
+            ("讲义.docx", minimal_docx()),
+            ("课件.pptx", minimal_pptx()),
+            ("表格.xlsx", minimal_xlsx()),
+        ] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let repository =
+                LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+                    .expect("open db");
+            let material_library_dir = temp_dir.path().join("materials");
+            let source = temp_dir.path().join(file_name);
+            std::fs::write(&source, data).expect("write office sample");
+            let content = repository
+                .create(CreateLearningContentInput {
+                    name: format!("{file_name} 转换"),
+                    deadline: None,
+                    estimated_hours: None,
+                    progress: None,
+                })
+                .expect("create learning content");
+            let material = repository
+                .import_material_file(&content.id, &source, &material_library_dir, None)
+                .expect("import office material");
+
+            let preview = repository
+                .preview_material_file(&material.id, &material_library_dir)
+                .expect("preview office as pdf");
+
+            assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Pdf);
+            assert_eq!(preview.mime_type.as_deref(), Some("application/pdf"));
+            assert!(preview.data_url.is_none());
+            let asset_path = preview.asset_path.expect("derived pdf path");
+            assert_ne!(asset_path, source.to_string_lossy());
+            let pdf_path = PathBuf::from(asset_path);
+            assert!(
+                is_path_inside_directory(&pdf_path, &material_library_dir).expect("inside library")
+            );
+            assert!(std::fs::read(&pdf_path)
+                .expect("read derived pdf")
+                .starts_with(b"%PDF"));
+        }
+    }
+
+    #[test]
+    fn xlsx_preview_uses_wide_landscape_conversion_options_and_versioned_cache() {
+        let options = office_conversion_options(Format::Xlsx);
+        assert_eq!(options.landscape, Some(true));
+        assert_eq!(
+            options.paper_size,
+            Some(PaperSize::Custom {
+                width: XLSX_PREVIEW_WIDTH_PT,
+                height: XLSX_PREVIEW_HEIGHT_PT,
+            })
+        );
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source = temp_dir.path().join("宽表.xlsx");
+        std::fs::write(&source, minimal_xlsx()).expect("write xlsx");
+        let content = create_content(&repository, "宽表缓存");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import xlsx");
+
+        let preview = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("preview xlsx");
+        let pdf_path = PathBuf::from(preview.asset_path.expect("derived pdf path"));
+
+        assert!(pdf_path
+            .to_string_lossy()
+            .contains(XLSX_DERIVED_PDF_CACHE_DIR));
+        assert!(std::fs::read(&pdf_path)
+            .expect("read xlsx derived pdf")
+            .starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn renamed_xlsx_preview_keeps_office_format_from_mime_type() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source = temp_dir.path().join("预算.xlsx");
+        std::fs::write(&source, minimal_xlsx()).expect("write xlsx");
+        let content = create_content(&repository, "重命名后预览");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import xlsx");
+        let rename_report = repository
+            .rename_material_item(&material.id, "预算资料", &material_library_dir)
+            .expect("rename xlsx without extension");
+        let renamed = rename_report.material;
+
+        let preview = repository
+            .preview_material_file(&renamed.id, &material_library_dir)
+            .expect("preview renamed xlsx");
+        let pdf_path = PathBuf::from(preview.asset_path.expect("derived pdf path"));
+
+        assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Pdf);
+        assert!(pdf_path
+            .to_string_lossy()
+            .contains(XLSX_DERIVED_PDF_CACHE_DIR));
+    }
+
+    #[test]
+    fn renamed_pdf_with_xlsx_extension_does_not_enter_office_conversion() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source = temp_dir.path().join("资料.pdf");
+        std::fs::write(&source, b"%PDF ordinary\n%%EOF").expect("write pdf");
+        let content = create_content(&repository, "PDF 改名");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import pdf");
+        let rename_report = repository
+            .rename_material_item(&material.id, "看起来像表格.xlsx", &material_library_dir)
+            .expect("rename pdf with xlsx extension");
+        let renamed = rename_report.material;
+
+        let preview = repository
+            .preview_material_file(&renamed.id, &material_library_dir)
+            .expect("preview renamed pdf");
+
+        assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Pdf);
+        assert_eq!(preview.mime_type.as_deref(), Some("application/pdf"));
+        assert_eq!(
+            preview.asset_path.as_deref(),
+            renamed.stored_path.as_deref()
+        );
+    }
+
+    #[test]
+    fn docx_and_pptx_preview_keep_default_conversion_options_and_cache_dir() {
+        assert!(office_conversion_options(Format::Docx).paper_size.is_none());
+        assert!(office_conversion_options(Format::Docx).landscape.is_none());
+        assert!(office_conversion_options(Format::Pptx).paper_size.is_none());
+        assert!(office_conversion_options(Format::Pptx).landscape.is_none());
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source = temp_dir.path().join("讲义.docx");
+        std::fs::write(&source, minimal_docx()).expect("write docx");
+        let content = create_content(&repository, "默认缓存");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import docx");
+
+        let preview = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("preview docx");
+        let pdf_path = PathBuf::from(preview.asset_path.expect("derived pdf path"));
+
+        assert!(pdf_path.to_string_lossy().contains(".derived"));
+        assert!(pdf_path.to_string_lossy().contains("office-pdf"));
+        assert!(!pdf_path
+            .to_string_lossy()
+            .contains(XLSX_DERIVED_PDF_CACHE_DIR));
+    }
+
+    #[test]
+    fn office_preview_reuses_fresh_derived_pdf() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source = temp_dir.path().join("复用缓存.docx");
+        std::fs::write(&source, minimal_docx()).expect("write docx");
+        let content = repository
+            .create(CreateLearningContentInput {
+                name: "缓存复用".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import docx");
+
+        let first = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("first preview");
+        let pdf_path = PathBuf::from(first.asset_path.expect("first pdf path"));
+        let first_modified = std::fs::metadata(&pdf_path)
+            .expect("pdf metadata")
+            .modified()
+            .expect("pdf modified");
+        let second = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("second preview");
+
+        assert_eq!(second.kind, crate::models::MaterialPreviewKind::Pdf);
+        assert_eq!(
+            PathBuf::from(second.asset_path.expect("second pdf path")),
+            pdf_path
+        );
+        assert_eq!(
+            std::fs::metadata(&pdf_path)
+                .expect("pdf metadata")
+                .modified()
+                .expect("pdf modified"),
+            first_modified
+        );
+    }
+
+    #[test]
+    fn office_preview_refreshes_invalid_derived_pdf_cache() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source = temp_dir.path().join("坏缓存.docx");
+        std::fs::write(&source, minimal_docx()).expect("write docx");
+        let content = repository
+            .create(CreateLearningContentInput {
+                name: "坏缓存刷新".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import docx");
+        let pdf_path =
+            derived_office_pdf_path(&material_library_dir, &material).expect("derived pdf path");
+        std::fs::create_dir_all(pdf_path.parent().expect("derived parent"))
+            .expect("create derived parent");
+        std::fs::write(&pdf_path, b"not a pdf").expect("write invalid cache");
+
+        let preview = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("preview office");
+
+        assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Pdf);
+        assert!(std::fs::read(&pdf_path)
+            .expect("read refreshed pdf")
+            .starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn office_preview_refreshes_pdf_header_cache_without_eof_marker() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source = temp_dir.path().join("半成品缓存.docx");
+        std::fs::write(&source, minimal_docx()).expect("write docx");
+        let content = create_content(&repository, "半成品缓存刷新");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import docx");
+        let pdf_path =
+            derived_office_pdf_path(&material_library_dir, &material).expect("derived pdf path");
+        std::fs::create_dir_all(pdf_path.parent().expect("derived parent"))
+            .expect("create derived parent");
+        std::fs::write(&pdf_path, b"%PDF truncated cache").expect("write partial cache");
+
+        let preview = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("preview office");
+
+        assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Pdf);
+        let refreshed = std::fs::read(&pdf_path).expect("read refreshed pdf");
+        assert!(refreshed.starts_with(b"%PDF"));
+        assert!(refreshed.windows(5).any(|window| window == b"%%EOF"));
+    }
+
+    #[test]
+    fn derived_pdf_write_refuses_non_file_cache_target() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let pdf_path = temp_dir.path().join("derived.pdf");
+        std::fs::create_dir(&pdf_path).expect("block target with directory");
+        let result = write_derived_pdf_atomically(&pdf_path, b"%PDF next\n%%EOF");
+
+        assert!(result.is_err());
+        assert!(pdf_path.is_dir());
+    }
+
+    #[test]
+    fn renaming_office_material_removes_existing_derived_pdf_cache() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source = temp_dir.path().join("改名前缓存.docx");
+        std::fs::write(&source, minimal_docx()).expect("write docx");
+        let content = create_content(&repository, "改名前缓存");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import docx");
+        let preview = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("preview docx");
+        let pdf_path = PathBuf::from(preview.asset_path.expect("derived pdf path"));
+        assert!(pdf_path.exists());
+
+        let rename_report = repository
+            .rename_material_item(&material.id, "改名后资料", &material_library_dir)
+            .expect("rename office material");
+
+        assert_eq!(rename_report.failed_cleanup_path_count, 0);
+        assert!(!pdf_path.exists());
+    }
+
+    #[test]
+    fn renaming_office_material_reports_derived_pdf_cleanup_failure() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source = temp_dir.path().join("清理失败.docx");
+        std::fs::write(&source, minimal_docx()).expect("write docx");
+        let content = create_content(&repository, "清理失败");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import docx");
+        let preview = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("preview docx");
+        let pdf_path = PathBuf::from(preview.asset_path.expect("derived pdf path"));
+        std::fs::remove_file(&pdf_path).expect("remove derived pdf");
+        std::fs::create_dir(&pdf_path).expect("create blocking directory");
+
+        let rename_report = repository
+            .rename_material_item(&material.id, "改名后资料", &material_library_dir)
+            .expect("rename office material");
+
+        assert_eq!(rename_report.material.name, "改名后资料");
+        assert_eq!(rename_report.failed_cleanup_path_count, 1);
+        assert!(pdf_path.is_dir());
+    }
+
+    #[test]
+    fn office_derived_pdf_cache_is_not_counted_as_orphan() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source = temp_dir.path().join("缓存统计.docx");
+        std::fs::write(&source, minimal_docx()).expect("write docx");
+        let content = repository
+            .create(CreateLearningContentInput {
+                name: "缓存统计".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import docx");
+        repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("preview office");
+
+        let stats = repository
+            .get_material_library_stats(&material_library_dir)
+            .expect("get stats");
+        let cleanup = repository
+            .cleanup_material_library(&material_library_dir)
+            .expect("cleanup library");
+
+        assert_eq!(stats.orphan_file_count, 0);
+        assert_eq!(cleanup.deleted_orphan_file_count, 0);
+    }
+
+    #[test]
+    fn deleting_office_material_removes_derived_pdf_cache() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source = temp_dir.path().join("删除缓存.docx");
+        std::fs::write(&source, minimal_docx()).expect("write docx");
+        let content = repository
+            .create(CreateLearningContentInput {
+                name: "删除缓存".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import docx");
+        let preview = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("preview office");
+        let pdf_path = PathBuf::from(preview.asset_path.expect("derived pdf path"));
+
+        repository
+            .delete_material_item(&material.id, &material_library_dir)
+            .expect("delete office material");
+
+        assert!(!pdf_path.exists());
+    }
+
+    #[test]
+    fn deleting_xlsx_material_removes_new_and_legacy_derived_pdf_caches() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source = temp_dir.path().join("删除宽表缓存.xlsx");
+        std::fs::write(&source, minimal_xlsx()).expect("write xlsx");
+        let content = create_content(&repository, "删除宽表缓存");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import xlsx");
+        let preview = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("preview xlsx");
+        let new_pdf_path = PathBuf::from(preview.asset_path.expect("derived pdf path"));
+        let legacy_pdf_path =
+            derived_office_pdf_path_in_cache_dir(&material_library_dir, &material, "office-pdf")
+                .expect("legacy pdf path");
+        std::fs::create_dir_all(legacy_pdf_path.parent().expect("legacy parent"))
+            .expect("create legacy parent");
+        std::fs::write(&legacy_pdf_path, b"%PDF old xlsx cache").expect("write legacy cache");
+
+        repository
+            .delete_material_item(&material.id, &material_library_dir)
+            .expect("delete xlsx material");
+
+        assert!(!new_pdf_path.exists());
+        assert!(!legacy_pdf_path.exists());
+    }
+
+    #[test]
+    fn material_library_migration_includes_office_derived_pdf_cache() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let current_library_dir = temp_dir
+            .path()
+            .join("current")
+            .join("StudySeqData")
+            .join("materials");
+        let target_library_dir = temp_dir
+            .path()
+            .join("target")
+            .join("StudySeqData")
+            .join("materials");
+        let source = temp_dir.path().join("迁移缓存.docx");
+        std::fs::write(&source, minimal_docx()).expect("write docx");
+        let content = create_content(&repository, "迁移缓存");
+        let material = repository
+            .import_material_file(&content.id, &source, &current_library_dir, None)
+            .expect("import docx");
+        let preview = repository
+            .preview_material_file(&material.id, &current_library_dir)
+            .expect("preview docx");
+        let old_pdf_path = PathBuf::from(preview.asset_path.expect("derived pdf path"));
+        assert!(old_pdf_path.exists());
+        let materials = repository
+            .get_detail(&content.id)
+            .expect("get detail")
+            .expect("detail")
+            .materials;
+
+        let plan =
+            migrate_material_library_files(&current_library_dir, &target_library_dir, &materials)
+                .expect("build and copy migration plan");
+        let new_pdf_path = target_library_dir
+            .join(&material.learning_content_id)
+            .join(".derived")
+            .join("office-pdf")
+            .join(format!("{}.pdf", material.id));
+
+        assert!(new_pdf_path.exists());
+        assert!(std::fs::read(&new_pdf_path)
+            .expect("read migrated derived pdf")
+            .starts_with(b"%PDF"));
+
+        let failed = cleanup_migrated_material_files(&plan, &current_library_dir);
+
+        assert_eq!(failed, 0);
+        assert!(!old_pdf_path.exists());
+    }
+
+    #[test]
+    fn old_office_extensions_remain_unsupported() {
+        for file_name in ["旧文档.doc", "旧课件.ppt", "旧表格.xls"] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let repository =
+                LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+                    .expect("open db");
+            let material_library_dir = temp_dir.path().join("materials");
+            let source = temp_dir.path().join(file_name);
+            std::fs::write(&source, b"legacy office bytes").expect("write old office");
+            let content = repository
+                .create(CreateLearningContentInput {
+                    name: file_name.to_string(),
+                    deadline: None,
+                    estimated_hours: None,
+                    progress: None,
+                })
+                .expect("create learning content");
+            let material = repository
+                .import_material_file(&content.id, &source, &material_library_dir, None)
+                .expect("import old office");
+
+            let preview = repository
+                .preview_material_file(&material.id, &material_library_dir)
+                .expect("preview old office");
+
+            assert_eq!(
+                preview.kind,
+                crate::models::MaterialPreviewKind::Unsupported
+            );
+            assert!(preview.asset_path.is_none());
+        }
+    }
+
+    fn minimal_docx() -> Vec<u8> {
+        let docx = docx_rs::Docx::new().add_paragraph(
+            docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text("StudySeq DOCX sample")),
+        );
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        docx.build().pack(&mut cursor).expect("pack docx");
+        cursor.into_inner()
+    }
+
+    fn minimal_pptx() -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("[Content_Types].xml", options)
+            .expect("content types");
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+</Types>"#).expect("write content types");
+        zip.start_file("_rels/.rels", options).expect("rels");
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"#).expect("write rels");
+        zip.start_file("ppt/presentation.xml", options)
+            .expect("presentation");
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>
+  <p:sldSz cx="9144000" cy="6858000"/>
+</p:presentation>"#).expect("write presentation");
+        zip.start_file("ppt/_rels/presentation.xml.rels", options)
+            .expect("presentation rels");
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>"#).expect("write presentation rels");
+        zip.start_file("ppt/slides/slide1.xml", options)
+            .expect("slide");
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+      <p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>
+      <p:sp>
+        <p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+        <p:spPr><a:xfrm><a:off x="914400" y="914400"/><a:ext cx="7315200" cy="914400"/></a:xfrm></p:spPr>
+        <p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>StudySeq PPTX sample</a:t></a:r></a:p></p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>"#).expect("write slide");
+        zip.finish().expect("finish pptx").into_inner()
+    }
+
+    fn minimal_xlsx() -> Vec<u8> {
+        let mut book = umya_spreadsheet::new_file_empty_worksheet();
+        let mut sheet = umya_spreadsheet::Worksheet::default();
+        sheet.set_name("Sheet1");
+        sheet.get_cell_mut("A1").set_value("StudySeq XLSX sample");
+        book.add_sheet(sheet).expect("add sheet");
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        umya_spreadsheet::writer::xlsx::write_writer(&book, &mut buffer).expect("write xlsx");
+        buffer.into_inner()
     }
 }

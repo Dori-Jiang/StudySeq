@@ -9,6 +9,8 @@ import {
   VideoPreview,
 } from "./VideoPreview";
 
+const XLSX_DEFAULT_READING_SCALE = 1.4;
+
 export function MaterialPreviewPane({
   material,
   preview,
@@ -61,6 +63,9 @@ export function MaterialPreviewPane({
         sourceUrl={sourceUrl}
         initialPageNumber={pdfState?.pageNumber}
         initialScale={pdfState?.scale}
+        minimumInitialScale={
+          isModernExcelMaterial(material) ? XLSX_DEFAULT_READING_SCALE : undefined
+        }
         onStateChange={onPdfStateChange}
       />
     );
@@ -85,5 +90,34 @@ export function MaterialPreviewPane({
     return <p className="empty-state">{UNSUPPORTED_VIDEO_MESSAGE}</p>;
   }
 
+  if (isLegacyOfficeMaterial(material)) {
+    return <p className="empty-state">暂不支持旧版 Office 格式，请导入 DOCX / PPTX / XLSX</p>;
+  }
+
   return <p className="empty-state">暂不支持预览这种资料</p>;
+}
+
+function shouldUseFileNameFallback(material: MaterialItem) {
+  return material.mimeType === null || material.mimeType === "application/octet-stream";
+}
+
+function materialExtension(material: MaterialItem) {
+  return material.name.split(".").pop()?.toLowerCase();
+}
+
+function isLegacyOfficeMaterial(material: MaterialItem) {
+  if (!shouldUseFileNameFallback(material)) return false;
+  const extension = materialExtension(material);
+  return extension === "doc" || extension === "ppt" || extension === "xls";
+}
+
+function isModernExcelMaterial(material: MaterialItem) {
+  if (
+    material.mimeType ===
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  ) {
+    return true;
+  }
+  if (!shouldUseFileNameFallback(material)) return false;
+  return materialExtension(material) === "xlsx";
 }

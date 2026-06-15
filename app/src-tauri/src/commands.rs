@@ -12,8 +12,8 @@ use crate::models::{
     MaterialLibraryCleanupReport, MaterialLibraryLocation, MaterialLibraryLocationCandidate,
     MaterialLibraryLocationChangeInput, MaterialLibraryLocationChangeReport, MaterialLibraryStats,
     MaterialPreview, MaterialReadingState, MaterialSubtreeCount, MoveMaterialItemInput, Note,
-    RenameMaterialItemInput, SaveMaterialReadingStateInput, SaveVideoPlaybackStateInput,
-    UpdateLearningContentInput, UpdateNoteInput,
+    RenameMaterialItemInput, RenameMaterialItemReport, SaveMaterialReadingStateInput,
+    SaveVideoPlaybackStateInput, UpdateLearningContentInput, UpdateNoteInput,
 };
 use crate::repository::LearningContentRepository;
 use crate::{AppState, PendingMaterialLibraryLocation};
@@ -250,7 +250,7 @@ pub fn cleanup_material_library(
 pub fn rename_material_item(
     state: State<'_, AppState>,
     input: RenameMaterialItemInput,
-) -> Result<MaterialItem, ApiError> {
+) -> Result<RenameMaterialItemReport, ApiError> {
     let repository = state
         .repository
         .lock()
@@ -643,7 +643,7 @@ fn rename_material_item_in_repository(
     repository: &LearningContentRepository,
     input: RenameMaterialItemInput,
     material_library_dir: &std::path::Path,
-) -> Result<MaterialItem, ApiError> {
+) -> Result<RenameMaterialItemReport, ApiError> {
     repository
         .rename_material_item(&input.material_id, &input.name, material_library_dir)
         .map_err(ApiError::from)
@@ -1054,7 +1054,8 @@ mod tests {
         assert_eq!(saved_video_state.video_position_seconds, Some(42.5));
         assert_eq!(loaded_state.scale, 1.5);
         assert_eq!(stats.orphan_file_count, 1);
-        assert_eq!(renamed.name, "重命名.pdf");
+        assert_eq!(renamed.material.name, "重命名.pdf");
+        assert_eq!(renamed.failed_cleanup_path_count, 0);
         assert_eq!(cleanup.deleted_orphan_file_count, 1);
     }
 

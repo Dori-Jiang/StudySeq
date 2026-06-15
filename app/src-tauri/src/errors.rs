@@ -37,6 +37,10 @@ pub enum AppError {
     MaterialLibraryMigrationFailed,
     #[error("资料重命名回滚失败")]
     MaterialRenameRollbackFailed,
+    #[error("Office 资料过大，无法转换")]
+    OfficeConversionTooLarge,
+    #[error("Office 资料转换失败")]
+    OfficeConversionFailed,
     #[error("笔记标题不能为空")]
     EmptyNoteTitle,
     #[error("笔记不存在")]
@@ -84,6 +88,8 @@ impl AppError {
             AppError::InvalidMaterialLibraryLocation => "invalid_material_library_location",
             AppError::MaterialLibraryMigrationFailed => "material_library_migration_failed",
             AppError::MaterialRenameRollbackFailed => "material_rename_rollback_failed",
+            AppError::OfficeConversionTooLarge => "office_conversion_too_large",
+            AppError::OfficeConversionFailed => "office_conversion_failed",
             AppError::EmptyNoteTitle => "empty_note_title",
             AppError::NoteNotFound => "note_not_found",
             AppError::Database(_) => "database_error",
@@ -114,6 +120,10 @@ impl AppError {
             AppError::MaterialLibraryMigrationFailed => "资料库迁移失败，原资料库仍保持可用",
             AppError::MaterialRenameRollbackFailed => {
                 "资料重命名失败，且文件回滚未完成，请先不要继续操作该资料"
+            }
+            AppError::OfficeConversionTooLarge => "Office 资料过大，无法在 App 内转换",
+            AppError::OfficeConversionFailed => {
+                "Office 资料转换失败，请确认文件未损坏或尝试重新导入"
             }
             AppError::EmptyNoteTitle => "笔记标题不能为空",
             AppError::NoteNotFound => "笔记不存在",

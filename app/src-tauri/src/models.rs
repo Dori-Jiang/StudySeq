@@ -215,6 +215,13 @@ pub struct RenameMaterialItemInput {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RenameMaterialItemReport {
+    pub material: MaterialItem,
+    pub failed_cleanup_path_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Note {
     pub id: String,
     pub learning_content_id: String,

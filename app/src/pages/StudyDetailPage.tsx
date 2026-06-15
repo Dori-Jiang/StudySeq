@@ -613,10 +613,11 @@ export function StudyDetailPage() {
     if (nextName === null) return;
 
     try {
-      const renamed = await renameMaterialItem({
+      const renameReport = await renameMaterialItem({
         materialId: material.id,
         name: nextName,
       });
+      const { material: renamed } = renameReport;
       setDetail((currentDetail) =>
         currentDetail
           ? {
@@ -631,7 +632,11 @@ export function StudyDetailPage() {
         setSelectedMaterialPreview(null);
         void handleOpenMaterial(renamed);
       }
-      setError(null);
+      setError(
+        renameReport.failedCleanupPathCount > 0
+          ? `资料已重命名，但有 ${renameReport.failedCleanupPathCount} 个 Office 预览缓存未清理，可稍后在资料库清理中重试。`
+          : null,
+      );
     } catch (renameError: unknown) {
       setError(toUserMessage(renameError));
     }

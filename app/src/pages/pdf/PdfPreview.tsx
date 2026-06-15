@@ -23,6 +23,7 @@ import {
 import type {
   PdfDocumentProxy,
   PdfPageProxy,
+  PdfViewport,
   PdfRenderTask,
   RenderedPdfPage,
 } from "./pdfDocumentCache";
@@ -34,16 +35,32 @@ import type { PdfOutlineNode } from "./pdfOutline";
 const PDF_STAGE_HORIZONTAL_PADDING = 56;
 // 阅读区极窄时保底的页面显示宽度
 const PDF_MIN_FIT_WIDTH = 160;
+const DEFAULT_PAGE_SIZE = {
+  width: PDF_BASE_WIDTH,
+  height: PDF_BASE_HEIGHT,
+};
+
+function resolveInitialScale(
+  initialScale: number | undefined,
+  minimumInitialScale: number | undefined,
+) {
+  const nextScale = clampScale(initialScale ?? 1);
+  if (minimumInitialScale === undefined) return nextScale;
+
+  return Math.max(nextScale, clampScale(minimumInitialScale));
+}
 
 export function PdfPreview({
   sourceUrl,
   initialPageNumber,
   initialScale,
+  minimumInitialScale,
   onStateChange,
 }: {
   sourceUrl: string;
   initialPageNumber?: number;
   initialScale?: number;
+  minimumInitialScale?: number;
   onStateChange?: (state: { pageNumber: number; scale: number }) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -56,8 +73,10 @@ export function PdfPreview({
   } | null>(null);
   const [pageNumber, setPageNumber] = useState(() => Math.max(1, initialPageNumber ?? 1));
   const [pageCount, setPageCount] = useState<number | null>(null);
-  const [scale, setScale] = useState(() => clampScale(initialScale ?? 1));
-  const [renderScale, setRenderScale] = useState(() => clampScale(initialScale ?? 1));
+  const [scale, setScale] = useState(() => resolveInitialScale(initialScale, minimumInitialScale));
+  const [renderScale, setRenderScale] = useState(() =>
+    resolveInitialScale(initialScale, minimumInitialScale),
+  );
   const pageCacheRef = useRef<Map<number, Promise<PdfPageProxy>>>(new Map());
   const renderedPageCacheRef = useRef<Map<string, Promise<RenderedPdfPage>>>(new Map());
   const lastPrefetchedPageRef = useRef<number | null>(null);
@@ -66,15 +85,16 @@ export function PdfPreview({
   const [hasLoadFailed, setHasLoadFailed] = useState(false);
   // 适应宽度基准：100% 缩放时页面铺满阅读区可用宽度；环境不支持测量时退回 A4 固定宽
   const [fitWidth, setFitWidth] = useState(PDF_BASE_WIDTH);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
 
   const sheetWidth = fitWidth * scale;
-  const sheetHeight = sheetWidth * (PDF_BASE_HEIGHT / PDF_BASE_WIDTH);
-  const displayScale = sheetWidth / PDF_BASE_WIDTH;
+  const sheetHeight = sheetWidth * (pageSize.height / pageSize.width);
+  const displayScale = sheetWidth / pageSize.width;
   const displayedPageNumber =
     pageCount === null ? Math.max(1, pageNumber) : clampPageNumber(pageNumber, pageCount);
 
   useEffect(() => {
-    const nextScale = clampScale(initialScale ?? 1);
+    const nextScale = resolveInitialScale(initialScale, minimumInitialScale);
     pageCacheRef.current.clear();
     renderedPageCacheRef.current.clear();
     lastPrefetchedPageRef.current = null;
@@ -82,10 +102,11 @@ export function PdfPreview({
     setPageCount(null);
     setScale(nextScale);
     setRenderScale(nextScale);
+    setPageSize(DEFAULT_PAGE_SIZE);
     setIsOutlineOpen(false);
     setOutlineNodes(null);
     setHasLoadFailed(false);
-  }, [sourceUrl, initialPageNumber, initialScale]);
+  }, [sourceUrl, initialPageNumber, initialScale, minimumInitialScale]);
 
   useEffect(() => {
     if (!isOutlineOpen || outlineNodes !== null) return;
@@ -132,12 +153,15 @@ export function PdfPreview({
       if (cachedRenderedPage) {
         const renderedPage = await cachedRenderedPage;
         if (isCancelled) return;
+        updatePageSizeFromRenderedViewport(renderedPage.viewport, renderScale);
         drawRenderedPage(canvas, renderedPage);
         preRenderAdjacentPagesForPageChange(document, safePageNumber, renderScale);
         return;
       }
 
       const page = await getCachedPage(pageCacheRef.current, document, safePageNumber);
+      const baseViewport = page.getViewport({ scale: 1 });
+      updatePageSize(baseViewport);
       const viewport = page.getViewport({ scale: renderScale * PDF_RENDER_SCALE_FACTOR });
       canvas.width = viewport.width;
       canvas.height = viewport.height;
@@ -163,6 +187,18 @@ export function PdfPreview({
         safePageNumber,
         nextRenderScale,
       );
+    }
+
+    function updatePageSizeFromRenderedViewport(
+      viewport: PdfViewport,
+      nextRenderScale: number,
+    ) {
+      const viewportScale = nextRenderScale * PDF_RENDER_SCALE_FACTOR;
+      if (viewportScale <= 0) return;
+      updatePageSize({
+        width: viewport.width / viewportScale,
+        height: viewport.height / viewportScale,
+      });
     }
 
     renderPdf().catch(() => {
@@ -260,6 +296,23 @@ export function PdfPreview({
     setPageNumber(clampPageNumber(targetPageNumber, pageCount));
   }
 
+  function updatePageSize(nextPageSize: PdfViewport) {
+    if (nextPageSize.width <= 0 || nextPageSize.height <= 0) return;
+    setPageSize((currentSize) => {
+      if (
+        Math.abs(currentSize.width - nextPageSize.width) < 0.01 &&
+        Math.abs(currentSize.height - nextPageSize.height) < 0.01
+      ) {
+        return currentSize;
+      }
+
+      return {
+        width: nextPageSize.width,
+        height: nextPageSize.height,
+      };
+    });
+  }
+
   return (
     <div className="pdf-viewer">
       <div className="pdf-toolbar" aria-label="PDF 控制">
@@ -321,7 +374,7 @@ export function PdfPreview({
         >
           <div className="pdf-page-stage">
             <div
-              aria-label="A4 PDF 页面"
+              aria-label="PDF 页面"
               className="pdf-page-sheet"
               style={{
                 width: `${sheetWidth}px`,

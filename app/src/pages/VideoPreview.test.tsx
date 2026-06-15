@@ -234,15 +234,46 @@ describe("MaterialPreviewPane 视频分支", () => {
     ).toBeInTheDocument();
   });
 
-  it("非视频的不支持格式仍显示通用文案", () => {
+  it("旧版 Office 格式显示专属文案", () => {
     render(
       <MaterialPreviewPane
-        material={buildMaterial({ name: "report.docx", mimeType: "application/octet-stream" })}
+        material={buildMaterial({ name: "report.doc", mimeType: "application/octet-stream" })}
         preview={buildPreview({ kind: "unsupported", mimeType: "application/octet-stream" })}
       />,
     );
 
+    expect(
+      screen.getByText("暂不支持旧版 Office 格式，请导入 DOCX / PPTX / XLSX"),
+    ).toBeInTheDocument();
+  });
+
+  it("有明确 mimeType 的资料不会只因显示名像旧版 Office 而显示旧版 Office 文案", () => {
+    render(
+      <MaterialPreviewPane
+        material={buildMaterial({ name: "renamed.doc", mimeType: "application/pdf" })}
+        preview={buildPreview({ kind: "unsupported", mimeType: "application/pdf" })}
+      />,
+    );
+
     expect(screen.getByText("暂不支持预览这种资料")).toBeInTheDocument();
+    expect(
+      screen.queryByText("暂不支持旧版 Office 格式，请导入 DOCX / PPTX / XLSX"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("转换后的 Office 资料复用 PDF 预览分支", () => {
+    render(
+      <MaterialPreviewPane
+        material={buildMaterial({ name: "report.docx", mimeType: "application/octet-stream" })}
+        preview={buildPreview({
+          kind: "pdf",
+          mimeType: "application/pdf",
+          assetPath: "C:\\appdata\\materials\\lc-1\\.derived\\office-pdf\\mat.pdf",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("正在加载 PDF")).toBeInTheDocument();
   });
 
   it("资料 A 播放失败后切换到资料 B 重新显示播放器", () => {

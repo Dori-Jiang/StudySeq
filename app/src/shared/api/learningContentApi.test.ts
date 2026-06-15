@@ -550,14 +550,17 @@ describe("learningContentApi", () => {
         updatedAt: "2026-06-09T00:03:00Z",
       })
       .mockResolvedValueOnce({
-        id: "mat-pdf",
-        learningContentId: "study-1",
-        name: "重命名.pdf",
-        storedPath: "C:/app/重命名.pdf",
-        mimeType: "application/pdf",
-        sizeBytes: 4,
-        createdAt: "2026-06-09T00:00:00Z",
-        updatedAt: "2026-06-09T00:04:00Z",
+        material: {
+          id: "mat-pdf",
+          learningContentId: "study-1",
+          name: "重命名.pdf",
+          storedPath: "C:/app/重命名.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 4,
+          createdAt: "2026-06-09T00:00:00Z",
+          updatedAt: "2026-06-09T00:04:00Z",
+        },
+        failedCleanupPathCount: 1,
       });
 
     const loadedState = await getMaterialReadingState("mat-pdf");
@@ -606,6 +609,7 @@ describe("learningContentApi", () => {
     expect(savedVideoState.videoPositionSeconds).toBe(42.5);
     expect(stats.orphanFileCount).toBe(1);
     expect(cleanup.deletedBytes).toBe(6);
-    expect(renamed.name).toBe("重命名.pdf");
+    expect(renamed.material.name).toBe("重命名.pdf");
+    expect(renamed.failedCleanupPathCount).toBe(1);
   });
 });

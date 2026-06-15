@@ -4,9 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PdfPreview } from "./PdfPreview";
 
+let mockedPageSize = { width: 100, height: 140 };
 const pdfGetPageMock = vi.fn(() =>
   Promise.resolve({
-    getViewport: () => ({ width: 100, height: 140 }),
+    getViewport: ({ scale }: { scale: number }) => ({
+      width: mockedPageSize.width * scale,
+      height: mockedPageSize.height * scale,
+    }),
     render: () => ({ promise: Promise.resolve() }),
   }),
 );
@@ -49,6 +53,7 @@ function largeDataUrl() {
 }
 
 beforeEach(() => {
+  mockedPageSize = { width: 100, height: 140 };
   pdfGetOutlineMock.mockReset();
 });
 
@@ -158,6 +163,7 @@ describe("PdfPreview 目录接线", () => {
 
     try {
       render(<PdfPreview sourceUrl={uniquePdfSourceUrl()} />);
+      await screen.findByText("第 1 / 5 页");
 
       act(() => {
         resizeCallback?.(
@@ -167,10 +173,65 @@ describe("PdfPreview 目录接线", () => {
       });
 
       // 456px 阅读区减去页面舞台 56px 内边距 → 页面宽 400px（100% = 适应宽度）
-      expect(screen.getByLabelText("A4 PDF 页面").style.width).toBe("400px");
+      const page = screen.getByLabelText("PDF 页面");
+      expect(page.style.width).toBe("400px");
+      expect(page.style.height).toBe("560px");
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("横版 PDF 页面按真实页面比例适配阅读区", async () => {
+    let resizeCallback: ResizeObserverCallback | null = null;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          resizeCallback = callback;
+        }
+
+        observe() {}
+
+        unobserve() {}
+
+        disconnect() {}
+      },
+    );
+    mockedPageSize = { width: 160, height: 90 };
+    pdfGetOutlineMock.mockResolvedValue(null);
+
+    try {
+      render(<PdfPreview sourceUrl={uniquePdfSourceUrl()} />);
+      await screen.findByText("第 1 / 5 页");
+
+      act(() => {
+        resizeCallback?.(
+          [{ contentRect: { width: 696 } } as ResizeObserverEntry],
+          {} as ResizeObserver,
+        );
+      });
+
+      const page = screen.getByLabelText("PDF 页面");
+      expect(page.style.width).toBe("640px");
+      expect(page.style.height).toBe("360px");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("初始缩放低于阅读下限时按下限打开", async () => {
+    pdfGetOutlineMock.mockResolvedValue(null);
+
+    render(
+      <PdfPreview
+        sourceUrl={uniquePdfSourceUrl()}
+        initialScale={0.7}
+        minimumInitialScale={1.4}
+      />,
+    );
+    await screen.findByText("第 1 / 5 页");
+
+    expect(screen.getByText("140%")).toBeInTheDocument();
   });
 
   it("再次点击目录按钮收起面板", async () => {

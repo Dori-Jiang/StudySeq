@@ -142,6 +142,11 @@ export type RenameMaterialItemInput = {
   name: string;
 };
 
+export type RenameMaterialItemReport = {
+  material: MaterialItem;
+  failedCleanupPathCount: number;
+};
+
 export type Note = {
   id: string;
   learningContentId: string;

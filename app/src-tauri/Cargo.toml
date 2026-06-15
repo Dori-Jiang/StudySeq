@@ -1,6 +1,6 @@
 [package]
 name = "studyseq"
-version = "1.7.0"
+version = "1.8.1"
 description = "StudySeq desktop app"
 authors = ["StudySeq"]
 edition = "2021"
@@ -16,6 +16,7 @@ tauri-build = { version = "2.5.3", features = [] }
 chardetng = "1.0.0"
 chrono = { version = "0.4.42", features = ["serde"] }
 encoding_rs = "0.8.35"
+office2pdf = "=0.6.0"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -25,4 +26,7 @@ thiserror = "2.0.17"
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+docx-rs = "0.4.20"
 tempfile = "3.23.0"
+umya-spreadsheet = "2.3.3"
+zip = "4.6.1"

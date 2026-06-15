@@ -10,9 +10,9 @@
 
 ## 当前阶段
 
-当前进入 **V1.6 开发、验证、真实 App 手测完成，等待提交与 tag 收口阶段**。
+当前进入 **V1.7 开发、验证与发包收口完成阶段**。
 
-V1.5 已完成自动化开发和用户手测；V1.6 已按“资料库安全边界与隐私收口”完成自动化实现、自动化验证、正式 release 发包和真实 App 手测。收口审查后的导入资料链路补充 smoke test 已通过，下一步可提交、推送并创建 V1.6 tag。
+V1.5 已完成自动化开发和用户手测；V1.6 已按“资料库安全边界与隐私收口”完成自动化实现、自动化验证、正式 release 发包和真实 App 手测。V1.7 已按“当前学习内容资料定位增强”完成自动化实现、自动化验证、隔离真实 App 手测、debug/release 发包和文档收口。
 
 V1.6 不做新学习功能，不做大 UI 改版，不新增 SQLite schema；优先处理 V1.5 安全审查留下的两个后续项：资料库位置设置不再让前端传任意路径字符串，资料库清理结果不再向前端返回失败绝对路径。
 
@@ -241,6 +241,51 @@ V1.6 不进入：
 - 打开原文件、打开所在文件夹。
 - SQLite 加密、云同步、账号、多端。
 - 大设置中心、主题设置、快捷键设置。
+- 恢复旧独立阅读页或 `/studies/:studyId/read` 路由。
+
+### V1.7：当前学习内容资料定位增强
+
+V1.7 目标：让用户在详情页资料区从当前学习内容的整棵资料树中快速定位资料，并能直接进入资料所在文件夹或打开资料。
+
+V1.7 独立开发文档：[`studyseq-v1.7-development-plan.md`](studyseq-v1.7-development-plan.md)。
+
+当前状态（2026-06-15）：V1.7 A1-A6 自动化实现、自动化验证和隔离真实 App 手测已完成，版本号已统一为 `1.7.0`；debug 包和正式 release 包均已生成。正式功能只改前端资料区搜索、预览失败终态和 PDF 返回保存，不新增 Rust command、不新增 SQLite schema、不提升 `PRAGMA user_version`。
+
+V1.7 成功口径：
+
+- 资料区搜索支持 `当前文件夹 / 当前学习内容` 两档范围。
+- 当前文件夹模式保持 V1.5 行为，只搜索当前层直接子项。
+- 当前学习内容模式基于 `LearningDetail.materials` 递归搜索资料名、文件夹名和扩展名，不读取正文、不扫描磁盘。
+- 搜索结果显示资料名、类型和逻辑资料树路径，不展示 `storedPath`、AppData、盘符、UUID 物理目录或 asset URL。
+- 点击文件结果会切到文件父文件夹并打开详情页内嵌阅读；点击文件夹结果只进入文件夹，不调用预览。
+- pending-deleted 子树不会出现在当前学习内容搜索结果中。
+- 预览失败后不再停留在“正在加载资料预览”。
+- PDF 翻页或缩放后立即返回资料列表时，会保存最后阅读状态。
+
+当前实现说明：
+
+- 递归搜索、逻辑路径和防环保护在 `app/src/pages/materials/materialTree.ts` 中以纯函数实现。
+- `MaterialExplorer` 增加搜索范围分段控件；当前学习内容搜索态使用紧凑列表，空搜索且类型为全部时不铺出全库。
+- `StudyDetailPage` 增加资料预览失败终态，并在返回资料列表时 flush 待保存 PDF 页码 / 缩放。
+- `office2pdf` 仍只保留在 `spikes/office2pdf/`，不接 App 依赖、Tauri command、正式 UI 或 release gate。
+
+V1.7 验证记录（2026-06-15）：
+
+- 自动化验证通过：`npm.cmd test`（11 文件、154 测试）、V1.7 目标测试（3 文件、71 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`cargo fmt --check`、`cargo test`（72 测试）、`cargo clippy -- -D warnings`。
+- Tauri 官方构建通过：`npm.cmd run tauri -- build --debug`、`npm.cmd run tauri -- build`；生成 `StudySeq_1.7.0_x64_en-US.msi` 和 `StudySeq_1.7.0_x64-setup.exe`。
+- `spikes/office2pdf` 隔离自检通过：`cargo fmt --check`、`cargo check`、`cargo run`；最小 PPTX 转 PDF warnings 为 0。
+- 真实 App 手测使用临时 identifier `com.studyseq.desktop.v17test` 和隔离数据目录完成；已验证当前文件夹不递归、当前学习内容递归搜索根/一级/二级资料、`pdf/.pdf/PDF` 扩展名匹配、逻辑路径不泄露本机路径、点击文件打开内嵌 PDF、返回后停在父文件夹、PDF 缩放 `120%` 写入 SQLite、点击文件夹不预览、pending-deleted 子树隐藏且撤回恢复、预览失败不再卡 loading。
+- 临时 App 关闭后已重新生成官方 debug/release 构建产物，避免保留测试 identifier 产物。
+
+V1.7 不进入：
+
+- 全文搜索、PDF 文本抽取、OCR。
+- 跨学习内容全局搜索。
+- Office 预览、Office 转 PDF、Office 外部打开兜底。
+- 打包 LibreOffice。
+- 整文件夹导入、目录同步、文件监听。
+- 打开原文件、打开所在文件夹。
+- 新增 SQLite schema、SQLite FTS 或 `PRAGMA user_version` 迁移。
 - 恢复旧独立阅读页或 `/studies/:studyId/read` 路由。
 
 ### V2：后续扩展候选
@@ -679,8 +724,8 @@ npm.cmd run tauri -- build
 
 ## 下一步
 
-1. 提交、推送，并按项目节奏创建 V1.6 tag。
-2. 进入 V1.7 前先确认版本策略和范围，避免在 V1.6 收口后继续追加功能。
+1. 提交、推送，并按项目节奏创建 V1.7 tag。
+2. 后续版本继续评估 Office 转 PDF 产品化、全文搜索或跨学习内容搜索，但不要并入 V1.7。
 
 ## 推迟项
 
@@ -697,7 +742,6 @@ npm.cmd run tauri -- build
 - 新视频格式支持。
 - PDF 全文搜索。
 - 复杂资料树和拖拽移动。
-- 递归搜索下级文件夹资料名称。
 - 全局资料搜索中心。
 - 跨学习内容移动资料。
 - 笔记分组。
@@ -817,3 +861,5 @@ npm.cmd run tauri -- build
 - 2026-06-14：召集 `planner`、`architect`、`ui-ux-designer`、`security-reviewer` 规划 V1.6；结论收敛为“资料库安全边界与隐私收口”，不做新学习功能或大 UI 改版；新增 V1.6 独立开发计划 `product/docs/studyseq-v1.6-development-plan.md`，阶段为 A1 资料库位置合同、A2 Rust token 与迁移闭环、A3 清理报告脱敏、A4 前端 API 与体验适配、A5 回归验证与文档收口。
 - 2026-06-15：完成 V1.6 A1-A5 自动化实现与自动化验证：资料库位置设置改为 Rust prepare + 一次性 token + apply；前端不再提交任意路径字符串；cleanup 报告改为 `failedPathCount`；删除副本残留和迁移旧副本残留返回 `failedCleanupPathCount`；scope / state 更新失败会尽力回滚 DB setting 与 `stored_path`；版本号统一为 `1.6.0`；用户完成真实 App 手测，未发现问题。
 - 2026-06-15：V1.6 收口审查修复三个阻塞项：资料重命名回滚失败不再静默吞错；资料导入改为 Rust command 内部打开文件选择器，前端不再持有源文件路径 authority；`MaterialItem.originalPath` 不再序列化给前端。重新验证通过：前端 137 测试、Rust 72 测试、typecheck、build、fmt、clippy、Tauri debug build、Tauri release build 均通过；debug 包和正式 release 包均已重新生成；导入资料链路补充真实 App smoke test 已通过，V1.6 可进入提交/tag 收口。
+- 2026-06-15：召集 `planner`、`architect`、`react-reviewer`、`security-reviewer`、`tdd-guide` 评估 V1.7；结论收敛为“当前学习内容资料定位增强”，即资料区支持 `当前文件夹 / 当前学习内容` 两档资料名和扩展名搜索，结果只显示逻辑资料树路径，不做全文搜索、PDF 提取、OCR 或跨学习内容全局搜索。新增 V1.7 独立开发计划 `product/docs/studyseq-v1.7-development-plan.md`；`office2pdf` 只保留为 `spikes/office2pdf/` 隔离实验，不进入正式功能和 release gate。
+- 2026-06-15：完成 V1.7 自动化实现、自动化验证、隔离真实 App 手测和发包验证：当前学习内容搜索可递归命中根/一级/二级资料，结果只显示逻辑路径；点击嵌套 PDF 可打开内嵌阅读并返回父文件夹；PDF 缩放快速返回会写入阅读状态；pending-deleted 子树在搜索中隐藏且撤回后恢复；预览失败显示失败终态。重新验证通过：前端 154 测试、Rust 72 测试、typecheck、build、fmt、clippy、Tauri debug build、Tauri release build；`spikes/office2pdf` 自检仍通过且保持隔离。

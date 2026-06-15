@@ -83,6 +83,9 @@ export function StudyDetailPage() {
   const [selectedMaterialPreview, setSelectedMaterialPreview] = useState<MaterialPreview | null>(
     null,
   );
+  const [selectedMaterialPreviewError, setSelectedMaterialPreviewError] = useState<string | null>(
+    null,
+  );
   const [selectedMaterialPdfState, setSelectedMaterialPdfState] = useState<{
     pageNumber: number;
     scale: number;
@@ -286,6 +289,7 @@ export function StudyDetailPage() {
     selectedMaterialIdRef.current = material.id;
     setSelectedMaterialId(material.id);
     setSelectedMaterialPreview(null);
+    setSelectedMaterialPreviewError(null);
     setSelectedMaterialPdfState(null);
     setSelectedMaterialVideoPositionSeconds(null);
     try {
@@ -300,6 +304,7 @@ export function StudyDetailPage() {
         return;
       }
       setSelectedMaterialPreview(preview);
+      setSelectedMaterialPreviewError(null);
       setSelectedMaterialPdfState(
         readingState
           ? {
@@ -317,15 +322,29 @@ export function StudyDetailPage() {
       ) {
         return;
       }
-      setError(toUserMessage(previewError));
+      const message = toUserMessage(previewError);
+      setSelectedMaterialPreviewError(message);
+      setError(null);
     }
   }
 
+  const flushPendingPdfState = useCallback(() => {
+    setPendingPdfState((currentState) => {
+      if (!currentState) return currentState;
+      saveMaterialReadingState(currentState).catch((saveError: unknown) => {
+        setError(toUserMessage(saveError));
+      });
+      return null;
+    });
+  }, []);
+
   function handleReturnToMaterialList() {
+    flushPendingPdfState();
     materialOpenRequestIdRef.current += 1;
     selectedMaterialIdRef.current = null;
     setSelectedMaterialId(null);
     setSelectedMaterialPreview(null);
+    setSelectedMaterialPreviewError(null);
     setSelectedMaterialPdfState(null);
     setSelectedMaterialVideoPositionSeconds(null);
   }
@@ -728,6 +747,7 @@ export function StudyDetailPage() {
             <MaterialInlineReader
               material={selectedMaterial}
               preview={selectedMaterialPreview}
+              previewError={selectedMaterialPreviewError}
               pdfState={selectedMaterialPdfState}
               onPdfStateChange={handlePdfStateChange}
               videoPositionSeconds={selectedMaterialVideoPositionSeconds}
@@ -851,6 +871,7 @@ function MaterialInlineReader({
   onVideoPositionChange,
   pdfState,
   preview,
+  previewError,
   videoPositionSeconds,
 }: {
   material: MaterialItem;
@@ -859,6 +880,7 @@ function MaterialInlineReader({
   onVideoPositionChange: (positionSeconds: number) => void;
   pdfState: { pageNumber: number; scale: number } | null;
   preview: MaterialPreview | null;
+  previewError: string | null;
   videoPositionSeconds: number | null;
 }) {
   return (
@@ -880,6 +902,7 @@ function MaterialInlineReader({
       <MaterialPreviewPane
         material={material}
         preview={preview}
+        previewError={previewError}
         pdfState={pdfState}
         onPdfStateChange={onPdfStateChange}
         videoPositionSeconds={videoPositionSeconds}

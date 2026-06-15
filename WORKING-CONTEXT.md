@@ -144,6 +144,12 @@
 - V1.6 安全边界记录：repository 迁移失败前不追加新 asset scope；迁移成功后再追加当前资料库 scope。若 scope / state 更新失败，会尽力回滚 DB setting 与 `stored_path` 到旧资料库。Tauri asset scope 没有安全撤销 allow 的 API，旧资料库 scope 在同一 App 会话内可能残留，但前端只使用当前 DB `stored_path` 和 Rust 校验后的预览路径；迁移旧副本清理失败、删除学习内容或资料后的 App 管理副本清理失败都会返回脱敏数量 `failedCleanupPathCount`，前端只提示数量和稍后重试，不暴露本机路径。
 - V1.6 不进入递归/全局/全文搜索、Office、整文件夹导入、目录同步、文件监听、迁移进度条、后台任务队列、多资料库、备份系统、打开原文件/所在文件夹、SQLite 加密、云同步、账号或大设置中心。
 - V1.6 开发计划已更新：`product/docs/studyseq-v1.6-development-plan.md`。阶段 A1-A5 自动化验证已完成：`npm.cmd test`（10 文件、137 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`cargo fmt --check`、`cargo test`（72 测试）、`cargo clippy -- -D warnings`、`npm.cmd run tauri -- build --debug`、`npm.cmd run tauri -- build` 均通过。版本号已统一为 `1.6.0`。用户已完成真实 App 手测，未发现问题；审查发现的资料重命名回滚失败静默吞错、导入资料前端持有本机路径 authority、导入成功后前端仍收到 `originalPath` 三个阻塞项已修复；debug 包和正式 release 包均已重新生成；导入资料链路补充 smoke test 已通过。下一步可提交、推送并创建 V1.6 tag。
+- V1.7 规划评估结论：正式主线应收敛为“当前学习内容资料定位增强”，即在详情页资料区支持 `当前文件夹 / 当前学习内容` 两档资料名和扩展名搜索，结果只显示逻辑资料树路径；不做全文搜索、PDF 提取、OCR、跨学习内容全局搜索，也不把 Office 转换纳入正式功能口径。
+- 已新增隔离实验 `spikes/office2pdf/`：固定 `office2pdf = "=0.6.0"`，用于评估纯 Rust DOCX/XLSX/PPTX 转 PDF。该实验不接 Tauri command、不接 UI、不改 `app/src-tauri/Cargo.toml`、不进 release gate；输出目录 `spikes/office2pdf/out/` 和构建目录 `spikes/office2pdf/target/` 已忽略。当前最小 PPTX 自检已通过：运行时生成 PPTX，转出 `out/minimal-pptx.pdf`，输出以 `%PDF` 开头，warnings 为 0。
+- V1.7 自动化实现已完成：`MaterialExplorer` 支持 `当前文件夹 / 当前学习内容` 两档搜索；当前学习内容搜索基于已加载的 `LearningDetail.materials` 递归匹配名称和扩展名，只显示逻辑路径，不展示 `storedPath` / AppData / asset URL；点击文件结果会切到父文件夹并打开内嵌阅读，点击文件夹只进入文件夹；pending-deleted 子树被排除。
+- V1.7 稳定性修复已完成：资料预览失败会显示失败终态，不再卡在“正在加载资料预览”；PDF 翻页或缩放后立即返回资料列表会 flush 最后页码 / 缩放。
+- V1.7 版本号已统一为 `1.7.0`。已验证：`npm.cmd test`（11 文件、154 测试）、V1.7 目标测试（3 文件、71 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`cargo fmt --check`、`cargo test`（72 测试）、`cargo clippy -- -D warnings`、`npm.cmd run tauri -- build --debug`、`npm.cmd run tauri -- build` 均通过；debug 与正式 release 包均已生成。
+- V1.7 隔离真实 App 手测已完成：使用临时 identifier `com.studyseq.desktop.v17test`，未触碰正式 `com.studyseq.desktop` 用户数据。已验证当前文件夹不递归、当前学习内容递归搜索根/一级/二级资料、`pdf/.pdf/PDF` 扩展名匹配、搜索结果不泄露本机路径、点击嵌套 PDF 打开内嵌阅读、返回后停在父文件夹、PDF 缩放 `120%` 写入 SQLite、点击文件夹只进入文件夹、pending-deleted 子树隐藏且撤回恢复、预览失败显示“资料副本不存在，请重新导入”且不再卡 loading。临时 App 关闭后已重新生成官方 debug/release 构建产物。
 
 ## 已准备依赖
 

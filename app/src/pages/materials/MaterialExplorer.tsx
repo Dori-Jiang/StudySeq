@@ -1,9 +1,16 @@
 import { useEffect, useState } from "react";
 
 import type { MaterialItem } from "../../shared/types";
+import { fileTypeLabel } from "./format";
 import { MaterialTile } from "./MaterialTile";
 import { MoveMaterialDialog } from "./MoveMaterialDialog";
-import { buildBreadcrumb, collectSubtreeIds, listChildren } from "./materialTree";
+import {
+  buildBreadcrumb,
+  collectSubtreeIds,
+  getLogicalParentPath,
+  listChildren,
+  searchMaterialTree,
+} from "./materialTree";
 
 type MaterialExplorerProps = {
   materials: MaterialItem[];
@@ -20,6 +27,7 @@ type MaterialExplorerProps = {
 
 type MaterialTypeFilter = "all" | "folder" | "text" | "image" | "pdf" | "video" | "other";
 type MaterialSortMode = "default" | "name" | "type" | "updated";
+type MaterialSearchScope = "current-folder" | "learning-content";
 
 export function MaterialExplorer({
   currentFolderId,
@@ -35,6 +43,7 @@ export function MaterialExplorer({
 }: MaterialExplorerProps) {
   const [movingMaterial, setMovingMaterial] = useState<MaterialItem | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [searchScope, setSearchScope] = useState<MaterialSearchScope>("current-folder");
   const [typeFilter, setTypeFilter] = useState<MaterialTypeFilter>("all");
   const [sortMode, setSortMode] = useState<MaterialSortMode>("default");
 
@@ -61,14 +70,18 @@ export function MaterialExplorer({
   const visibleChildren = listChildren(materials, effectiveFolderId).filter(
     (material) => !pendingSubtreeIds.has(material.id),
   );
+  const trimmedSearchTerm = searchTerm.trim();
   const filteredChildren = sortMaterials(
     visibleChildren.filter((material) => {
-      const normalizedSearch = searchTerm.trim().toLocaleLowerCase("zh-CN");
-      const nameMatches =
-        normalizedSearch.length === 0 ||
-        material.name.toLocaleLowerCase("zh-CN").includes(normalizedSearch);
+      const nameMatches = materialMatchesSearchTerm(material, trimmedSearchTerm);
       return nameMatches && materialMatchesTypeFilter(material, typeFilter);
     }),
+    sortMode,
+  );
+  const learningContentSearchResults = sortMaterialSearchResults(
+    buildLearningContentSearchResults(materials, trimmedSearchTerm, pendingSubtreeIds).filter(
+      (result) => materialMatchesTypeFilter(result.material, typeFilter),
+    ),
     sortMode,
   );
   const breadcrumb = buildBreadcrumb(materials, effectiveFolderId);
@@ -78,6 +91,18 @@ export function MaterialExplorer({
       onCurrentFolderChange(material.id);
       return;
     }
+    onOpenFile(material);
+  }
+
+  function handleOpenSearchResult(material: MaterialItem) {
+    if (material.kind === "folder") {
+      onCurrentFolderChange(material.id);
+      setSearchScope("current-folder");
+      setSearchTerm("");
+      return;
+    }
+
+    onCurrentFolderChange(material.parentId);
     onOpenFile(material);
   }
 
@@ -123,11 +148,27 @@ export function MaterialExplorer({
         </div>
       </div>
 
-      <div className="material-explorer-controls" aria-label="当前文件夹资料定位">
+      <div className="material-explorer-controls" aria-label="资料定位">
+        <div className="material-search-scope" aria-label="搜索范围">
+          <button
+            aria-pressed={searchScope === "current-folder"}
+            type="button"
+            onClick={() => setSearchScope("current-folder")}
+          >
+            当前文件夹
+          </button>
+          <button
+            aria-pressed={searchScope === "learning-content"}
+            type="button"
+            onClick={() => setSearchScope("learning-content")}
+          >
+            当前学习内容
+          </button>
+        </div>
         <label>
           搜索
           <input
-            aria-label="搜索当前文件夹资料"
+            aria-label="搜索资料"
             value={searchTerm}
             onChange={(event) => setSearchTerm(event.target.value)}
             placeholder="文件名或扩展名"
@@ -164,7 +205,14 @@ export function MaterialExplorer({
         </label>
       </div>
 
-      {visibleChildren.length === 0 ? (
+      {searchScope === "learning-content" ? (
+        <LearningContentSearchResults
+          results={learningContentSearchResults}
+          searchTerm={trimmedSearchTerm}
+          typeFilter={typeFilter}
+          onOpen={handleOpenSearchResult}
+        />
+      ) : visibleChildren.length === 0 ? (
         <p className="empty-state">
           {effectiveFolderId === null ? "还没有资料" : "这个文件夹是空的"}
         </p>
@@ -200,11 +248,111 @@ export function MaterialExplorer({
   );
 }
 
+function LearningContentSearchResults({
+  onOpen,
+  results,
+  searchTerm,
+  typeFilter,
+}: {
+  onOpen: (material: MaterialItem) => void;
+  results: { material: MaterialItem; logicalPath: string }[];
+  searchTerm: string;
+  typeFilter: MaterialTypeFilter;
+}) {
+  if (!searchTerm && typeFilter === "all") {
+    return <p className="empty-state">输入关键词搜索当前学习内容中的资料</p>;
+  }
+
+  if (results.length === 0) {
+    return <p className="empty-state">当前学习内容没有匹配资料</p>;
+  }
+
+  return (
+    <div className="material-search-results" role="list" aria-label="当前学习内容搜索结果">
+      {results.map(({ logicalPath, material }) => (
+        <div key={material.id} role="listitem">
+          <button
+            className="material-search-result"
+            type="button"
+            aria-label={
+              material.kind === "folder"
+                ? `打开文件夹：${material.name}`
+                : `打开资料：${material.name}`
+            }
+            onClick={() => onOpen(material)}
+          >
+            <span className="material-search-result-main">
+              <span className="material-search-result-name">{material.name}</span>
+              <span className="material-search-result-meta">
+                <span className="material-search-result-type">
+                  {material.kind === "folder" ? "文件夹" : fileTypeLabel(material)}
+                </span>
+                <span className="material-search-result-path">{logicalPath}</span>
+              </span>
+            </span>
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function materialMatchesTypeFilter(material: MaterialItem, filter: MaterialTypeFilter) {
   if (filter === "all") return true;
   if (filter === "folder") return material.kind === "folder";
   if (material.kind === "folder") return false;
   return getMaterialTypeGroup(material) === filter;
+}
+
+function materialMatchesSearchTerm(material: MaterialItem, searchTerm: string) {
+  const normalizedSearch = normalizeSearchText(searchTerm);
+  if (normalizedSearch.length === 0) return true;
+
+  const normalizedName = normalizeSearchText(material.name);
+  if (normalizedName.includes(normalizedSearch)) return true;
+
+  if (material.kind === "folder") return false;
+  const extension = material.name.includes(".") ? (material.name.split(".").pop() ?? "") : "";
+  return normalizeSearchText(extension).includes(normalizedSearch);
+}
+
+function normalizeSearchText(value: string) {
+  const normalized = value.trim().toLocaleLowerCase("zh-CN");
+  return normalized.startsWith(".") ? normalized.slice(1) : normalized;
+}
+
+function buildLearningContentSearchResults(
+  materials: MaterialItem[],
+  searchTerm: string,
+  pendingSubtreeIds: Set<string>,
+) {
+  if (searchTerm.length > 0) {
+    return searchMaterialTree(materials, {
+      query: searchTerm,
+      excludedIds: pendingSubtreeIds,
+    });
+  }
+
+  return materials
+    .filter((material) => !pendingSubtreeIds.has(material.id))
+    .map((material) => ({
+      material,
+      logicalPath: getLogicalParentPath(materials, material),
+    }));
+}
+
+function sortMaterialSearchResults(
+  results: { material: MaterialItem; logicalPath: string }[],
+  sortMode: MaterialSortMode,
+) {
+  const byId = new Map(results.map((result) => [result.material.id, result]));
+  return sortMaterials(
+    results.map((result) => result.material),
+    sortMode,
+  ).flatMap((material) => {
+    const result = byId.get(material.id);
+    return result ? [result] : [];
+  });
 }
 
 function getMaterialTypeGroup(material: MaterialItem): Exclude<MaterialTypeFilter, "all" | "folder"> {

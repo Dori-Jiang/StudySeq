@@ -7,6 +7,8 @@ build/
 out/
 target/
 app/src-tauri/target/
+spikes/office2pdf/target/
+spikes/office2pdf/out/
 
 # Environment
 .env

@@ -12,6 +12,7 @@ import {
 export function MaterialPreviewPane({
   material,
   preview,
+  previewError,
   pdfState,
   onPdfStateChange,
   videoPositionSeconds,
@@ -19,6 +20,7 @@ export function MaterialPreviewPane({
 }: {
   material: MaterialItem | undefined;
   preview: MaterialPreview | null;
+  previewError?: string | null;
   pdfState?: { pageNumber: number; scale: number } | null;
   onPdfStateChange?: (state: { pageNumber: number; scale: number }) => void;
   videoPositionSeconds?: number | null;
@@ -26,6 +28,10 @@ export function MaterialPreviewPane({
 }) {
   if (!material) {
     return <p className="empty-state">还没有资料</p>;
+  }
+
+  if (previewError) {
+    return <p className="empty-state">{previewError}</p>;
   }
 
   if (!preview) {

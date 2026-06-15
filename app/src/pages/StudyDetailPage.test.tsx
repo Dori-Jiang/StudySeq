@@ -368,6 +368,25 @@ describe("StudyDetailPage", () => {
     expect(screen.queryByText(/C:\\Users/)).not.toBeInTheDocument();
   });
 
+  it("does not leave the inline reader stuck loading when material preview fails", async () => {
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    previewMaterialFile.mockRejectedValueOnce({
+      code: "material_file_missing",
+      message: "资料文件不存在",
+    });
+
+    renderDetailPage();
+    await screen.findByText("资料.txt");
+    await userEvent.click(screen.getByRole("button", { name: "打开资料：资料.txt" }));
+
+    expect(await screen.findByText("资料文件不存在")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "返回资料列表" })).toBeInTheDocument();
+    expect(screen.queryByText("正在加载资料预览")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "返回资料列表" }));
+    expect(screen.getByRole("button", { name: "打开资料：资料.txt" })).toBeInTheDocument();
+  });
+
   it("shows the material library location and keeps location changes on the home page", async () => {
     getLearningDetail.mockResolvedValueOnce(baseDetail);
     getMaterialLibraryStats.mockResolvedValueOnce({
@@ -637,6 +656,88 @@ describe("StudyDetailPage", () => {
         scale: 1.4,
       });
     }, { timeout: 1500 });
+  });
+
+  it("saves the latest PDF state when returning to the material list immediately", async () => {
+    getLearningDetail.mockResolvedValueOnce({
+      ...baseDetail,
+      materials: [
+        {
+          ...baseDetail.materials[0],
+          id: "mat-pdf",
+          name: "资料.pdf",
+          storedPath: "C:/app/quick-return.pdf",
+          mimeType: "application/pdf",
+        },
+      ],
+    });
+    previewMaterialFile.mockResolvedValueOnce({
+      materialId: "mat-pdf",
+      kind: "pdf",
+      mimeType: "application/pdf",
+      text: null,
+      dataUrl: null,
+      assetPath: "C:/app/quick-return.pdf",
+      encoding: null,
+    });
+
+    renderDetailPage();
+    await screen.findByText("资料.pdf");
+    await userEvent.click(screen.getByRole("button", { name: "打开资料：资料.pdf" }));
+    expect(await screen.findByText("第 1 / 3 页")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(await screen.findByText("第 2 / 3 页")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "返回资料列表" }));
+
+    await waitFor(() => {
+      expect(saveMaterialReadingState).toHaveBeenCalledWith({
+        materialId: "mat-pdf",
+        pageNumber: 2,
+        scale: 1,
+      });
+    });
+  });
+
+  it("saves the latest PDF scale when returning to the material list immediately", async () => {
+    getLearningDetail.mockResolvedValueOnce({
+      ...baseDetail,
+      materials: [
+        {
+          ...baseDetail.materials[0],
+          id: "mat-pdf",
+          name: "资料.pdf",
+          storedPath: "C:/app/quick-scale.pdf",
+          mimeType: "application/pdf",
+        },
+      ],
+    });
+    previewMaterialFile.mockResolvedValueOnce({
+      materialId: "mat-pdf",
+      kind: "pdf",
+      mimeType: "application/pdf",
+      text: null,
+      dataUrl: null,
+      assetPath: "C:/app/quick-scale.pdf",
+      encoding: null,
+    });
+
+    renderDetailPage();
+    await screen.findByText("资料.pdf");
+    await userEvent.click(screen.getByRole("button", { name: "打开资料：资料.pdf" }));
+    expect(await screen.findByText("第 1 / 3 页")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "放大" }));
+    expect(screen.getByText("120%")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "返回资料列表" }));
+
+    await waitFor(() => {
+      expect(saveMaterialReadingState).toHaveBeenCalledWith({
+        materialId: "mat-pdf",
+        pageNumber: 1,
+        scale: 1.2,
+      });
+    });
   });
 
   it("restores and saves video playback position in the detail inline reader", async () => {
@@ -1304,6 +1405,36 @@ describe("StudyDetailPage", () => {
       expect(await screen.findByText("章节资料.txt")).toBeInTheDocument();
       expect(screen.queryByText("资料.txt")).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: "根目录" })).toBeEnabled();
+    });
+
+    it("从当前学习内容搜索结果打开嵌套资料后，返回列表停留在资料父文件夹", async () => {
+      getLearningDetail.mockResolvedValueOnce({
+        ...baseDetail,
+        materials: [folderItem, nestedFile, baseDetail.materials[0]],
+      });
+      previewMaterialFile.mockResolvedValueOnce({
+        materialId: "mat-nested",
+        kind: "text",
+        mimeType: "text/plain",
+        text: "递归搜索正文",
+        dataUrl: null,
+        assetPath: null,
+        encoding: "utf-8",
+      });
+
+      renderDetailPage();
+      await screen.findByText("第一章");
+      await userEvent.click(screen.getByRole("button", { name: "当前学习内容" }));
+      await userEvent.type(screen.getByLabelText("搜索资料"), "章节");
+      await userEvent.click(await screen.findByRole("button", { name: "打开资料：章节资料.txt" }));
+
+      expect(await screen.findByText("递归搜索正文")).toBeInTheDocument();
+      expect(previewMaterialFile).toHaveBeenCalledWith("mat-nested");
+      await userEvent.click(screen.getByRole("button", { name: "返回资料列表" }));
+
+      expect(await screen.findByText("章节资料.txt")).toBeInTheDocument();
+      expect(screen.queryByText("资料.txt")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "第一章" })).toBeDisabled();
     });
 
     it("新建文件夹调用 API 并显示在当前层", async () => {

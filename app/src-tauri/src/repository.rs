@@ -11,14 +11,39 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::models::{
-    CreateLearningContentInput, LearningContent, LearningDetail, MaterialItem, MaterialKind,
-    MaterialLibraryCleanupReport, MaterialLibraryLocation, MaterialLibraryStats,
-    MaterialOpenPositionKind, MaterialPreview, MaterialPreviewKind, MaterialReadingState,
-    MaterialSubtreeCount, Note, RecentMaterialOpenPosition, RecentMaterialOpenSummary, StudyStatus,
+    CreateLearningContentInput, LearningContent, LearningDetail, MaterialDeletionReport,
+    MaterialItem, MaterialKind, MaterialLibraryCleanupReport, MaterialLibraryLocation,
+    MaterialLibraryLocationChangeReport, MaterialLibraryStats, MaterialOpenPositionKind,
+    MaterialPreview, MaterialPreviewKind, MaterialReadingState, MaterialSubtreeCount, Note,
+    RecentMaterialOpenPosition, RecentMaterialOpenSummary, StudyStatus,
 };
 
 pub struct LearningContentRepository {
     connection: Connection,
+}
+
+#[derive(Debug)]
+pub struct MaterialLibraryLocationChangePlan {
+    pub location: MaterialLibraryLocation,
+    pub previous_dir: PathBuf,
+    cleanup_plan: Vec<MaterialLibraryMigrationFile>,
+}
+
+impl MaterialLibraryLocationChangePlan {
+    pub fn cleanup_old_files(self) -> MaterialLibraryLocationChangeReport {
+        let cleanup_failed_count =
+            cleanup_migrated_material_files(&self.cleanup_plan, &self.previous_dir);
+        if cleanup_failed_count > 0 {
+            eprintln!(
+                "material library migration left {cleanup_failed_count} old file(s) for retry"
+            );
+        }
+
+        MaterialLibraryLocationChangeReport {
+            location: self.location,
+            failed_cleanup_path_count: cleanup_failed_count as i64,
+        }
+    }
 }
 
 const MATERIAL_LIBRARY_DIR_SETTING_KEY: &str = "material_library_dir";
@@ -204,7 +229,7 @@ impl LearningContentRepository {
         &self,
         id: &str,
         material_library_dir: impl AsRef<Path>,
-    ) -> Result<(), AppError> {
+    ) -> Result<MaterialDeletionReport, AppError> {
         // 按表批量删除而不是逐项递归，避免文件夹子树被重复删除报 MaterialNotFound
         let materials = self.list_materials(id)?;
         let file_cleanup_paths =
@@ -227,8 +252,10 @@ impl LearningContentRepository {
         )?;
         transaction.execute("DELETE FROM learning_contents WHERE id = ?1", params![id])?;
         transaction.commit()?;
-        remove_material_file_paths_best_effort(&file_cleanup_paths);
-        Ok(())
+        Ok(MaterialDeletionReport {
+            failed_cleanup_path_count: remove_material_file_paths_best_effort(&file_cleanup_paths)
+                as i64,
+        })
     }
 
     pub fn import_material_file(
@@ -402,7 +429,7 @@ impl LearningContentRepository {
         &self,
         material_id: &str,
         material_library_dir: impl AsRef<Path>,
-    ) -> Result<(), AppError> {
+    ) -> Result<MaterialDeletionReport, AppError> {
         let Some(material) = self.get_material(material_id)? else {
             return Err(AppError::MaterialNotFound);
         };
@@ -427,9 +454,12 @@ impl LearningContentRepository {
             transaction.execute("DELETE FROM material_items WHERE id = ?1", params![item.id])?;
         }
         transaction.commit()?;
-        remove_material_file_paths_best_effort(&file_cleanup_paths);
+        let failed_cleanup_path_count =
+            remove_material_file_paths_best_effort(&file_cleanup_paths) as i64;
 
-        Ok(())
+        Ok(MaterialDeletionReport {
+            failed_cleanup_path_count,
+        })
     }
 
     pub fn rename_material_item(
@@ -480,7 +510,13 @@ impl LearningContentRepository {
         }
 
         let now = Utc::now().to_rfc3339();
-        let metadata = std::fs::metadata(&target_path)?;
+        let metadata = match std::fs::metadata(&target_path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                rollback_material_rename(&source_path, &target_path)?;
+                return Err(AppError::Io(error));
+            }
+        };
         let update_result = self.connection.execute(
             "UPDATE material_items
              SET name = ?1, stored_path = ?2, size_bytes = ?3, updated_at = ?4
@@ -495,9 +531,7 @@ impl LearningContentRepository {
         );
 
         if let Err(error) = update_result {
-            if source_path != target_path {
-                let _ = std::fs::rename(&target_path, &source_path);
-            }
+            rollback_material_rename(&source_path, &target_path)?;
             return Err(AppError::Database(error));
         }
 
@@ -910,28 +944,48 @@ impl LearningContentRepository {
         current_material_library_dir: impl AsRef<Path>,
         default_material_library_dir: impl AsRef<Path>,
         target_material_library_dir: impl AsRef<Path>,
-    ) -> Result<MaterialLibraryLocation, AppError> {
+    ) -> Result<MaterialLibraryLocationChangePlan, AppError> {
         let current_dir = current_material_library_dir.as_ref();
         let default_dir = default_material_library_dir.as_ref();
         let target_dir = target_material_library_dir.as_ref();
         validate_supported_material_library_location(target_dir, default_dir)?;
 
         if same_path_string(current_dir, target_dir) {
-            return Ok(MaterialLibraryLocation {
-                path: current_dir.to_string_lossy().to_string(),
-                is_default: same_path_string(current_dir, default_dir),
+            return Ok(MaterialLibraryLocationChangePlan {
+                cleanup_plan: Vec::new(),
+                previous_dir: current_dir.to_path_buf(),
+                location: MaterialLibraryLocation {
+                    path: current_dir.to_string_lossy().to_string(),
+                    is_default: same_path_string(current_dir, default_dir),
+                },
             });
         }
 
         let migration_plan =
             migrate_material_library_files(current_dir, target_dir, &self.list_all_materials()?)?;
         self.update_material_library_paths_and_setting(current_dir, default_dir, target_dir)?;
-        cleanup_migrated_material_files(&migration_plan, current_dir);
 
-        Ok(MaterialLibraryLocation {
-            path: target_dir.to_string_lossy().to_string(),
-            is_default: same_path_string(target_dir, default_dir),
+        Ok(MaterialLibraryLocationChangePlan {
+            cleanup_plan: migration_plan,
+            previous_dir: current_dir.to_path_buf(),
+            location: MaterialLibraryLocation {
+                path: target_dir.to_string_lossy().to_string(),
+                is_default: same_path_string(target_dir, default_dir),
+            },
         })
+    }
+
+    pub fn rollback_material_library_location(
+        &self,
+        current_material_library_dir: impl AsRef<Path>,
+        default_material_library_dir: impl AsRef<Path>,
+        previous_material_library_dir: impl AsRef<Path>,
+    ) -> Result<(), AppError> {
+        self.update_material_library_paths_and_setting(
+            current_material_library_dir.as_ref(),
+            default_material_library_dir.as_ref(),
+            previous_material_library_dir.as_ref(),
+        )
     }
 
     pub fn cleanup_material_library(
@@ -948,18 +1002,22 @@ impl LearningContentRepository {
         let library_scan = scan_material_library(material_library_dir, &referenced_paths)?;
         let mut deleted_orphan_file_count = 0;
         let mut deleted_bytes = 0;
-        let mut failed_paths = Vec::new();
+        let mut failed_path_count = 0;
 
         for orphan in library_scan.orphan_files {
-            if let Ok(metadata) = std::fs::metadata(&orphan) {
-                let size = metadata.len() as i64;
-                match std::fs::remove_file(&orphan) {
-                    Ok(()) => {
-                        deleted_orphan_file_count += 1;
-                        deleted_bytes += size;
+            match std::fs::metadata(&orphan) {
+                Ok(metadata) => {
+                    let size = metadata.len() as i64;
+                    match std::fs::remove_file(&orphan) {
+                        Ok(()) => {
+                            deleted_orphan_file_count += 1;
+                            deleted_bytes += size;
+                        }
+                        Err(_) => failed_path_count += 1,
                     }
-                    Err(_) => failed_paths.push(orphan.to_string_lossy().to_string()),
                 }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => failed_path_count += 1,
             }
         }
 
@@ -982,16 +1040,20 @@ impl LearningContentRepository {
             transaction.commit()?;
         }
         for stored_path in orphan_material_file_paths {
-            if let Ok(metadata) = std::fs::metadata(&stored_path) {
-                let size = metadata.len() as i64;
-                match std::fs::remove_file(&stored_path) {
-                    Ok(()) => {
-                        deleted_orphan_file_count += 1;
-                        deleted_bytes += size;
+            match std::fs::metadata(&stored_path) {
+                Ok(metadata) => {
+                    let size = metadata.len() as i64;
+                    match std::fs::remove_file(&stored_path) {
+                        Ok(()) => {
+                            deleted_orphan_file_count += 1;
+                            deleted_bytes += size;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(_) => failed_path_count += 1,
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(_) => failed_paths.push(stored_path.to_string_lossy().to_string()),
                 }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => failed_path_count += 1,
             }
         }
 
@@ -999,7 +1061,7 @@ impl LearningContentRepository {
             deleted_orphan_file_count,
             deleted_orphan_database_record_count,
             deleted_bytes,
-            failed_paths,
+            failed_path_count,
             updated_at: Utc::now().to_rfc3339(),
         })
     }
@@ -1565,6 +1627,17 @@ impl LearningContentRepository {
     }
 }
 
+fn rollback_material_rename(source_path: &Path, target_path: &Path) -> Result<(), AppError> {
+    if source_path == target_path || !target_path.exists() {
+        return Ok(());
+    }
+
+    std::fs::rename(target_path, source_path).map_err(|rollback_error| {
+        eprintln!("material rename rollback failed after database update error: {rollback_error}");
+        AppError::MaterialRenameRollbackFailed
+    })
+}
+
 fn material_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MaterialItem> {
     Ok(MaterialItem {
         id: row.get(0)?,
@@ -1956,17 +2029,26 @@ fn material_files_match(left: &Path, right: &Path) -> Result<bool, AppError> {
     }
 }
 
-fn cleanup_migrated_material_files(plan: &[MaterialLibraryMigrationFile], library_root: &Path) {
+fn cleanup_migrated_material_files(
+    plan: &[MaterialLibraryMigrationFile],
+    library_root: &Path,
+) -> usize {
     let Ok(canonical_library_root) = library_root.canonicalize() else {
-        return;
+        return plan.len();
     };
+    let mut failed_count = 0;
     for file in plan {
-        let _ = std::fs::remove_file(&file.source_path);
+        match std::fs::remove_file(&file.source_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => failed_count += 1,
+        }
         cleanup_empty_ancestor_dirs(
             file.source_path.parent().map(Path::to_path_buf),
             &canonical_library_root,
         );
     }
+    failed_count
 }
 
 fn cleanup_empty_ancestor_dirs(mut directory: Option<PathBuf>, canonical_library_root: &Path) {
@@ -2009,10 +2091,16 @@ fn collect_material_file_cleanup_paths(
     Ok(paths)
 }
 
-fn remove_material_file_paths_best_effort(paths: &[PathBuf]) {
+fn remove_material_file_paths_best_effort(paths: &[PathBuf]) -> usize {
+    let mut failed_count = 0;
     for path in paths {
-        let _ = std::fs::remove_file(path);
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => failed_count += 1,
+        }
     }
+    failed_count
 }
 
 fn material_depth(item: &MaterialItem, subtree: &[MaterialItem]) -> usize {
@@ -2499,9 +2587,10 @@ mod tests {
             )
             .expect("create note");
 
-        repository
+        let report = repository
             .delete_learning_content(&learning_content.id, &material_library_dir)
             .expect("delete learning content");
+        assert_eq!(report.failed_cleanup_path_count, 0);
 
         assert!(repository
             .get_detail(&learning_content.id)
@@ -2686,7 +2775,7 @@ mod tests {
             default_library_dir.to_string_lossy().to_string()
         );
 
-        let migrated_location = repository
+        let change_plan = repository
             .set_material_library_location(
                 &default_library_dir,
                 &default_library_dir,
@@ -2694,12 +2783,13 @@ mod tests {
             )
             .expect("migrate library");
 
+        let migrated_location = change_plan.location.clone();
         assert!(!migrated_location.is_default);
         assert_eq!(
             migrated_location.path,
             target_library_dir.to_string_lossy().to_string()
         );
-        assert!(!old_stored_path.exists());
+        assert!(old_stored_path.exists());
         let detail = repository
             .get_detail(&learning_content.id)
             .expect("get detail")
@@ -2718,6 +2808,9 @@ mod tests {
             .preview_material_file(&material.id, &target_library_dir)
             .expect("preview migrated material");
         assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Pdf);
+        let report = change_plan.cleanup_old_files();
+        assert_eq!(report.failed_cleanup_path_count, 0);
+        assert!(!old_stored_path.exists());
     }
 
     #[test]
@@ -2757,7 +2850,7 @@ mod tests {
             .expect("create target parent");
         std::fs::copy(&old_stored_path, &target_copy).expect("precopy matching target");
 
-        repository
+        let change_plan = repository
             .set_material_library_location(
                 &default_library_dir,
                 &default_library_dir,
@@ -2765,7 +2858,7 @@ mod tests {
             )
             .expect("retry migration should accept matching target copy");
 
-        assert!(!old_stored_path.exists());
+        assert!(old_stored_path.exists());
         let detail = repository
             .get_detail(&learning_content.id)
             .expect("get detail")
@@ -2774,6 +2867,81 @@ mod tests {
             detail.materials[0].stored_path.as_deref(),
             Some(target_copy.to_string_lossy().as_ref())
         );
+        let report = change_plan.cleanup_old_files();
+        assert_eq!(report.failed_cleanup_path_count, 0);
+        assert!(!old_stored_path.exists());
+    }
+
+    #[test]
+    fn material_library_location_can_roll_back_after_runtime_update_failure() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let default_library_dir = temp_dir.path().join("default-materials");
+        let target_library_dir = temp_dir
+            .path()
+            .join("target")
+            .join("StudySeqData")
+            .join("materials");
+        let source_file = temp_dir.path().join("source.pdf");
+        std::fs::write(&source_file, b"%PDF rollback").expect("write source file");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "资料库迁移回滚".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(
+                &learning_content.id,
+                &source_file,
+                &default_library_dir,
+                None,
+            )
+            .expect("import material");
+        let old_stored_path = PathBuf::from(material.stored_path.as_deref().expect("stored path"));
+
+        let change_plan = repository
+            .set_material_library_location(
+                &default_library_dir,
+                &default_library_dir,
+                &target_library_dir,
+            )
+            .expect("migrate library");
+        let target_stored_path = repository
+            .get_detail(&learning_content.id)
+            .expect("get migrated detail")
+            .expect("detail exists")
+            .materials[0]
+            .stored_path
+            .clone()
+            .expect("target stored path");
+        assert!(PathBuf::from(&target_stored_path).starts_with(&target_library_dir));
+
+        repository
+            .rollback_material_library_location(
+                &target_library_dir,
+                &default_library_dir,
+                &change_plan.previous_dir,
+            )
+            .expect("rollback location");
+
+        let rolled_back_location = repository
+            .get_material_library_location(&default_library_dir)
+            .expect("get rolled back location");
+        assert!(rolled_back_location.is_default);
+        let detail = repository
+            .get_detail(&learning_content.id)
+            .expect("get rolled back detail")
+            .expect("detail exists");
+        assert_eq!(
+            detail.materials[0].stored_path.as_deref(),
+            Some(old_stored_path.to_string_lossy().as_ref())
+        );
+        assert!(old_stored_path.exists());
+        assert!(PathBuf::from(target_stored_path).exists());
     }
 
     #[test]
@@ -2849,9 +3017,9 @@ mod tests {
             )
             .expect("custom storage root should be accepted");
 
-        assert!(!location.is_default);
+        assert!(!location.location.is_default);
         assert_eq!(
-            location.path,
+            location.location.path,
             target_library_dir.to_string_lossy().to_string()
         );
     }
@@ -2902,6 +3070,61 @@ mod tests {
             .expect_err("unsupported saved setting should fail");
 
         assert!(matches!(error, AppError::InvalidMaterialLibraryLocation));
+    }
+
+    #[test]
+    fn migrated_material_cleanup_ignores_missing_old_copies_and_counts_real_failures() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let library_root = temp_dir.path().join("materials");
+        let target_root = temp_dir
+            .path()
+            .join("target")
+            .join("StudySeqData")
+            .join("materials");
+        let missing_old_copy = library_root.join("content-1").join("missing.pdf");
+        let migrated_copy = target_root.join("content-1").join("missing.pdf");
+        let directory_old_copy = library_root.join("content-1").join("directory.pdf");
+        let directory_migrated_copy = target_root.join("content-1").join("directory.pdf");
+        std::fs::create_dir_all(&library_root).expect("create source library");
+        std::fs::create_dir_all(&directory_old_copy).expect("create old copy directory");
+        std::fs::create_dir_all(migrated_copy.parent().expect("target parent"))
+            .expect("create target parent");
+        std::fs::write(&migrated_copy, b"%PDF").expect("write migrated copy");
+        std::fs::write(&directory_migrated_copy, b"%PDF").expect("write second migrated copy");
+        let plan = vec![
+            MaterialLibraryMigrationFile {
+                source_path: missing_old_copy,
+                target_path: migrated_copy,
+            },
+            MaterialLibraryMigrationFile {
+                source_path: directory_old_copy,
+                target_path: directory_migrated_copy,
+            },
+        ];
+
+        let failed_count = cleanup_migrated_material_files(&plan, &library_root);
+
+        assert_eq!(failed_count, 1);
+    }
+
+    #[test]
+    fn material_file_cleanup_reports_delete_failures_without_paths() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let existing_file = temp_dir.path().join("existing.txt");
+        let missing_file = temp_dir.path().join("missing.txt");
+        let directory_path = temp_dir.path().join("directory");
+        std::fs::write(&existing_file, b"delete me").expect("write existing file");
+        std::fs::create_dir(&directory_path).expect("create directory");
+
+        let failed_count = remove_material_file_paths_best_effort(&[
+            existing_file.clone(),
+            missing_file,
+            directory_path.clone(),
+        ]);
+
+        assert_eq!(failed_count, 1);
+        assert!(!existing_file.exists());
+        assert!(directory_path.exists());
     }
 
     #[test]
@@ -4027,6 +4250,23 @@ mod tests {
     }
 
     #[test]
+    fn material_rename_reports_rollback_failure_without_silently_losing_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source_path = temp_dir.path().join("missing-parent").join("source.txt");
+        let target_path = temp_dir.path().join("target.txt");
+        std::fs::write(&target_path, "target moved").expect("write target");
+
+        let error = rollback_material_rename(&source_path, &target_path)
+            .expect_err("rollback should fail when source parent is missing");
+
+        assert!(matches!(error, AppError::MaterialRenameRollbackFailed));
+        assert_eq!(
+            std::fs::read_to_string(&target_path).expect("target should remain for diagnosis"),
+            "target moved"
+        );
+    }
+
+    #[test]
     fn imports_mp4_and_webm_with_video_mime_types() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
@@ -4501,9 +4741,10 @@ mod tests {
             .save_material_reading_state(&file.id, 2, 1.0, &material_library_dir)
             .expect("save reading state");
 
-        repository
+        let report = repository
             .delete_learning_content(&content.id, &material_library_dir)
             .expect("delete learning content with folders");
+        assert_eq!(report.failed_cleanup_path_count, 0);
 
         assert_eq!(
             repository.debug_count_materials().expect("count materials"),

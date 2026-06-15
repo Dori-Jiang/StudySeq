@@ -10,26 +10,21 @@
 
 ## 当前阶段
 
-当前进入 **V1.5 开发与真实 App 手测完成、准备 release 收口阶段**。
+当前进入 **V1.6 开发、验证、真实 App 手测完成，等待提交与 tag 收口阶段**。
 
-V1.4 已完成开发与真实 App 手工验收；V1.5 已完成自动化开发和用户手测，下一步按需要生成正式 release 包、提交并推送、创建 V1.5 tag。
+V1.5 已完成自动化开发和用户手测；V1.6 已按“资料库安全边界与隐私收口”完成自动化实现、自动化验证、正式 release 发包和真实 App 手测。收口审查后的导入资料链路补充 smoke test 已通过，下一步可提交、推送并创建 V1.6 tag。
 
-V1.5 由 `planner`、`architect`、`ui-ux-designer`、`security-reviewer`、`e2e-runner` 共同规划，现按用户要求合并一批低风险 V1.6 候选，主题调整为“一键继续学习 + 轻量效率收口”。V1.5 承接 V1.4 的主页最近打开摘要，把“看见上次位置”推进到“直接回到上次位置”，同时补齐当前文件夹资料定位、笔记保存反馈、删除影响提示和预览性能保护。V1.5 不做日历、足迹、统计、全文搜索、Office、富文本笔记或旧独立阅读页。
+V1.6 不做新学习功能，不做大 UI 改版，不新增 SQLite schema；优先处理 V1.5 安全审查留下的两个后续项：资料库位置设置不再让前端传任意路径字符串，资料库清理结果不再向前端返回失败绝对路径。
 
-V1.5 目标是在 V1.4 稳定闭环上补齐一键继续学习动作链：
+V1.6 目标是在 V1.5 稳定闭环上收紧本地资料库维护边界：
 
 ```text
-主页最近打开摘要
--> 主页轻量“继续”入口
--> 详情页接收继续意图
--> 自动打开最近资料
--> PDF / 视频复用现有位置恢复
--> 文件夹上下文保持
--> 当前文件夹资料搜索 / 筛选 / 排序
--> 笔记保存状态提示
--> 删除文件夹影响摘要
--> 图片 / 文本预览性能收口
--> 失效资料非阻塞降级
+资料库位置准备
+-> Rust 选择目录并生成一次性 token
+-> 前端只做确认并提交 token
+-> Rust 校验、迁移、更新 state 和 asset scope
+-> cleanup 只返回失败数量
+-> UI 提示可重试但不展示绝对路径
 -> 回归验证与文档收口
 ```
 
@@ -207,6 +202,46 @@ V1.5 不进入：
 - 整文件夹导入、目录同步、文件监听。
 - 打开原文件、打开所在文件夹、保留原路径引用。
 - 新增旧独立阅读页或恢复 `/studies/:studyId/read` 路由。
+
+### V1.6：资料库安全边界与隐私收口
+
+V1.6 目标：让本地资料库位置变更更可靠、更可控，并减少 Tauri command 响应中的本机路径暴露面。
+
+V1.6 独立开发文档：[`studyseq-v1.6-development-plan.md`](studyseq-v1.6-development-plan.md)。
+
+当前状态（2026-06-15）：V1.6 A1-A5 自动化实现和自动化验证已完成，版本号已统一为 `1.6.0`；用户已完成真实 App 手测，未发现问题；debug 包和正式 release 包均已重新生成。实现采用一次性 token：Rust 负责目录选择、目标路径派生、token 生成和迁移应用；前端只负责确认和提交 token。收口审查发现的资料重命名回滚失败静默吞错、导入资料前端持有本机路径 authority、导入成功后前端仍收到 `originalPath` 三个阻塞项已修复。导入资料链路在收口审查后改为 Rust command 内部文件选择，并已通过真实 App 补充 smoke test。
+
+V1.6 成功口径：
+
+- 前端不再向 Rust 提交任意资料库路径字符串来触发迁移。
+- 资料库位置变更由 Rust 目录选择结果或 Rust 内部默认位置分支驱动。
+- 用户仍能选择新的资料库存放位置，并确认迁移到所选位置下的 `StudySeqData\materials`。
+- 用户仍能迁回默认 AppData 资料库位置。
+- 迁移失败时旧资料库仍保持可用，不更新 setting，不扩大 asset scope。
+- 资料库清理失败时，前端只拿到失败数量，不拿到失败绝对路径。
+- 清理结果文案继续说明失败数量和可重试，不展示 `C:\Users\...`、盘符、UNC 路径或完整本机路径。
+- V1.5 的“继续”入口、详情页自动打开资料、当前文件夹定位、PDF / 视频 / 图片 / txt 预览不回退。
+
+当前实现说明：
+
+- 旧 `choose_material_library_storage_root` + `set_material_library_location({ path })` Tauri command 链路已移除；repository 内部保留 `set_material_library_location` 作为 Rust 内部迁移方法。
+- `prepare_material_library_location_change` 生成 10 分钟一次性 token；`apply_material_library_location_change` 只接受 `{ kind: "selected", token }` 或 `{ kind: "default" }`。
+- repository 迁移失败前不追加新 asset scope；迁移成功后再追加当前资料库 scope 并更新运行时 state；若 scope / state 更新失败，会尽力把 DB setting 与 `stored_path` 回滚到旧资料库。
+- Tauri asset scope 追加授权没有安全撤销 API；旧资料库 scope 在同一 App 会话内可能残留，但前端只使用当前 DB `stored_path` 和 Rust 校验后的预览路径。
+- 资料库旧副本清理仍是 best-effort；清理失败返回脱敏数量 `failedCleanupPathCount`，不暴露旧路径给前端。
+- 删除学习内容或资料时，DB 删除成功但 App 管理副本清理失败会返回脱敏数量 `failedCleanupPathCount`，前端移除已删记录并提示可稍后用资料库清理重试，不返回本机路径。
+
+V1.6 不进入：
+
+- 递归搜索、全局资料搜索、资料全文搜索。
+- Office 预览、Office 转 PDF、Office 外部打开。
+- 整文件夹导入、目录同步、文件监听。
+- 资料库迁移进度条、后台任务队列、取消迁移。
+- 多资料库、历史资料库位置列表、备份系统。
+- 打开原文件、打开所在文件夹。
+- SQLite 加密、云同步、账号、多端。
+- 大设置中心、主题设置、快捷键设置。
+- 恢复旧独立阅读页或 `/studies/:studyId/read` 路由。
 
 ### V2：后续扩展候选
 
@@ -535,13 +570,54 @@ V1.5 采用 A/B/C/D 四组推进。A 组先闭合“一键继续学习”，B �
 
 V1.5 安全审查后续候选：
 
-- 资料库位置设置仍接受前端传入路径字符串；repository 已做路径安全限制，非 V1.5 阻塞，但 V1.6 建议合并“选择目录 + 设置资料库”到 Rust command，或使用一次性选择 token。
-- `MaterialLibraryCleanupReport.failedPaths` command 响应仍包含清理失败绝对路径；当前 UI 只显示失败数量，V1.6 可改为只返回 `failedPathCount` 或脱敏相对路径。
+- 资料库位置设置曾接受前端传入路径字符串；V1.6 已改为 Rust prepare + 一次性 token + apply。
+- `MaterialLibraryCleanupReport.failedPaths` command 响应曾包含清理失败绝对路径；V1.6 已改为只返回 `failedPathCount`。
 
 V1.5 真实 App 手测观察项（2026-06-14）：
 
 - 搜索功能只搜索本级资料夹内容，不能搜索更下一级文件夹内容。结论：符合 V1.5 “当前文件夹资料定位”范围；递归搜索、全局资料搜索和全文搜索继续后置。
 - 删除最近打开资料后，主页不引用已删除的失效资料，但会自动接续引用更上一次新打开的有效资料。结论：符合“主页不引用失效资料”的验收口径，属于最近打开摘要的有效记录回退行为。
+
+## V1.6 开发计划
+
+V1.6 采用 A1-A5 分阶段推进。A1 先固定合同，A2-A3 分别处理资料库位置与清理报告，A4 适配前端体验，A5 回归验证和文档收口。
+
+详细开发计划、验收标准和风险记录见 [`studyseq-v1.6-development-plan.md`](studyseq-v1.6-development-plan.md)。
+
+| 阶段 | 主题 | 目标 | 主要工作 | 验收标准 | 建议 agent |
+| --- | --- | --- | --- | --- | --- |
+| A1 | 资料库位置合同 | 固定前端不传任意路径的 command 合同 | 设计 `prepare_material_library_location_change`、`apply_material_library_location_change`、`MaterialLibraryLocationCandidate`、`MaterialLibraryLocationChangeInput`；明确旧 path API 废弃策略 | 前端只能拿 candidate 和 token；默认迁回只传 `{ kind: "default" }` | `planner`、`architect`、`tdd-guide` |
+| A2 | Rust token 与迁移闭环 | 让 Rust 掌握目录 authority | Rust command 打开目录选择器；派生 `StudySeqData\materials`；生成一次性 token；apply 时消费 token 并调用现有 repository 迁移；成功后更新 state 和 asset scope | 伪造 token / 过期 token / 重复 token 被拒绝；迁移失败不破坏旧库；asset scope 只加入最终资料库目录 | `tdd-guide`、`rust-reviewer`、`security-reviewer` |
+| A3 | 清理报告脱敏 | 停止向前端返回失败绝对路径 | `MaterialLibraryCleanupReport.failedPaths` 改为 `failedPathCount`；repository 仍准确统计失败数量；更新 Rust 测试 | command 响应不包含盘符、用户目录、UNC 或完整绝对路径；清理失败仍可重试 | `tdd-guide`、`security-reviewer`、`database-reviewer` |
+| A4 | 前端 API 与体验适配 | 保持用户操作清晰，前端不承担路径安全责任 | 更新 `learningContentApi.ts`、类型和运行时校验；资料库设置 UI 改为 prepare -> 确认 -> apply；清理文案改读 `failedPathCount`；迁移失败文案说明原资料仍保留 | 用户取消确认不迁移；确认时只传 token；清理失败只显示数量和重试建议；不展示绝对路径 | `typescript-reviewer`、`react-reviewer`、`ui-ux-designer` |
+| A5 | 回归验证与文档收口 | 确认 V1.6 不破坏 V1.4/V1.5 主线 | 跑前端/Rust/Tauri 自动化验证；真实 App 手测资料库迁移、迁回默认、cleanup 失败、PDF/图片/txt/视频预览；版本号统一为 `1.6.0`；更新项目文档 | 自动化命令通过；真实 App 手测通过；`WORKING-CONTEXT.md` 和项目进度一致 | `e2e-runner`、`doc-updater` |
+
+当前实现状态（2026-06-15）：
+
+| 阶段 | 状态 | 当前证据 |
+| --- | --- | --- |
+| A1 | 已完成 | Rust / TypeScript 合同已切到 `prepare_material_library_location_change` 与 `apply_material_library_location_change`；旧自由 path Tauri command 不再注册。 |
+| A2 | 已完成 | Rust 负责目录选择、`StudySeqData\materials` 派生、10 分钟一次性 token、过期清理和 token 消费；repository 迁移失败前不追加新 asset scope；运行时更新失败会回滚 DB setting 与 `stored_path`。 |
+| A3 | 已完成 | cleanup 报告从 `failedPaths` 改为 `failedPathCount`；前端 API 拒绝旧 `failedPaths` payload；删除副本残留和迁移旧副本残留都返回 `failedCleanupPathCount`。 |
+| A4 | 已完成 | 主页资料库位置改为 prepare -> 确认 -> apply；取消确认不迁移；迁回默认只传 `{ kind: "default" }`；清理、删除副本残留和迁移旧副本残留只显示数量。 |
+| A5 | 已完成 | 版本号已统一为 `1.6.0`；自动化验证命令已通过；debug 包和正式 release 包均已生成；真实 App 手测已通过；导入资料链路改动后的补充 smoke test 已通过。 |
+
+V1.6 自动化验证结果（2026-06-15）：
+
+- `npm.cmd test`：通过，10 个文件、137 个测试。
+- `npm.cmd run typecheck`：通过。
+- `npm.cmd run build`：通过。
+- `cargo fmt --check`：通过。
+- `cargo test`：通过，72 个 Rust 测试。
+- `cargo clippy -- -D warnings`：通过。
+- `npm.cmd run tauri -- build --debug`：通过，生成 `target/debug/studyseq.exe`、`StudySeq_1.6.0_x64_en-US.msi`、`StudySeq_1.6.0_x64-setup.exe`。
+- `npm.cmd run tauri -- build`：通过，生成 `target/release/studyseq.exe`、`StudySeq_1.6.0_x64_en-US.msi`、`StudySeq_1.6.0_x64-setup.exe`。
+
+V1.6 收口审查修复：
+
+- Rust：资料重命名时若 DB 更新失败且文件回滚也失败，不再静默吞掉回滚错误，改为返回 `material_rename_rollback_failed`，避免 DB 与磁盘不一致被误判为普通数据库失败。
+- 前端 / Tauri：资料导入不再由前端打开文件选择器并传 `sourcePath`，改为 Rust command 内部打开文件选择器；前端只传 `learningContentId` 和 `parentId`，取消选择返回 `null` 且不改变资料列表。
+- 前端 DTO：`MaterialItem.originalPath` 仍可在 repository / SQLite 内部保存治理信息，但序列化给前端时跳过，前端类型和测试夹具已移除该字段，避免导入成功后把用户原始路径带入 UI state。
 
 ## V1.3 手工验收标准
 
@@ -603,8 +679,8 @@ npm.cmd run tauri -- build
 
 ## 下一步
 
-1. 按需要生成 V1.5 正式 release 包。
-2. 提交、推送并按项目节奏创建 V1.5 tag。
+1. 提交、推送，并按项目节奏创建 V1.6 tag。
+2. 进入 V1.7 前先确认版本策略和范围，避免在 V1.6 收口后继续追加功能。
 
 ## 推迟项
 
@@ -634,6 +710,9 @@ npm.cmd run tauri -- build
 - 笔记富文本、Markdown、标签和双向链接。
 - 整文件夹导入、目录同步和文件监听。
 - 打开原文件或打开所在文件夹。
+- 资料库迁移进度条、后台任务队列和取消迁移。
+- 多资料库、历史资料库位置列表和备份系统。
+- 大设置中心、主题设置和快捷键设置。
 
 ## 风险
 
@@ -735,3 +814,6 @@ npm.cmd run tauri -- build
 - 2026-06-14：按用户希望加快开发进度，将低风险 V1.6 候选合并进 V1.5，主题调整为“一键继续学习 + 轻量效率收口”；新增 B1 当前文件夹资料定位、B2 笔记保存状态、B3 删除影响提示、C1 图片 / 文本预览性能收口，全文搜索、Office、富文本笔记、整文件夹导入等高风险项仍后置。
 - 2026-06-14：完成 V1.5 A1-D1 自动化开发与收口：主页“继续”入口、详情页自动打开最近资料、当前文件夹资料定位、笔记保存状态、递归删除影响摘要、图片/PDF/视频 `assetPath` 预览和文本 2MB 保护均已接入；版本号统一为 `1.5.0`；自动化验证通过。
 - 2026-06-14：用户完成 V1.5 真实 App 手测，未发现阻塞问题；两条观察项已记录：搜索只覆盖本级资料夹，删除最近打开资料后会回退到上一条有效最近打开资料。
+- 2026-06-14：召集 `planner`、`architect`、`ui-ux-designer`、`security-reviewer` 规划 V1.6；结论收敛为“资料库安全边界与隐私收口”，不做新学习功能或大 UI 改版；新增 V1.6 独立开发计划 `product/docs/studyseq-v1.6-development-plan.md`，阶段为 A1 资料库位置合同、A2 Rust token 与迁移闭环、A3 清理报告脱敏、A4 前端 API 与体验适配、A5 回归验证与文档收口。
+- 2026-06-15：完成 V1.6 A1-A5 自动化实现与自动化验证：资料库位置设置改为 Rust prepare + 一次性 token + apply；前端不再提交任意路径字符串；cleanup 报告改为 `failedPathCount`；删除副本残留和迁移旧副本残留返回 `failedCleanupPathCount`；scope / state 更新失败会尽力回滚 DB setting 与 `stored_path`；版本号统一为 `1.6.0`；用户完成真实 App 手测，未发现问题。
+- 2026-06-15：V1.6 收口审查修复三个阻塞项：资料重命名回滚失败不再静默吞错；资料导入改为 Rust command 内部打开文件选择器，前端不再持有源文件路径 authority；`MaterialItem.originalPath` 不再序列化给前端。重新验证通过：前端 137 测试、Rust 72 测试、typecheck、build、fmt、clippy、Tauri debug build、Tauri release build 均通过；debug 包和正式 release 包均已重新生成；导入资料链路补充真实 App smoke test 已通过，V1.6 可进入提交/tag 收口。

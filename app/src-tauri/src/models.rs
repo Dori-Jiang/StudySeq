@@ -60,6 +60,7 @@ pub struct MaterialItem {
     pub parent_id: Option<String>,
     pub kind: MaterialKind,
     pub name: String,
+    #[serde(skip_serializing)]
     pub original_path: Option<String>,
     pub stored_path: Option<String>,
     pub mime_type: Option<String>,
@@ -88,6 +89,12 @@ pub struct MoveMaterialItemInput {
 pub struct MaterialSubtreeCount {
     pub file_count: i64,
     pub folder_count: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterialDeletionReport {
+    pub failed_cleanup_path_count: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -166,7 +173,7 @@ pub struct MaterialLibraryCleanupReport {
     pub deleted_orphan_file_count: i64,
     pub deleted_orphan_database_record_count: i64,
     pub deleted_bytes: i64,
-    pub failed_paths: Vec<String>,
+    pub failed_path_count: i64,
     pub updated_at: String,
 }
 
@@ -179,8 +186,24 @@ pub struct MaterialLibraryLocation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SetMaterialLibraryLocationInput {
-    pub path: String,
+pub struct MaterialLibraryLocationChangeReport {
+    pub location: MaterialLibraryLocation,
+    pub failed_cleanup_path_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterialLibraryLocationCandidate {
+    pub token: String,
+    pub display_path: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum MaterialLibraryLocationChangeInput {
+    Selected { token: String },
+    Default,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -235,7 +258,6 @@ pub struct MaterialPreview {
 #[serde(rename_all = "camelCase")]
 pub struct ImportMaterialFileInput {
     pub learning_content_id: String,
-    pub source_path: String,
     #[serde(default)]
     pub parent_id: Option<String>,
 }

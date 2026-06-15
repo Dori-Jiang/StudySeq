@@ -49,7 +49,6 @@ export type MaterialItem = {
   parentId: string | null;
   kind: MaterialKind;
   name: string;
-  originalPath: string | null;
   storedPath: string | null;
   mimeType: string | null;
   sizeBytes: number;
@@ -106,11 +105,15 @@ export type MaterialLibraryStats = {
   updatedAt: string;
 };
 
+export type MaterialDeletionReport = {
+  failedCleanupPathCount: number;
+};
+
 export type MaterialLibraryCleanupReport = {
   deletedOrphanFileCount: number;
   deletedOrphanDatabaseRecordCount: number;
   deletedBytes: number;
-  failedPaths: string[];
+  failedPathCount: number;
   updatedAt: string;
 };
 
@@ -119,9 +122,20 @@ export type MaterialLibraryLocation = {
   isDefault: boolean;
 };
 
-export type SetMaterialLibraryLocationInput = {
-  path: string;
+export type MaterialLibraryLocationChangeReport = {
+  location: MaterialLibraryLocation;
+  failedCleanupPathCount: number;
 };
+
+export type MaterialLibraryLocationCandidate = {
+  token: string;
+  displayPath: string;
+  expiresAt: string;
+};
+
+export type MaterialLibraryLocationChangeInput =
+  | { kind: "selected"; token: string }
+  | { kind: "default" };
 
 export type RenameMaterialItemInput = {
   materialId: string;
@@ -157,7 +171,6 @@ export type MaterialPreview = {
 
 export type ImportMaterialFileInput = {
   learningContentId: string;
-  sourcePath: string;
   parentId?: string | null;
 };
 

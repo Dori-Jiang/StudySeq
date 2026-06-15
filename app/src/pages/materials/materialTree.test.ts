@@ -20,7 +20,6 @@ function buildItem(
     parentId,
     kind,
     name: id,
-    originalPath: kind === "file" ? `D:/src/${id}` : null,
     storedPath: kind === "file" ? `C:/lib/${id}` : null,
     mimeType: null,
     sizeBytes: 0,

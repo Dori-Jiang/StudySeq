@@ -3,12 +3,12 @@ import { createPortal } from "react-dom";
 import { Link } from "react-router";
 
 import {
+  applyMaterialLibraryLocationChange,
   createLearningContent,
   deleteLearningContent,
-  chooseMaterialLibraryStorageRoot,
   getMaterialLibraryLocation,
   listLearningContents,
-  setMaterialLibraryLocation,
+  prepareMaterialLibraryLocationChange,
   updateLearningContent,
 } from "../shared/api/learningContentApi";
 import { toUserMessage } from "../shared/api/errors";
@@ -121,11 +121,16 @@ export function HomePage() {
     setDeleteError(null);
     setError(null);
     try {
-      await deleteLearningContent(content.id);
+      const report = await deleteLearningContent(content.id);
       setContents((currentContents) =>
         currentContents.filter((currentContent) => currentContent.id !== content.id),
       );
       setContentPendingDelete(null);
+      setError(
+        report.failedCleanupPathCount > 0
+          ? `学习内容已删除，但有 ${report.failedCleanupPathCount} 个 App 管理资料副本未清理，可稍后在资料库清理中重试。`
+          : null,
+      );
     } catch (deleteError: unknown) {
       setDeleteError(`删除学习内容失败：${toUserMessage(deleteError)}`);
     } finally {
@@ -172,19 +177,28 @@ export function HomePage() {
 
   async function handleChooseMaterialLibraryLocation() {
     try {
-      const selected = await chooseMaterialLibraryStorageRoot();
-      if (selected === null) return;
+      const candidate = await prepareMaterialLibraryLocationChange();
+      if (candidate === null) return;
 
-      await handleMoveMaterialLibrary(buildMaterialLibraryPath(selected));
+      await handleMoveMaterialLibrary({
+        input: { kind: "selected", token: candidate.token },
+        label: candidate.displayPath,
+      });
     } catch (chooseError: unknown) {
       setError(toUserMessage(chooseError));
     }
   }
 
-  async function handleMoveMaterialLibrary(path: string, label = path) {
+  async function handleMoveMaterialLibrary({
+    input,
+    label,
+  }: {
+    input: Parameters<typeof applyMaterialLibraryLocationChange>[0];
+    label: string;
+  }) {
     if (
       !window.confirm(
-        `确定将资料库迁移到 ${label} 吗？迁移期间请不要关闭应用，完成后新导入资料会写入该位置。`,
+        `确定将资料库迁移到 ${label} 吗？迁移期间请不要关闭应用，迁移完成前原资料会保留。`,
       )
     ) {
       return;
@@ -193,12 +207,17 @@ export function HomePage() {
     setIsMigratingMaterialLibrary(true);
     setMaterialLibraryMessage(null);
     try {
-      const location = await setMaterialLibraryLocation({ path });
+      const report = await applyMaterialLibraryLocationChange(input);
+      const location = report.location;
       setMaterialLibraryLocationState(location);
-      setMaterialLibraryMessage(`资料库位置已更新为 ${location.path}`);
+      setMaterialLibraryMessage(
+        report.failedCleanupPathCount > 0
+          ? `资料库位置已更新为 ${location.path}，但有 ${report.failedCleanupPathCount} 个旧资料库副本未清理。`
+          : `资料库位置已更新为 ${location.path}`,
+      );
       setError(null);
     } catch (migrationError: unknown) {
-      setError(toUserMessage(migrationError));
+      setError(`资料库迁移失败。${toUserMessage(migrationError)}`);
     } finally {
       setIsMigratingMaterialLibrary(false);
     }
@@ -260,7 +279,10 @@ export function HomePage() {
             className="secondary-button"
             type="button"
             onClick={() => {
-              void handleMoveMaterialLibrary("DEFAULT", "默认位置");
+              void handleMoveMaterialLibrary({
+                input: { kind: "default" },
+                label: "默认位置",
+              });
             }}
             disabled={isMigratingMaterialLibrary || materialLibraryLocation?.isDefault !== false}
           >
@@ -392,19 +414,6 @@ function buildContinueHref(content: LearningContent) {
   if (!content.recentOpen) return `/studies/${content.id}`;
   const materialId = encodeURIComponent(content.recentOpen.materialId);
   return `/studies/${content.id}?continue=1&materialId=${materialId}`;
-}
-
-function buildMaterialLibraryPath(storageRoot: string) {
-  const separator = storageRoot.includes("\\") && !storageRoot.includes("/") ? "\\" : "/";
-  const trimmedRoot = storageRoot.replace(/[\\/]+$/, "");
-  const normalizedRoot = trimmedRoot.replace(/\\/g, "/");
-  if (normalizedRoot.endsWith("/StudySeqData/materials")) {
-    return trimmedRoot;
-  }
-  if (normalizedRoot.endsWith("/StudySeqData")) {
-    return `${trimmedRoot}${separator}materials`;
-  }
-  return `${trimmedRoot}${separator}StudySeqData${separator}materials`;
 }
 
 function RecentOpenSummary({ content }: { content: LearningContent }) {

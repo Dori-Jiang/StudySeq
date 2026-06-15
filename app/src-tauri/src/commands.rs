@@ -1,19 +1,24 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use chrono::{Duration, Utc};
 use tauri::{Manager, State, Window};
 use tauri_plugin_dialog::DialogExt;
+use uuid::Uuid;
 
 use crate::errors::{ApiError, AppError};
 use crate::models::{
     CreateLearningContentInput, CreateMaterialFolderInput, CreateNoteInput,
-    ImportMaterialFileInput, LearningContent, LearningDetail, MaterialItem,
-    MaterialLibraryCleanupReport, MaterialLibraryLocation, MaterialLibraryStats, MaterialPreview,
-    MaterialReadingState, MaterialSubtreeCount, MoveMaterialItemInput, Note,
+    ImportMaterialFileInput, LearningContent, LearningDetail, MaterialDeletionReport, MaterialItem,
+    MaterialLibraryCleanupReport, MaterialLibraryLocation, MaterialLibraryLocationCandidate,
+    MaterialLibraryLocationChangeInput, MaterialLibraryLocationChangeReport, MaterialLibraryStats,
+    MaterialPreview, MaterialReadingState, MaterialSubtreeCount, MoveMaterialItemInput, Note,
     RenameMaterialItemInput, SaveMaterialReadingStateInput, SaveVideoPlaybackStateInput,
-    SetMaterialLibraryLocationInput, UpdateLearningContentInput, UpdateNoteInput,
+    UpdateLearningContentInput, UpdateNoteInput,
 };
 use crate::repository::LearningContentRepository;
-use crate::AppState;
+use crate::{AppState, PendingMaterialLibraryLocation};
+
+const MATERIAL_LIBRARY_LOCATION_TOKEN_TTL_MINUTES: i64 = 10;
 
 fn current_material_library_dir(
     state: &State<'_, AppState>,
@@ -78,7 +83,10 @@ pub fn get_learning_detail(
 }
 
 #[tauri::command]
-pub fn delete_learning_content(state: State<'_, AppState>, id: String) -> Result<(), ApiError> {
+pub fn delete_learning_content(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<MaterialDeletionReport, ApiError> {
     let repository = state
         .repository
         .lock()
@@ -89,7 +97,10 @@ pub fn delete_learning_content(state: State<'_, AppState>, id: String) -> Result
 }
 
 #[tauri::command]
-pub fn delete_material_item(state: State<'_, AppState>, id: String) -> Result<(), ApiError> {
+pub fn delete_material_item(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<MaterialDeletionReport, ApiError> {
     let repository = state
         .repository
         .lock()
@@ -104,18 +115,24 @@ pub fn import_material_file(
     window: Window,
     state: State<'_, AppState>,
     input: ImportMaterialFileInput,
-) -> Result<MaterialItem, ApiError> {
+) -> Result<Option<MaterialItem>, ApiError> {
     let repository = state
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
 
     let material_library_dir = current_material_library_dir(&state)?;
-    let source_path = PathBuf::from(&input.source_path);
-    if !window.asset_protocol_scope().is_allowed(&source_path) {
-        return Err(ApiError::from(AppError::SourceFileMissing));
-    }
-    import_material_file_in_repository(&repository, input, &material_library_dir)
+    let selected = window
+        .dialog()
+        .file()
+        .set_title("选择学习资料")
+        .blocking_pick_file();
+    let Some(source_path) = selected.and_then(|path| path.into_path().ok()) else {
+        return Ok(None);
+    };
+
+    import_material_file_in_repository(&repository, input, &source_path, &material_library_dir)
+        .map(Some)
 }
 
 #[tauri::command]
@@ -258,52 +275,163 @@ pub fn get_material_library_location(
 }
 
 #[tauri::command]
-pub fn choose_material_library_storage_root(window: Window) -> Result<Option<String>, ApiError> {
+pub fn prepare_material_library_location_change(
+    window: Window,
+    state: State<'_, AppState>,
+) -> Result<Option<MaterialLibraryLocationCandidate>, ApiError> {
     let selected = window
         .dialog()
         .file()
         .set_title("选择资料库存放位置")
         .blocking_pick_folder();
 
-    Ok(selected
-        .and_then(|path| path.into_path().ok())
-        .map(|path| path.to_string_lossy().to_string()))
+    let Some(storage_root) = selected.and_then(|path| path.into_path().ok()) else {
+        return Ok(None);
+    };
+
+    let target_dir = material_library_dir_for_storage_root(&storage_root);
+    let expires_at = Utc::now() + Duration::minutes(MATERIAL_LIBRARY_LOCATION_TOKEN_TTL_MINUTES);
+    let token = Uuid::new_v4().to_string();
+    let candidate = MaterialLibraryLocationCandidate {
+        token: token.clone(),
+        display_path: target_dir.to_string_lossy().to_string(),
+        expires_at: expires_at.to_rfc3339(),
+    };
+
+    let mut pending = state
+        .pending_material_library_locations
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+    remove_expired_material_library_location_tokens(&mut pending, Utc::now());
+    pending.insert(
+        token,
+        PendingMaterialLibraryLocation {
+            path: target_dir,
+            expires_at,
+        },
+    );
+
+    Ok(Some(candidate))
 }
 
 #[tauri::command]
-pub fn set_material_library_location(
+pub fn apply_material_library_location_change(
     window: Window,
     state: State<'_, AppState>,
-    input: SetMaterialLibraryLocationInput,
-) -> Result<MaterialLibraryLocation, ApiError> {
+    input: MaterialLibraryLocationChangeInput,
+) -> Result<MaterialLibraryLocationChangeReport, ApiError> {
     let repository = state
         .repository
         .lock()
         .map_err(|_| AppError::StateUnavailable)?;
     let current_dir = current_material_library_dir(&state)?;
-    let target_dir = if input.path == "DEFAULT" {
-        state.default_material_library_dir.clone()
-    } else {
-        std::path::PathBuf::from(input.path)
+
+    let target_dir = match input {
+        MaterialLibraryLocationChangeInput::Default => state.default_material_library_dir.clone(),
+        MaterialLibraryLocationChangeInput::Selected { token } => {
+            consume_pending_material_library_location(&state, &token)?
+        }
     };
-    let location = repository
+
+    let change_plan = repository
         .set_material_library_location(
             &current_dir,
             &state.default_material_library_dir,
             &target_dir,
         )
         .map_err(ApiError::from)?;
-    window
-        .asset_protocol_scope()
-        .allow_directory(&location.path, true)
-        .map_err(|_| ApiError::from(AppError::InvalidMaterialLibraryLocation))?;
 
+    apply_material_library_runtime_update(
+        &repository,
+        &state.default_material_library_dir,
+        &target_dir,
+        &change_plan,
+        || {
+            window
+                .asset_protocol_scope()
+                .allow_directory(&change_plan.location.path, true)
+                .map_err(|_| AppError::InvalidMaterialLibraryLocation)
+                .and_then(|_| update_material_library_dir_state(&state, &change_plan.location.path))
+        },
+    )
+    .map_err(ApiError::from)?;
+
+    Ok(change_plan.cleanup_old_files())
+}
+
+fn material_library_dir_for_storage_root(storage_root: &Path) -> PathBuf {
+    storage_root.join("StudySeqData").join("materials")
+}
+
+fn update_material_library_dir_state(
+    state: &State<'_, AppState>,
+    path: &str,
+) -> Result<(), AppError> {
     *state
         .material_library_dir
         .lock()
-        .map_err(|_| AppError::StateUnavailable)? = std::path::PathBuf::from(&location.path);
+        .map_err(|_| AppError::StateUnavailable)? = PathBuf::from(path);
+    Ok(())
+}
 
-    Ok(location)
+fn apply_material_library_runtime_update(
+    repository: &LearningContentRepository,
+    default_material_library_dir: &Path,
+    target_dir: &Path,
+    change_plan: &crate::repository::MaterialLibraryLocationChangePlan,
+    update_runtime: impl FnOnce() -> Result<(), AppError>,
+) -> Result<(), AppError> {
+    if let Err(runtime_error) = update_runtime() {
+        let rollback_result = repository.rollback_material_library_location(
+            target_dir,
+            default_material_library_dir,
+            &change_plan.previous_dir,
+        );
+        if let Err(rollback_error) = rollback_result {
+            eprintln!(
+                "material library rollback failed after runtime update error: {rollback_error}"
+            );
+        }
+        return Err(runtime_error);
+    }
+
+    Ok(())
+}
+
+fn consume_pending_material_library_location(
+    state: &State<'_, AppState>,
+    token: &str,
+) -> Result<PathBuf, AppError> {
+    let now = Utc::now();
+    let mut pending = state
+        .pending_material_library_locations
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+    consume_pending_material_library_location_from_map(&mut pending, token, now)
+}
+
+fn consume_pending_material_library_location_from_map(
+    pending: &mut std::collections::HashMap<String, PendingMaterialLibraryLocation>,
+    token: &str,
+    now: chrono::DateTime<Utc>,
+) -> Result<PathBuf, AppError> {
+    remove_expired_material_library_location_tokens(pending, now);
+
+    let Some(candidate) = pending.remove(token) else {
+        return Err(AppError::InvalidMaterialLibraryLocation);
+    };
+    if candidate.expires_at <= now {
+        return Err(AppError::InvalidMaterialLibraryLocation);
+    }
+
+    Ok(candidate.path)
+}
+
+fn remove_expired_material_library_location_tokens(
+    pending: &mut std::collections::HashMap<String, PendingMaterialLibraryLocation>,
+    now: chrono::DateTime<Utc>,
+) {
+    pending.retain(|_, candidate| candidate.expires_at > now);
 }
 
 #[tauri::command]
@@ -388,7 +516,7 @@ fn delete_learning_content_in_repository(
     repository: &LearningContentRepository,
     id: &str,
     material_library_dir: &std::path::Path,
-) -> Result<(), ApiError> {
+) -> Result<MaterialDeletionReport, ApiError> {
     repository
         .delete_learning_content(id, material_library_dir)
         .map_err(ApiError::from)
@@ -398,7 +526,7 @@ fn delete_material_item_in_repository(
     repository: &LearningContentRepository,
     id: &str,
     material_library_dir: &std::path::Path,
-) -> Result<(), ApiError> {
+) -> Result<MaterialDeletionReport, ApiError> {
     repository
         .delete_material_item(id, material_library_dir)
         .map_err(ApiError::from)
@@ -407,12 +535,13 @@ fn delete_material_item_in_repository(
 fn import_material_file_in_repository(
     repository: &LearningContentRepository,
     input: ImportMaterialFileInput,
+    source_path: &std::path::Path,
     material_library_dir: &std::path::Path,
 ) -> Result<MaterialItem, ApiError> {
     repository
         .import_material_file(
             &input.learning_content_id,
-            input.source_path,
+            source_path,
             material_library_dir,
             input.parent_id.as_deref(),
         )
@@ -553,9 +682,134 @@ fn count_material_subtree_in_repository(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use crate::repository::LearningContentRepository;
 
     use super::*;
+
+    #[test]
+    fn material_library_storage_root_is_derived_inside_rust() {
+        let selected_root = PathBuf::from(r"D:\LearningData");
+
+        let target = material_library_dir_for_storage_root(&selected_root);
+
+        assert_eq!(
+            target,
+            PathBuf::from(r"D:\LearningData")
+                .join("StudySeqData")
+                .join("materials")
+        );
+    }
+
+    #[test]
+    fn pending_material_library_location_tokens_expire() {
+        let now = Utc::now();
+        let mut pending = HashMap::from([
+            (
+                "expired".to_string(),
+                PendingMaterialLibraryLocation {
+                    path: PathBuf::from(r"D:\expired\StudySeqData\materials"),
+                    expires_at: now - Duration::minutes(1),
+                },
+            ),
+            (
+                "active".to_string(),
+                PendingMaterialLibraryLocation {
+                    path: PathBuf::from(r"D:\active\StudySeqData\materials"),
+                    expires_at: now + Duration::minutes(1),
+                },
+            ),
+        ]);
+
+        remove_expired_material_library_location_tokens(&mut pending, now);
+
+        assert!(!pending.contains_key("expired"));
+        assert!(pending.contains_key("active"));
+    }
+
+    #[test]
+    fn pending_material_library_location_tokens_are_one_time_use() {
+        let token = "token-1".to_string();
+        let path = PathBuf::from(r"D:\LearningData\StudySeqData\materials");
+        let mut pending = HashMap::from([(
+            token.clone(),
+            PendingMaterialLibraryLocation {
+                path: path.clone(),
+                expires_at: Utc::now() + Duration::minutes(1),
+            },
+        )]);
+
+        let first =
+            consume_pending_material_library_location_from_map(&mut pending, &token, Utc::now())
+                .expect("first token use");
+        let second =
+            consume_pending_material_library_location_from_map(&mut pending, &token, Utc::now());
+
+        assert_eq!(first, path);
+        assert!(matches!(
+            second,
+            Err(AppError::InvalidMaterialLibraryLocation)
+        ));
+    }
+
+    #[test]
+    fn material_library_runtime_failure_rolls_back_repository_location() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let default_library_dir = temp_dir.path().join("default-materials");
+        let target_library_dir = temp_dir
+            .path()
+            .join("target")
+            .join("StudySeqData")
+            .join("materials");
+        let source_file = temp_dir.path().join("source.pdf");
+        std::fs::write(&source_file, b"%PDF command rollback").expect("write source");
+        let content = repository
+            .create(CreateLearningContentInput {
+                name: "命令回滚".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create content");
+        let material = repository
+            .import_material_file(&content.id, &source_file, &default_library_dir, None)
+            .expect("import material");
+        let old_stored_path = material.stored_path.clone().expect("old stored path");
+        let change_plan = repository
+            .set_material_library_location(
+                &default_library_dir,
+                &default_library_dir,
+                &target_library_dir,
+            )
+            .expect("set target location");
+
+        let error = apply_material_library_runtime_update(
+            &repository,
+            &default_library_dir,
+            &target_library_dir,
+            &change_plan,
+            || Err(AppError::InvalidMaterialLibraryLocation),
+        )
+        .expect_err("runtime update should fail");
+
+        assert!(matches!(error, AppError::InvalidMaterialLibraryLocation));
+        let rolled_back_location = repository
+            .get_material_library_location(&default_library_dir)
+            .expect("get rolled back location");
+        assert!(rolled_back_location.is_default);
+        let detail = repository
+            .get_detail(&content.id)
+            .expect("get detail")
+            .expect("detail exists");
+        assert_eq!(
+            detail.materials[0].stored_path.as_deref(),
+            Some(old_stored_path.as_str())
+        );
+        assert!(PathBuf::from(old_stored_path).exists());
+    }
 
     #[test]
     fn command_handlers_share_repository_state_for_create_and_list() {
@@ -642,9 +896,9 @@ mod tests {
             &repository,
             ImportMaterialFileInput {
                 learning_content_id: content.id.clone(),
-                source_path: source_file.to_string_lossy().to_string(),
                 parent_id: None,
             },
+            &source_file,
             &material_library_dir,
         )
         .expect("import material");
@@ -664,8 +918,10 @@ mod tests {
         assert_eq!(detail.materials.len(), 1);
         assert_eq!(detail.notes.len(), 1);
 
-        delete_learning_content_in_repository(&repository, &content.id, &material_library_dir)
-            .expect("delete learning content");
+        let report =
+            delete_learning_content_in_repository(&repository, &content.id, &material_library_dir)
+                .expect("delete learning content");
+        assert_eq!(report.failed_cleanup_path_count, 0);
         assert!(
             get_learning_detail_from_repository(&repository, &content.id)
                 .expect("get deleted detail")
@@ -695,16 +951,18 @@ mod tests {
             &repository,
             ImportMaterialFileInput {
                 learning_content_id: content.id.clone(),
-                source_path: source_file.to_string_lossy().to_string(),
                 parent_id: None,
             },
+            &source_file,
             &material_library_dir,
         )
         .expect("import material");
         let stored_path = material.stored_path.clone().expect("stored path");
 
-        delete_material_item_in_repository(&repository, &material.id, &material_library_dir)
-            .expect("delete material");
+        let report =
+            delete_material_item_in_repository(&repository, &material.id, &material_library_dir)
+                .expect("delete material");
+        assert_eq!(report.failed_cleanup_path_count, 0);
 
         let detail = get_learning_detail_from_repository(&repository, &content.id)
             .expect("get detail")
@@ -735,9 +993,9 @@ mod tests {
             &repository,
             ImportMaterialFileInput {
                 learning_content_id: content.id.clone(),
-                source_path: source_file.to_string_lossy().to_string(),
                 parent_id: None,
             },
+            &source_file,
             &material_library_dir,
         )
         .expect("import material");
@@ -760,9 +1018,9 @@ mod tests {
             &repository,
             ImportMaterialFileInput {
                 learning_content_id: content.id.clone(),
-                source_path: video_source.to_string_lossy().to_string(),
                 parent_id: None,
             },
+            &video_source,
             &material_library_dir,
         )
         .expect("import video");
@@ -824,9 +1082,9 @@ mod tests {
             &repository,
             ImportMaterialFileInput {
                 learning_content_id: content.id.clone(),
-                source_path: source_file.to_string_lossy().to_string(),
                 parent_id: None,
             },
+            &source_file,
             &material_library_dir,
         )
         .expect("import material");
@@ -874,9 +1132,9 @@ mod tests {
             &repository,
             ImportMaterialFileInput {
                 learning_content_id: content.id.clone(),
-                source_path: source_file.to_string_lossy().to_string(),
                 parent_id: None,
             },
+            &source_file,
             &material_library_dir,
         )
         .expect("import material");

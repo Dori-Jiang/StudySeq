@@ -12,11 +12,13 @@ const listLearningContents = vi.mocked(learningContentApi.listLearningContents);
 const createLearningContent = vi.mocked(learningContentApi.createLearningContent);
 const deleteLearningContent = vi.mocked(learningContentApi.deleteLearningContent);
 const updateLearningContent = vi.mocked(learningContentApi.updateLearningContent);
-const chooseMaterialLibraryStorageRoot = vi.mocked(
-  learningContentApi.chooseMaterialLibraryStorageRoot,
+const prepareMaterialLibraryLocationChange = vi.mocked(
+  learningContentApi.prepareMaterialLibraryLocationChange,
+);
+const applyMaterialLibraryLocationChange = vi.mocked(
+  learningContentApi.applyMaterialLibraryLocationChange,
 );
 const getMaterialLibraryLocation = vi.mocked(learningContentApi.getMaterialLibraryLocation);
-const setMaterialLibraryLocation = vi.mocked(learningContentApi.setMaterialLibraryLocation);
 
 describe("HomePage", () => {
   beforeEach(() => {
@@ -24,9 +26,9 @@ describe("HomePage", () => {
     createLearningContent.mockReset();
     deleteLearningContent.mockReset();
     updateLearningContent.mockReset();
-    chooseMaterialLibraryStorageRoot.mockReset();
+    prepareMaterialLibraryLocationChange.mockReset();
+    applyMaterialLibraryLocationChange.mockReset();
     getMaterialLibraryLocation.mockReset();
-    setMaterialLibraryLocation.mockReset();
     getMaterialLibraryLocation.mockResolvedValue({
       path: "C:/Users/123/AppData/Roaming/com.studyseq.desktop/materials",
       isDefault: true,
@@ -217,10 +219,17 @@ describe("HomePage", () => {
 
   it("chooses a material library location from the home page", async () => {
     listLearningContents.mockResolvedValueOnce([]);
-    chooseMaterialLibraryStorageRoot.mockResolvedValueOnce("D:/LearningData");
-    setMaterialLibraryLocation.mockResolvedValueOnce({
-      path: "D:/LearningData/StudySeqData/materials",
-      isDefault: false,
+    prepareMaterialLibraryLocationChange.mockResolvedValueOnce({
+      token: "candidate-token",
+      displayPath: "D:/LearningData/StudySeqData/materials",
+      expiresAt: "2026-06-15T00:10:00Z",
+    });
+    applyMaterialLibraryLocationChange.mockResolvedValueOnce({
+      location: {
+        path: "D:/LearningData/StudySeqData/materials",
+        isDefault: false,
+      },
+      failedCleanupPathCount: 0,
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
 
@@ -229,12 +238,13 @@ describe("HomePage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "选择资料库位置" }));
 
-    expect(chooseMaterialLibraryStorageRoot).toHaveBeenCalledWith();
+    expect(prepareMaterialLibraryLocationChange).toHaveBeenCalledWith();
     expect(window.confirm).toHaveBeenCalledWith(
       expect.stringContaining("D:/LearningData/StudySeqData/materials"),
     );
-    expect(setMaterialLibraryLocation).toHaveBeenCalledWith({
-      path: "D:/LearningData/StudySeqData/materials",
+    expect(applyMaterialLibraryLocationChange).toHaveBeenCalledWith({
+      kind: "selected",
+      token: "candidate-token",
     });
     expect(
       await screen.findByText("资料库位置已更新为 D:/LearningData/StudySeqData/materials"),
@@ -242,15 +252,60 @@ describe("HomePage", () => {
     expect(screen.getByText(/当前 D:\/LearningData\/StudySeqData\/materials/)).toBeInTheDocument();
   });
 
-  it("does not migrate the material library when folder selection is cancelled", async () => {
+  it("warns when material library migration leaves old managed copies behind", async () => {
     listLearningContents.mockResolvedValueOnce([]);
-    chooseMaterialLibraryStorageRoot.mockResolvedValueOnce(null);
+    prepareMaterialLibraryLocationChange.mockResolvedValueOnce({
+      token: "candidate-token",
+      displayPath: "D:/LearningData/StudySeqData/materials",
+      expiresAt: "2026-06-15T00:10:00Z",
+    });
+    applyMaterialLibraryLocationChange.mockResolvedValueOnce({
+      location: {
+        path: "D:/LearningData/StudySeqData/materials",
+        isDefault: false,
+      },
+      failedCleanupPathCount: 2,
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
 
     renderHomePage();
     await screen.findByText(/当前 C:\/Users\/123/);
     await userEvent.click(screen.getByRole("button", { name: "选择资料库位置" }));
 
-    expect(setMaterialLibraryLocation).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(
+        "资料库位置已更新为 D:/LearningData/StudySeqData/materials，但有 2 个旧资料库副本未清理。",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/C:\\Users\\123\\secret/)).not.toBeInTheDocument();
+  });
+
+  it("does not migrate the material library when folder selection is cancelled", async () => {
+    listLearningContents.mockResolvedValueOnce([]);
+    prepareMaterialLibraryLocationChange.mockResolvedValueOnce(null);
+
+    renderHomePage();
+    await screen.findByText(/当前 C:\/Users\/123/);
+    await userEvent.click(screen.getByRole("button", { name: "选择资料库位置" }));
+
+    expect(applyMaterialLibraryLocationChange).not.toHaveBeenCalled();
+  });
+
+  it("does not apply a prepared material library location when confirmation is cancelled", async () => {
+    listLearningContents.mockResolvedValueOnce([]);
+    prepareMaterialLibraryLocationChange.mockResolvedValueOnce({
+      token: "candidate-token",
+      displayPath: "D:/LearningData/StudySeqData/materials",
+      expiresAt: "2026-06-15T00:10:00Z",
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    renderHomePage();
+    await screen.findByText(/当前 C:\/Users\/123/);
+    await userEvent.click(screen.getByRole("button", { name: "选择资料库位置" }));
+
+    expect(prepareMaterialLibraryLocationChange).toHaveBeenCalledWith();
+    expect(applyMaterialLibraryLocationChange).not.toHaveBeenCalled();
   });
 
   it("moves the material library back to the default location from the home page", async () => {
@@ -259,9 +314,12 @@ describe("HomePage", () => {
       isDefault: false,
     });
     listLearningContents.mockResolvedValueOnce([]);
-    setMaterialLibraryLocation.mockResolvedValueOnce({
-      path: "C:/Users/123/AppData/Roaming/com.studyseq.desktop/materials",
-      isDefault: true,
+    applyMaterialLibraryLocationChange.mockResolvedValueOnce({
+      location: {
+        path: "C:/Users/123/AppData/Roaming/com.studyseq.desktop/materials",
+        isDefault: true,
+      },
+      failedCleanupPathCount: 0,
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
 
@@ -270,7 +328,7 @@ describe("HomePage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "迁回默认位置" }));
 
-    expect(setMaterialLibraryLocation).toHaveBeenCalledWith({ path: "DEFAULT" });
+    expect(applyMaterialLibraryLocationChange).toHaveBeenCalledWith({ kind: "default" });
     expect(
       await screen.findByText(
         "资料库位置已更新为 C:/Users/123/AppData/Roaming/com.studyseq.desktop/materials",
@@ -293,7 +351,7 @@ describe("HomePage", () => {
         recentOpen: null,
       },
     ]);
-    deleteLearningContent.mockResolvedValueOnce();
+    deleteLearningContent.mockResolvedValueOnce({ failedCleanupPathCount: 0 });
 
     renderHomePage();
     await screen.findByText("Rust 入门");
@@ -315,6 +373,40 @@ describe("HomePage", () => {
     });
     expect(screen.queryByRole("dialog", { name: "删除学习内容" })).not.toBeInTheDocument();
     expect(screen.queryByText("Rust 入门")).not.toBeInTheDocument();
+  });
+
+  it("warns when a deleted learning content leaves managed copies behind", async () => {
+    listLearningContents.mockResolvedValueOnce([
+      {
+        id: "study-1",
+        name: "Rust 入门",
+        status: "planned",
+        deadline: null,
+        estimatedHours: 12,
+        progress: 30,
+        createdAt: "2026-06-08T00:00:00Z",
+        updatedAt: "2026-06-08T00:00:00Z",
+        lastOpenedAt: null,
+        recentOpen: null,
+      },
+    ]);
+    deleteLearningContent.mockResolvedValueOnce({ failedCleanupPathCount: 2 });
+
+    renderHomePage();
+    await screen.findByText("Rust 入门");
+    await userEvent.click(screen.getByRole("button", { name: "删除 Rust 入门" }));
+    await userEvent.click(
+      within(screen.getByRole("dialog", { name: "删除学习内容" })).getByRole("button", {
+        name: "确认删除",
+      }),
+    );
+
+    expect(
+      await screen.findByText(
+        "学习内容已删除，但有 2 个 App 管理资料副本未清理，可稍后在资料库清理中重试。",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/C:\\Users/)).not.toBeInTheDocument();
   });
 
   it("keeps the learning content when deleting is cancelled", async () => {

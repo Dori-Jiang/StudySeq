@@ -138,6 +138,12 @@
 - V1.5 自动化验证已通过：`npm.cmd test`（10 文件、130 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`cargo fmt --check`、`cargo test`（64 测试）、`cargo clippy -- -D warnings`、`npm.cmd run tauri -- build --debug`。debug 包已生成；真实 App 手测已由用户完成，下一步按需要生成正式 release 包、提交、推送和 tag。
 - V1.5 真实 App 手测观察项：① 搜索只覆盖本级资料夹，不能搜索更下一级文件夹，符合 V1.5 当前文件夹资料定位范围，递归/全局搜索后置；② 删除最近打开资料后，主页不引用已删除失效资料，但会回退到更上一次新打开的有效资料，符合“无失效引用”口径。
 - V1.5 开发计划已更新：`product/docs/studyseq-v1.5-development-plan.md`。阶段为 A1 继续学习合同、A2 主页继续入口、A3 详情页自动打开资料、B1 当前文件夹资料定位、B2 笔记保存状态、B3 删除影响提示、C1 图片 / 文本预览性能收口、C2 安全边界回归、D1 回归验证与文档收口。
+- 当前已完成 V1.6 A1-A5 自动化实现与自动化验证，参与角色包括 `planner`、`architect`、`ui-ux-designer`、`security-reviewer`、`rust-reviewer`、`typescript-reviewer`；V1.6 定位为“资料库安全边界与隐私收口”，不做新学习功能、不做大 UI 改版、不新增 SQLite schema。
+- V1.6 已处理 V1.5 安全审查后续项：① 资料库位置设置不再让前端传任意路径字符串；② `MaterialLibraryCleanupReport.failedPaths` 已改为只返回失败数量 `failedPathCount`。
+- V1.6 技术方案已落地：Rust command 负责目录选择、派生 `StudySeqData\materials`、生成 10 分钟一次性 token、应用迁移并更新 `material_library_dir` state 和 asset scope；前端只负责展示确认、提交 token 或 `{ kind: "default" }`，不拼接或提交路径 authority。
+- V1.6 安全边界记录：repository 迁移失败前不追加新 asset scope；迁移成功后再追加当前资料库 scope。若 scope / state 更新失败，会尽力回滚 DB setting 与 `stored_path` 到旧资料库。Tauri asset scope 没有安全撤销 allow 的 API，旧资料库 scope 在同一 App 会话内可能残留，但前端只使用当前 DB `stored_path` 和 Rust 校验后的预览路径；迁移旧副本清理失败、删除学习内容或资料后的 App 管理副本清理失败都会返回脱敏数量 `failedCleanupPathCount`，前端只提示数量和稍后重试，不暴露本机路径。
+- V1.6 不进入递归/全局/全文搜索、Office、整文件夹导入、目录同步、文件监听、迁移进度条、后台任务队列、多资料库、备份系统、打开原文件/所在文件夹、SQLite 加密、云同步、账号或大设置中心。
+- V1.6 开发计划已更新：`product/docs/studyseq-v1.6-development-plan.md`。阶段 A1-A5 自动化验证已完成：`npm.cmd test`（10 文件、137 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`cargo fmt --check`、`cargo test`（72 测试）、`cargo clippy -- -D warnings`、`npm.cmd run tauri -- build --debug`、`npm.cmd run tauri -- build` 均通过。版本号已统一为 `1.6.0`。用户已完成真实 App 手测，未发现问题；审查发现的资料重命名回滚失败静默吞错、导入资料前端持有本机路径 authority、导入成功后前端仍收到 `originalPath` 三个阻塞项已修复；debug 包和正式 release 包均已重新生成；导入资料链路补充 smoke test 已通过。下一步可提交、推送并创建 V1.6 tag。
 
 ## 已准备依赖
 

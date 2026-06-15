@@ -1,4 +1,3 @@
-import { open } from "@tauri-apps/plugin-dialog";
 import {
   FormEvent,
   PointerEvent as ReactPointerEvent,
@@ -205,17 +204,11 @@ export function StudyDetailPage() {
     if (!studyId) return;
 
     try {
-      const selected = await open({
-        multiple: false,
-        directory: false,
-      });
-      if (typeof selected !== "string") return;
-
       const imported = await importMaterialFile({
         learningContentId: studyId,
-        sourcePath: selected,
         parentId,
       });
+      if (imported === null) return;
 
       setDetail((currentDetail) =>
         currentDetail
@@ -501,12 +494,17 @@ export function StudyDetailPage() {
     );
     const deleteResults = await Promise.allSettled(
       idsToDelete.map(async (materialId) => {
-        await deleteMaterialItem(materialId);
-        return materialId;
+        const report = await deleteMaterialItem(materialId);
+        return { materialId, report };
       }),
     );
     const deletedIds = deleteResults.flatMap((result) =>
-      result.status === "fulfilled" ? [result.value] : [],
+      result.status === "fulfilled" ? [result.value.materialId] : [],
+    );
+    const failedCleanupPathCount = deleteResults.reduce(
+      (count, result) =>
+        result.status === "fulfilled" ? count + result.value.report.failedCleanupPathCount : count,
+      0,
     );
     const failedIds = idsToDelete.filter((materialId) => !deletedIds.includes(materialId));
     const removedIds = new Set(
@@ -540,7 +538,11 @@ export function StudyDetailPage() {
       return;
     }
 
-    setError(null);
+    setError(
+      failedCleanupPathCount > 0
+        ? `资料记录已删除，但有 ${failedCleanupPathCount} 个 App 管理资料副本未清理，可稍后在资料库清理中重试。`
+        : null,
+    );
   }
 
   async function handleRefreshMaterialStats() {
@@ -578,8 +580,8 @@ export function StudyDetailPage() {
         `已清理 ${report.deletedOrphanFileCount} 个无引用文件，释放 ${formatBytes(report.deletedBytes)}`,
       );
       setError(
-        report.failedPaths.length > 0
-          ? `有 ${report.failedPaths.length} 个路径清理失败，可稍后重试。`
+        report.failedPathCount > 0
+          ? `有 ${report.failedPathCount} 个文件清理失败，可稍后重试。`
           : null,
       );
     } catch (cleanupError: unknown) {

@@ -3,6 +3,7 @@ pub mod errors;
 pub mod models;
 pub mod repository;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -13,6 +14,13 @@ pub struct AppState {
     pub repository: Mutex<LearningContentRepository>,
     pub default_material_library_dir: PathBuf,
     pub material_library_dir: Mutex<PathBuf>,
+    pub pending_material_library_locations: Mutex<HashMap<String, PendingMaterialLibraryLocation>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingMaterialLibraryLocation {
+    pub path: PathBuf,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
 }
 
 pub fn run() {
@@ -38,6 +46,7 @@ pub fn run() {
                 repository: Mutex::new(repository),
                 default_material_library_dir,
                 material_library_dir: Mutex::new(PathBuf::from(material_library_location.path)),
+                pending_material_library_locations: Mutex::new(HashMap::new()),
             });
 
             Ok(())
@@ -60,8 +69,8 @@ pub fn run() {
             commands::get_material_library_stats,
             commands::cleanup_material_library,
             commands::get_material_library_location,
-            commands::choose_material_library_storage_root,
-            commands::set_material_library_location,
+            commands::prepare_material_library_location_change,
+            commands::apply_material_library_location_change,
             commands::rename_material_item,
             commands::create_material_folder,
             commands::move_material_item,

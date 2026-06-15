@@ -7,8 +7,12 @@ import type {
   ImportMaterialFileInput,
   LearningContent,
   LearningDetail,
+  MaterialDeletionReport,
   MaterialItem,
   MaterialLibraryCleanupReport,
+  MaterialLibraryLocationCandidate,
+  MaterialLibraryLocationChangeInput,
+  MaterialLibraryLocationChangeReport,
   MaterialLibraryLocation,
   MaterialLibraryStats,
   MaterialPreview,
@@ -20,7 +24,6 @@ import type {
   RecentMaterialOpenPosition,
   SaveMaterialReadingStateInput,
   SaveVideoPlaybackStateInput,
-  SetMaterialLibraryLocationInput,
   UpdateLearningContentInput,
   UpdateNoteInput,
 } from "../types";
@@ -47,16 +50,16 @@ export function getLearningDetail(id: string): Promise<LearningDetail | null> {
   );
 }
 
-export function deleteLearningContent(id: string): Promise<void> {
-  return invoke<void>("delete_learning_content", { id });
+export function deleteLearningContent(id: string): Promise<MaterialDeletionReport> {
+  return invoke<unknown>("delete_learning_content", { id }).then(decodeMaterialDeletionReport);
 }
 
-export function deleteMaterialItem(id: string): Promise<void> {
-  return invoke<void>("delete_material_item", { id });
+export function deleteMaterialItem(id: string): Promise<MaterialDeletionReport> {
+  return invoke<unknown>("delete_material_item", { id }).then(decodeMaterialDeletionReport);
 }
 
-export function importMaterialFile(input: ImportMaterialFileInput): Promise<MaterialItem> {
-  return invoke<MaterialItem>("import_material_file", { input });
+export function importMaterialFile(input: ImportMaterialFileInput): Promise<MaterialItem | null> {
+  return invoke<MaterialItem | null>("import_material_file", { input });
 }
 
 export function createNote(input: CreateNoteInput): Promise<Note> {
@@ -104,24 +107,24 @@ export function getMaterialLibraryStats(): Promise<MaterialLibraryStats> {
 }
 
 export function cleanupMaterialLibrary(): Promise<MaterialLibraryCleanupReport> {
-  return invoke<MaterialLibraryCleanupReport>("cleanup_material_library");
+  return invoke<unknown>("cleanup_material_library").then(decodeMaterialLibraryCleanupReport);
 }
 
 export function getMaterialLibraryLocation(): Promise<MaterialLibraryLocation> {
   return invoke<unknown>("get_material_library_location").then(decodeMaterialLibraryLocation);
 }
 
-export function chooseMaterialLibraryStorageRoot(): Promise<string | null> {
-  return invoke<unknown>("choose_material_library_storage_root").then((value) =>
-    value === null ? null : stringValue(value),
+export function prepareMaterialLibraryLocationChange(): Promise<MaterialLibraryLocationCandidate | null> {
+  return invoke<unknown>("prepare_material_library_location_change").then((value) =>
+    value === null ? null : decodeMaterialLibraryLocationCandidate(value),
   );
 }
 
-export function setMaterialLibraryLocation(
-  input: SetMaterialLibraryLocationInput,
-): Promise<MaterialLibraryLocation> {
-  return invoke<unknown>("set_material_library_location", { input }).then(
-    decodeMaterialLibraryLocation,
+export function applyMaterialLibraryLocationChange(
+  input: MaterialLibraryLocationChangeInput,
+): Promise<MaterialLibraryLocationChangeReport> {
+  return invoke<unknown>("apply_material_library_location_change", { input }).then(
+    decodeMaterialLibraryLocationChangeReport,
   );
 }
 
@@ -239,6 +242,45 @@ function decodeMaterialLibraryLocation(value: unknown): MaterialLibraryLocation 
   return {
     path: stringValue(record.path),
     isDefault: booleanValue(record.isDefault),
+  };
+}
+
+function decodeMaterialLibraryLocationChangeReport(
+  value: unknown,
+): MaterialLibraryLocationChangeReport {
+  const record = asRecord(value);
+  return {
+    location: decodeMaterialLibraryLocation(record.location),
+    failedCleanupPathCount: finiteNumber(record.failedCleanupPathCount),
+  };
+}
+
+function decodeMaterialDeletionReport(value: unknown): MaterialDeletionReport {
+  const record = asRecord(value);
+  return {
+    failedCleanupPathCount: finiteNumber(record.failedCleanupPathCount),
+  };
+}
+
+function decodeMaterialLibraryLocationCandidate(
+  value: unknown,
+): MaterialLibraryLocationCandidate {
+  const record = asRecord(value);
+  return {
+    token: stringValue(record.token),
+    displayPath: stringValue(record.displayPath),
+    expiresAt: stringValue(record.expiresAt),
+  };
+}
+
+function decodeMaterialLibraryCleanupReport(value: unknown): MaterialLibraryCleanupReport {
+  const record = asRecord(value);
+  return {
+    deletedOrphanFileCount: finiteNumber(record.deletedOrphanFileCount),
+    deletedOrphanDatabaseRecordCount: finiteNumber(record.deletedOrphanDatabaseRecordCount),
+    deletedBytes: finiteNumber(record.deletedBytes),
+    failedPathCount: finiteNumber(record.failedPathCount),
+    updatedAt: stringValue(record.updatedAt),
   };
 }
 

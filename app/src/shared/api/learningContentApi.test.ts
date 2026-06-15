@@ -6,8 +6,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 import {
+  applyMaterialLibraryLocationChange,
   cleanupMaterialLibrary,
-  chooseMaterialLibraryStorageRoot,
   createLearningContent,
   createNote,
   deleteLearningContent,
@@ -19,11 +19,11 @@ import {
   getMaterialReadingState,
   importMaterialFile,
   listLearningContents,
+  prepareMaterialLibraryLocationChange,
   previewMaterialFile,
   renameMaterialItem,
   saveMaterialReadingState,
   saveVideoPlaybackState,
-  setMaterialLibraryLocation,
   updateLearningContent,
   updateNote,
 } from "./learningContentApi";
@@ -202,9 +202,11 @@ describe("learningContentApi", () => {
   });
 
   it("deletes learning content through the Rust command", async () => {
-    invokeMock.mockResolvedValueOnce(undefined);
+    invokeMock.mockResolvedValueOnce({ failedCleanupPathCount: 0 });
 
-    await deleteLearningContent("study-1");
+    await expect(deleteLearningContent("study-1")).resolves.toEqual({
+      failedCleanupPathCount: 0,
+    });
 
     expect(invokeMock).toHaveBeenCalledWith("delete_learning_content", { id: "study-1" });
   });
@@ -280,7 +282,6 @@ describe("learningContentApi", () => {
       id: "mat-1",
       learningContentId: "study-1",
       name: "资料.txt",
-      originalPath: "C:/source/资料.txt",
       storedPath: "C:/app/资料.txt",
       mimeType: "text/plain",
       sizeBytes: 5,
@@ -290,22 +291,25 @@ describe("learningContentApi", () => {
 
     const result = await importMaterialFile({
       learningContentId: "study-1",
-      sourcePath: "C:/source/资料.txt",
+      parentId: null,
     });
 
     expect(invokeMock).toHaveBeenCalledWith("import_material_file", {
       input: {
         learningContentId: "study-1",
-        sourcePath: "C:/source/资料.txt",
+        parentId: null,
       },
     });
-    expect(result.name).toBe("资料.txt");
+    expect(result?.name).toBe("资料.txt");
+    expect(result).not.toHaveProperty("originalPath");
   });
 
   it("deletes material through the Rust command", async () => {
-    invokeMock.mockResolvedValueOnce(undefined);
+    invokeMock.mockResolvedValueOnce({ failedCleanupPathCount: 0 });
 
-    await deleteMaterialItem("mat-1");
+    await expect(deleteMaterialItem("mat-1")).resolves.toEqual({
+      failedCleanupPathCount: 0,
+    });
 
     expect(invokeMock).toHaveBeenCalledWith("delete_material_item", { id: "mat-1" });
   });
@@ -376,38 +380,67 @@ describe("learningContentApi", () => {
     await expect(previewMaterialFile("mat-1")).rejects.toThrow("Invalid API string value");
   });
 
-  it("gets and sets material library location through Rust commands", async () => {
+  it("gets and changes material library location through token-based Rust commands", async () => {
     invokeMock
       .mockResolvedValueOnce({
         path: "C:/Users/123/AppData/Roaming/com.studyseq.desktop/materials",
         isDefault: true,
       })
       .mockResolvedValueOnce({
-        path: "D:/LearningData/StudySeqData/materials",
-        isDefault: false,
+        token: "candidate-token",
+        displayPath: "D:/LearningData/StudySeqData/materials",
+        expiresAt: "2026-06-15T00:10:00Z",
+      })
+      .mockResolvedValueOnce({
+        location: {
+          path: "D:/LearningData/StudySeqData/materials",
+          isDefault: false,
+        },
+        failedCleanupPathCount: 1,
+      })
+      .mockResolvedValueOnce({
+        location: {
+          path: "C:/Users/123/AppData/Roaming/com.studyseq.desktop/materials",
+          isDefault: true,
+        },
+        failedCleanupPathCount: 0,
       });
 
     const current = await getMaterialLibraryLocation();
-    const moved = await setMaterialLibraryLocation({
-      path: "D:/LearningData/StudySeqData/materials",
+    const candidate = await prepareMaterialLibraryLocationChange();
+    const moved = await applyMaterialLibraryLocationChange({
+      kind: "selected",
+      token: "candidate-token",
     });
+    const reset = await applyMaterialLibraryLocationChange({ kind: "default" });
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, "get_material_library_location");
-    expect(invokeMock).toHaveBeenNthCalledWith(2, "set_material_library_location", {
-      input: { path: "D:/LearningData/StudySeqData/materials" },
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "prepare_material_library_location_change");
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "apply_material_library_location_change", {
+      input: { kind: "selected", token: "candidate-token" },
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "apply_material_library_location_change", {
+      input: { kind: "default" },
     });
     expect(current.isDefault).toBe(true);
-    expect(moved.path).toBe("D:/LearningData/StudySeqData/materials");
+    expect(candidate?.displayPath).toBe("D:/LearningData/StudySeqData/materials");
+    expect(moved.location.path).toBe("D:/LearningData/StudySeqData/materials");
+    expect(moved.failedCleanupPathCount).toBe(1);
+    expect(reset.location.isDefault).toBe(true);
   });
 
-  it("chooses material library storage root through the Rust command", async () => {
-    invokeMock.mockResolvedValueOnce("D:/LearningData").mockResolvedValueOnce(null);
+  it("rejects invalid material library location change reports at the API boundary", async () => {
+    invokeMock.mockResolvedValueOnce({
+      location: {
+        path: "D:/LearningData/StudySeqData/materials",
+        isDefault: false,
+      },
+      failedCleanupPathCount: "1",
+    });
 
-    await expect(chooseMaterialLibraryStorageRoot()).resolves.toBe("D:/LearningData");
-    await expect(chooseMaterialLibraryStorageRoot()).resolves.toBeNull();
-
-    expect(invokeMock).toHaveBeenNthCalledWith(1, "choose_material_library_storage_root");
-    expect(invokeMock).toHaveBeenNthCalledWith(2, "choose_material_library_storage_root");
+    await expect(
+      applyMaterialLibraryLocationChange({ kind: "selected", token: "candidate-token" }),
+    ).rejects.toThrow("Invalid API number value");
   });
 
   it("rejects invalid material library location payloads at the API boundary", async () => {
@@ -417,6 +450,30 @@ describe("learningContentApi", () => {
     });
 
     await expect(getMaterialLibraryLocation()).rejects.toThrow("Invalid API boolean value");
+  });
+
+  it("rejects invalid material library location candidate payloads at the API boundary", async () => {
+    invokeMock.mockResolvedValueOnce({
+      token: 123,
+      displayPath: "D:/LearningData/StudySeqData/materials",
+      expiresAt: "2026-06-15T00:10:00Z",
+    });
+
+    await expect(prepareMaterialLibraryLocationChange()).rejects.toThrow(
+      "Invalid API string value",
+    );
+  });
+
+  it("rejects legacy cleanup payloads that expose failed paths", async () => {
+    invokeMock.mockResolvedValueOnce({
+      deletedOrphanFileCount: 0,
+      deletedOrphanDatabaseRecordCount: 0,
+      deletedBytes: 0,
+      failedPaths: ["C:/Users/123/secret/material.txt"],
+      updatedAt: "2026-06-09T00:03:00Z",
+    });
+
+    await expect(cleanupMaterialLibrary()).rejects.toThrow("Invalid API number value");
   });
 
   it("updates plain-text note through the Rust command", async () => {
@@ -489,14 +546,13 @@ describe("learningContentApi", () => {
         deletedOrphanFileCount: 1,
         deletedOrphanDatabaseRecordCount: 1,
         deletedBytes: 6,
-        failedPaths: [],
+        failedPathCount: 0,
         updatedAt: "2026-06-09T00:03:00Z",
       })
       .mockResolvedValueOnce({
         id: "mat-pdf",
         learningContentId: "study-1",
         name: "重命名.pdf",
-        originalPath: "C:/source/source.pdf",
         storedPath: "C:/app/重命名.pdf",
         mimeType: "application/pdf",
         sizeBytes: 4,

@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { StudyDetailPage } from "./StudyDetailPage";
 import * as learningContentApi from "../shared/api/learningContentApi";
-import * as dialog from "@tauri-apps/plugin-dialog";
 
 const pdfRenderMock = vi.fn(() => ({ promise: Promise.resolve() }));
 const pdfGetPageMock = vi.fn((pageNumber: number) =>
@@ -26,9 +25,6 @@ const pdfGetDocumentMock = vi.fn(() => ({
 }));
 
 vi.mock("../shared/api/learningContentApi");
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-  open: vi.fn(),
-}));
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: vi.fn((path: string) => `asset://localhost/${encodeURIComponent(path)}`),
 }));
@@ -57,7 +53,6 @@ const renameMaterialItem = vi.mocked(learningContentApi.renameMaterialItem);
 const createMaterialFolder = vi.mocked(learningContentApi.createMaterialFolder);
 const moveMaterialItem = vi.mocked(learningContentApi.moveMaterialItem);
 const countMaterialSubtree = vi.mocked(learningContentApi.countMaterialSubtree);
-const open = vi.mocked(dialog.open);
 const pendingFileDeleteSummary = "已标记删除 1 个文件、0 个文件夹";
 
 const baseDetail = {
@@ -80,7 +75,6 @@ const baseDetail = {
       parentId: null,
       kind: "file" as const,
       name: "资料.txt",
-      originalPath: "C:/source/资料.txt",
       storedPath: "C:/app/资料.txt",
       mimeType: "text/plain",
       sizeBytes: 5,
@@ -146,7 +140,6 @@ describe("StudyDetailPage", () => {
       videoPositionSeconds: 24,
       updatedAt: "2026-06-09T00:00:00Z",
     });
-    open.mockReset();
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
       { clearRect: vi.fn() } as unknown as CanvasRenderingContext2D,
     );
@@ -184,7 +177,6 @@ describe("StudyDetailPage", () => {
 
   it("imports a root material file and appends it to the list", async () => {
     getLearningDetail.mockResolvedValueOnce({ ...baseDetail, materials: [] });
-    open.mockResolvedValueOnce("C:/source/资料.txt");
     importMaterialFile.mockResolvedValueOnce(baseDetail.materials[0]);
 
     renderDetailPage();
@@ -195,11 +187,28 @@ describe("StudyDetailPage", () => {
     await waitFor(() => {
       expect(importMaterialFile).toHaveBeenCalledWith({
         learningContentId: "study-1",
-        sourcePath: "C:/source/资料.txt",
         parentId: null,
       });
     });
     expect(await screen.findByText("资料.txt")).toBeInTheDocument();
+  });
+
+  it("does not change the material list when import dialog is cancelled", async () => {
+    getLearningDetail.mockResolvedValueOnce({ ...baseDetail, materials: [] });
+    importMaterialFile.mockResolvedValueOnce(null);
+
+    renderDetailPage();
+    await screen.findByText("还没有资料");
+
+    await userEvent.click(screen.getByRole("button", { name: "导入资料" }));
+
+    await waitFor(() => {
+      expect(importMaterialFile).toHaveBeenCalledWith({
+        learningContentId: "study-1",
+        parentId: null,
+      });
+    });
+    expect(screen.getByText("还没有资料")).toBeInTheDocument();
   });
 
   it("creates a plain-text note and appends it to the list", async () => {
@@ -303,7 +312,6 @@ describe("StudyDetailPage", () => {
       id: "folder-continue",
       kind: "folder" as const,
       name: "继续章节",
-      originalPath: null,
       storedPath: null,
       mimeType: null,
       sizeBytes: 0,
@@ -795,7 +803,7 @@ describe("StudyDetailPage", () => {
   it("stages material deletion, allows undo, and permanently deletes on save", async () => {
     getLearningDetail.mockResolvedValueOnce(baseDetail);
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    deleteMaterialItem.mockResolvedValueOnce();
+    deleteMaterialItem.mockResolvedValueOnce({ failedCleanupPathCount: 0 });
 
     renderDetailPage();
     await screen.findByText("资料.txt");
@@ -816,6 +824,27 @@ describe("StudyDetailPage", () => {
       expect(deleteMaterialItem).toHaveBeenCalledWith("mat-1");
     });
     expect(screen.queryByText(pendingFileDeleteSummary)).not.toBeInTheDocument();
+  });
+
+  it("warns when deleted materials leave managed copies behind", async () => {
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    deleteMaterialItem.mockResolvedValueOnce({ failedCleanupPathCount: 1 });
+
+    renderDetailPage();
+    await screen.findByText("资料.txt");
+
+    const menu = await openMaterialMenu("资料.txt");
+    await userEvent.click(within(menu).getByRole("menuitem", { name: "删除" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存资料删除" }));
+
+    expect(
+      await screen.findByText(
+        "资料记录已删除，但有 1 个 App 管理资料副本未清理，可稍后在资料库清理中重试。",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("资料.txt")).not.toBeInTheDocument();
+    expect(screen.queryByText(/C:\\Users/)).not.toBeInTheDocument();
   });
 
   it("refreshes material library stats and cleans orphan files after confirmation", async () => {
@@ -858,7 +887,7 @@ describe("StudyDetailPage", () => {
       deletedOrphanFileCount: 1,
       deletedOrphanDatabaseRecordCount: 1,
       deletedBytes: 6,
-      failedPaths: [],
+      failedPathCount: 0,
       updatedAt: "2026-06-09T00:01:00Z",
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -912,7 +941,7 @@ describe("StudyDetailPage", () => {
       deletedOrphanFileCount: 1,
       deletedOrphanDatabaseRecordCount: 2,
       deletedBytes: 6,
-      failedPaths: [],
+      failedPathCount: 0,
       updatedAt: "2026-06-09T00:01:00Z",
     });
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -958,7 +987,7 @@ describe("StudyDetailPage", () => {
       deletedOrphanFileCount: 0,
       deletedOrphanDatabaseRecordCount: 0,
       deletedBytes: 0,
-      failedPaths: ["C:/Users/123/secret/material.txt"],
+      failedPathCount: 1,
       updatedAt: "2026-06-09T00:01:00Z",
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -967,7 +996,7 @@ describe("StudyDetailPage", () => {
     await screen.findByText("资料.txt");
     await userEvent.click(screen.getByRole("button", { name: "清理无引用资料" }));
 
-    expect(await screen.findByText("有 1 个路径清理失败，可稍后重试。")).toBeInTheDocument();
+    expect(await screen.findByText("有 1 个文件清理失败，可稍后重试。")).toBeInTheDocument();
     expect(screen.queryByText(/C:\/Users\/123\/secret/)).not.toBeInTheDocument();
   });
 
@@ -1012,7 +1041,7 @@ describe("StudyDetailPage", () => {
     getLearningDetail.mockResolvedValueOnce(detailWithTwoMaterials);
     vi.spyOn(window, "confirm").mockReturnValue(true);
     deleteMaterialItem
-      .mockResolvedValueOnce()
+      .mockResolvedValueOnce({ failedCleanupPathCount: 0 })
       .mockRejectedValueOnce({
         code: "file_system_error",
         message: "文件系统操作失败，请确认文件仍可访问",
@@ -1037,7 +1066,7 @@ describe("StudyDetailPage", () => {
     expect(screen.queryByText("资料.txt")).not.toBeInTheDocument();
     expect(screen.queryByText("失败资料.txt")).not.toBeInTheDocument();
 
-    deleteMaterialItem.mockResolvedValueOnce();
+    deleteMaterialItem.mockResolvedValueOnce({ failedCleanupPathCount: 0 });
     await userEvent.click(screen.getByRole("button", { name: "保存资料删除" }));
 
     await waitFor(() => {
@@ -1192,7 +1221,6 @@ describe("StudyDetailPage", () => {
       id: "folder-1",
       kind: "folder" as const,
       name: "第一章",
-      originalPath: null,
       storedPath: null,
       mimeType: null,
       sizeBytes: 0,
@@ -1228,7 +1256,6 @@ describe("StudyDetailPage", () => {
 
     it("在文件夹内导入资料归属当前文件夹", async () => {
       getLearningDetail.mockResolvedValueOnce({ ...baseDetail, materials: [folderItem] });
-      open.mockResolvedValueOnce("C:/source/新文件.txt");
       importMaterialFile.mockResolvedValueOnce({
         ...nestedFile,
         id: "mat-new",
@@ -1243,7 +1270,6 @@ describe("StudyDetailPage", () => {
       await waitFor(() => {
         expect(importMaterialFile).toHaveBeenCalledWith({
           learningContentId: "study-1",
-          sourcePath: "C:/source/新文件.txt",
           parentId: "folder-1",
         });
       });
@@ -1345,7 +1371,7 @@ describe("StudyDetailPage", () => {
       });
       countMaterialSubtree.mockResolvedValueOnce({ fileCount: 1, folderCount: 0 });
       vi.spyOn(window, "confirm").mockReturnValue(true);
-      deleteMaterialItem.mockResolvedValue(undefined);
+      deleteMaterialItem.mockResolvedValue({ failedCleanupPathCount: 0 });
 
       renderDetailPage();
       await screen.findByText("第一章");
@@ -1395,7 +1421,7 @@ describe("StudyDetailPage", () => {
       });
       countMaterialSubtree.mockResolvedValueOnce({ fileCount: 1, folderCount: 0 });
       vi.spyOn(window, "confirm").mockReturnValue(true);
-      deleteMaterialItem.mockResolvedValueOnce();
+      deleteMaterialItem.mockResolvedValueOnce({ failedCleanupPathCount: 0 });
 
       renderDetailPage();
       await screen.findByText("第一章");
@@ -1446,7 +1472,6 @@ describe("StudyDetailPage", () => {
 
     it("导入资料失败时显示错误信息", async () => {
       getLearningDetail.mockResolvedValueOnce(baseDetail);
-      open.mockResolvedValueOnce("C:/source/坏文件.txt");
       importMaterialFile.mockRejectedValueOnce({
         code: "source_file_missing",
         message: "资料文件不存在",

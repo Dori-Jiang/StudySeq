@@ -35,6 +35,8 @@ pub enum AppError {
     InvalidMaterialLibraryLocation,
     #[error("资料库迁移失败")]
     MaterialLibraryMigrationFailed,
+    #[error("资料重命名回滚失败")]
+    MaterialRenameRollbackFailed,
     #[error("笔记标题不能为空")]
     EmptyNoteTitle,
     #[error("笔记不存在")]
@@ -81,6 +83,7 @@ impl AppError {
             AppError::InvalidPlaybackPosition => "invalid_playback_position",
             AppError::InvalidMaterialLibraryLocation => "invalid_material_library_location",
             AppError::MaterialLibraryMigrationFailed => "material_library_migration_failed",
+            AppError::MaterialRenameRollbackFailed => "material_rename_rollback_failed",
             AppError::EmptyNoteTitle => "empty_note_title",
             AppError::NoteNotFound => "note_not_found",
             AppError::Database(_) => "database_error",
@@ -109,6 +112,9 @@ impl AppError {
                 "资料库位置无效，请选择一个可写入的位置，App 会使用其中的 StudySeqData\\materials 目录"
             }
             AppError::MaterialLibraryMigrationFailed => "资料库迁移失败，原资料库仍保持可用",
+            AppError::MaterialRenameRollbackFailed => {
+                "资料重命名失败，且文件回滚未完成，请先不要继续操作该资料"
+            }
             AppError::EmptyNoteTitle => "笔记标题不能为空",
             AppError::NoteNotFound => "笔记不存在",
             AppError::Database(_) => "数据库操作失败，请稍后重试",

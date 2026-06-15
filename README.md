@@ -1,6 +1,59 @@
-# Planassiant
+# StudySeq / 知序
 
-Planassiant is a local-first Learning OS for organizing learning content, learning plans, resources, notes, and study progress.
+StudySeq / 知序是一款本地优先、离线可用的 Windows 桌面端学习资料管理与阅读 App。
 
-The project uses an ECC-style collaboration structure. Product-specific material lives under `product/`; AI workflow and project governance assets live at the repository root.
+它不是日历、待办清单或通用笔记软件，而是围绕“一个学习内容”来组织学习过程：计划进度、资料、笔记、阅读位置和继续学习入口都放在同一个工作台里，让学习资料不再散落在文件夹、聊天记录和临时笔记之间。
 
+## 产品定位
+
+StudySeq 面向需要持续推进学习内容的人：
+
+- 管理课程、书籍、项目资料或专题学习计划。
+- 把 PDF、文本、图片、视频和 Office 资料放进同一个学习内容下。
+- 在 App 内阅读资料，同时维护纯文本笔记。
+- 关闭重开后恢复学习内容、资料、笔记和阅读位置。
+- 在本地保存资料，不依赖云同步或账号系统。
+
+## 核心能力
+
+- 学习内容管理：创建学习内容，维护状态、截止日期、预计工时和进度。
+- 本地资料库：导入资料后复制到 App 管理目录，避免依赖原始文件位置。
+- App 内阅读：支持 txt、图片、PDF、MP4 / WebM 视频。
+- Office 转 PDF：DOCX / PPTX / XLSX 会在预览时转换为派生 PDF，并复用现有 PDF 阅读器。
+- 资料文件夹：在学习内容内用资源管理器式布局组织资料。
+- 资料定位：支持当前文件夹和当前学习内容两档搜索。
+- 继续学习：主页显示最近打开资料，可直接回到上次学习位置。
+- 笔记：每个学习内容都有纯文本笔记区，适合记录摘要、问题和阶段结论。
+- 资料库治理：可查看资料库位置与占用，清理无引用资料副本。
+
+## 当前版本
+
+当前主线已完成到 V1.8.1。
+
+V1.8 引入 DOCX / PPTX / XLSX 转 PDF 的最小闭环；V1.8.1 是稳定补丁，重点提升 Office 转 PDF 的可靠性：
+
+- Office 类型判断改为 MIME 优先，重命名资料后不影响转换识别。
+- XLSX 继续使用宽横向 PDF 缓存和 140% 初始缩放下限。
+- 派生 PDF 先写临时文件，校验后再替换正式缓存。
+- 坏缓存不会被复用，转换失败会进入稳定错误状态。
+- 删除、重命名、资料库迁移和 cleanup 会更一致地处理 Office 派生缓存。
+- 错误提示不暴露本机路径、AppData 路径或 asset URL。
+
+## 技术栈
+
+- Tauri 2
+- React
+- TypeScript
+- Rust
+- SQLite
+- pdf.js
+- office2pdf
+
+## 项目结构
+
+```text
+app/       应用源码
+product/   产品文档、版本计划和设计资料
+```
+
+项目根目录还保留 ECC 风格的协作文件，用于规划、审查、上下文恢复和自动化工作流。产品说明和版本记录以 `product/` 下的文档为准。

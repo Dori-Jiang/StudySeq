@@ -2,7 +2,7 @@
 
 ## 当前重点
 
-收口 StudySeq / 知序 V1.8.1 稳定补丁：以稳定当前软件为主体，围绕 V1.8 Office 转 PDF 主线完成代码级风险修复、真实 App 固定样本复查、完整 release gate 和文档收口。
+完成 StudySeq / 知序 V1.11.0 PDF 页面手写批注开发、自动化 release gate 和 debug/release 发包；下一步可做用户侧真实 App 手工复核，若无阻塞则进入提交、tag 和 release 收口。
 
 ## 稳定决策
 
@@ -22,6 +22,8 @@
 - 不采用日历中心布局。
 - 界面保持现代、极简、安静、清晰。
 - 产品围绕学习内容、计划进度、资料、笔记和学习记录展开。
+- V2 前必须完成最终工作台能力：载入代码文件并代码高亮、基础手写笔记、在 PDF 阅读页直接手写批注、播放更多视频格式；V2.0 是功能冻结后的稳定发布，V2 后进入 `2.0.x` 稳定修复线。
+- V2 前详细开发计划已建立：`product/docs/studyseq-v1.9-development-plan.md`、`product/docs/studyseq-v1.10-development-plan.md`、`product/docs/studyseq-v1.11-development-plan.md`、`product/docs/studyseq-v1.12-development-plan.md`、`product/docs/studyseq-v1.13-v2.0-release-plan.md`。
 
 ## 已确认的产品设计
 
@@ -72,11 +74,21 @@
 - V1.8.1 版本号已统一为 `1.8.1`，范围包括 `app/package.json`、`app/package-lock.json`、`app/src-tauri/Cargo.toml`、`app/src-tauri/Cargo.lock` 和 `app/src-tauri/tauri.conf.json`。
 - V1.8.1 隔离真实 App 固定样本复查已完成：使用临时 identifier `com.studyseq.desktop.v181test` 和隔离数据目录，未触碰正式 `com.studyseq.desktop` 用户数据；已验证真实 Tauri App 中 DOCX/PPTX/XLSX 转 PDF、XLSX 140% 缩放和 `office-pdf-xlsx-wide-v1` 缓存、普通 PDF 第 2 页/80% 缩放恢复、txt、图片、WebM、嵌套文件夹返回上下文、坏 DOCX 友好失败、重复打开缓存复用、删除 Office 不删除原始来源文件、重启恢复、CDP offline 模式本地 txt/PDF 阅读。
 - V1.8.1 A5 证据文件位于 `C:\Users\123\AppData\Local\Temp\studyseq-v181-a5\`，包括 `cdp-evidence-final.json`、`cache-reuse-evidence.json`、`delete-office-evidence-final.json`、`offline-smoke-evidence.json`、`restart-evidence.json`；本轮通过预置隔离库验证 App 管理资料主链路，未自动化覆盖系统文件选择器导入。
+- V1.9.0 定位为代码文件载入与代码高亮：代码资料仍走“导入资料 -> App 管理副本 -> 详情页内嵌阅读”主线，不恢复旧独立阅读页，不做 IDE、编辑、运行、调试、Git、代码搜索或项目树。
+- V1.9.0 已新增 `MaterialPreviewKind::Code` / `"code"` 预览合同；Rust 返回普通代码文本和元数据，不返回可信 HTML；前端使用 `prismjs` token stream 转 React 节点，不使用 `dangerouslySetInnerHTML` 或 `Prism.highlightAll`。
+- V1.9.0 代码语言高亮白名单为 `ts/tsx/js/jsx/html/css/json/py/rs/go/java/cs/c/h/cpp/hpp/yaml/yml`；`toml/xml/sql/sh/ps1/md/未知/无扩展` 只做纯文本兜底，不扩大 V1.9.0 语言范围。
+- V1.9.0 大文件策略：`<=1MB` 允许高亮，`1MB-2MB` 纯文本显示，`>2MB` 最多读取前 2MB 或前 20000 行并提示截断；多编码沿用 `encoding_rs` / `chardetng`，lossy 解码降级纯文本。
+- V1.9.0 无 SQLite schema 变更，不提升 `PRAGMA user_version`；版本号已统一为 `1.9.0`，范围包括 `app/package.json`、`app/package-lock.json`、`app/src-tauri/Cargo.toml`、`app/src-tauri/Cargo.lock` 和 `app/src-tauri/tauri.conf.json`。
+- V1.9.0 已按 `AGENTS.md` 活用 subagents：`e2e-runner` 复核真实 App smoke 选择器和证据，`security-reviewer` 复核 HTML 注入、路径越界、Tauri capability 和剪贴板边界；未发现 Critical/High 阻断项。
+- V1.9.0 安全收口已完成：复制改走 Rust Tauri command + `clipboard-manager:allow-write-text`，前端不直接调用 `navigator.clipboard`；`dialog:default` 已从前端 capability 移除，文件/文件夹选择仍由 Rust command 内部触发。
+- V1.9.0 隔离真实 App 固定样本 smoke 已通过：使用临时 identifier `com.studyseq.desktop.v190test` 和隔离数据目录，未触碰正式 `com.studyseq.desktop` 用户数据；已验证 `main.ts`、`component.tsx`、`脚本.py`、`lib.rs`、`config.json`、`workflow.yaml`、`style.css`、`injection.html`、`config.toml`、`重命名后的资料`、`plain.txt`、`large.ts`、`gbk-script.py` 和复制按钮状态。证据文件为 `C:\Users\123\AppData\Local\Temp\studyseq-v190-smoke-20260616215425\cdp-smoke-v2.json`。
+- V1.9.0 完整 release gate 已复跑通过：`npm.cmd test`（12 文件、173 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`npm.cmd audit --audit-level=high`、`rg` 确认 `dangerouslySetInnerHTML` 无命中、`cargo fmt --check`、`cargo test`（93 测试）、`cargo clippy -- -D warnings`、Windows 子系统静态检查、`npm.cmd run tauri -- build --debug`、`npm.cmd run tauri -- build`。
+- V1.9.0 debug/release 产物已生成：`app/src-tauri/target/debug/studyseq.exe`、`app/src-tauri/target/debug/bundle/msi/StudySeq_1.9.0_x64_en-US.msi`、`app/src-tauri/target/debug/bundle/nsis/StudySeq_1.9.0_x64-setup.exe`、`app/src-tauri/target/release/studyseq.exe`、`app/src-tauri/target/release/bundle/msi/StudySeq_1.9.0_x64_en-US.msi`、`app/src-tauri/target/release/bundle/nsis/StudySeq_1.9.0_x64-setup.exe`。
 
 ## 下一步
 
 - 当前没有需要更新或重新确认的 hooks。
-- V1.8.1 已完成开发、自动化验证、正式 release 发包和隔离真实 App 固定样本复查；下一步可按需要提交、推送并创建 V1.8.1 tag。
+- V1.11.0 已完成开发、agent 复核、release gate 和发包；下一步可做用户侧手工复核，若无阻塞则提交、tag 和 release 收口。
 - 后续查看当前设计时，以当前 App 实现、`product/docs/studyseq-project-progress.md`、`product/docs/studyseq-v1-technical-design.md` 和保留的原始 UI 概念 HTML 为参考；涉及实现时以当前 App 主线为准。
 - 后续进入新阶段前，先读取本文件。
 - 每次阶段结束、上下文压缩前或会话结束前，把新的稳定决策和下一步写回本文件。
@@ -175,6 +187,16 @@
 - V1.8.1 正式 release 产物：`app/src-tauri/target/release/studyseq.exe`、`app/src-tauri/target/release/bundle/msi/StudySeq_1.8.1_x64_en-US.msi`、`app/src-tauri/target/release/bundle/nsis/StudySeq_1.8.1_x64-setup.exe`。
 - V1.8.1 临时 debug 产物：`C:\Users\123\AppData\Local\Temp\studyseq-v181-debug-20260615223223\debug\studyseq.exe`、`C:\Users\123\AppData\Local\Temp\studyseq-v181-debug-20260615223223\debug\bundle\msi\StudySeq_1.8.1_x64_en-US.msi`、`C:\Users\123\AppData\Local\Temp\studyseq-v181-debug-20260615223223\debug\bundle\nsis\StudySeq_1.8.1_x64-setup.exe`。
 - V1.8.1 completion audit 临时 debug 产物：`C:\Users\123\AppData\Local\Temp\studyseq-v181-audit-debug-target\debug\studyseq.exe`。
+- V1.10.0 基础手写笔记自动化开发已完成：新增 `handwriting_notes` SQLite 表并将 `PRAGMA user_version` 升到 7；Rust repository / command 提供手写笔记 summary/detail 分离 CRUD，保存前校验通用 stroke JSON schema、大小、stroke/point 数、归一化坐标、工具、颜色、宽度、标题和 canvas 尺寸；读取、更新、删除都绑定 `learning_content_id + note_id`，删除学习内容同事务删除关联手写笔记。
+- V1.10.0 前端已接入详情页右侧笔记区“文本 / 手写”切换：保留纯文本笔记体验，新增手写笔记列表、创建、编辑、删除、标题、笔/橡皮、颜色、粗细、撤销、重做、清空、保存、失败重试；Canvas 使用归一化坐标和 DPR/resize 重绘，不保存屏幕像素；切换文本、新建手写或选择其他手写前会先 flush 当前未保存手写稿，保存失败则留在当前编辑器。
+- V1.10.0 版本号已统一为 `1.10.0`（package.json / package-lock.json / tauri.conf.json / Cargo.toml / Cargo.lock 中本 crate）。
+- V1.10.0 自动化 release gate 已通过：`npm.cmd test`（14 文件、189 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`npm.cmd audit --audit-level=high`、`cargo fmt --check`、`cargo test`（101 测试）、`cargo clippy -- -D warnings`、`tests/check-tauri-windows-subsystem.ps1`、`npm.cmd run tauri -- build --debug`、`npm.cmd run tauri -- build`。
+- V1.10.0 debug/release 产物已生成：`app/src-tauri/target/debug/studyseq.exe`、`app/src-tauri/target/debug/bundle/msi/StudySeq_1.10.0_x64_en-US.msi`、`app/src-tauri/target/debug/bundle/nsis/StudySeq_1.10.0_x64-setup.exe`、`app/src-tauri/target/release/studyseq.exe`、`app/src-tauri/target/release/bundle/msi/StudySeq_1.10.0_x64_en-US.msi`、`app/src-tauri/target/release/bundle/nsis/StudySeq_1.10.0_x64-setup.exe`。
+- V1.11.0 PDF 页面手写批注自动化开发已完成：新增 `pdf_page_annotations` SQLite 表并将 `PRAGMA user_version` 升到 8；批注按 `material_id + page_number` 隔离保存，复用 V1.10 通用 stroke JSON 模型；Rust repository / command 提供读取、保存、删除，保存前校验资料必须是 App 资料库内可预览 PDF 或 Office 派生 PDF、页码、页面尺寸和笔迹数据；删除资料、文件夹、学习内容和 cleanup 会清理关联批注。
+- V1.11.0 前端已接入现有详情页 `PdfPreview`：在 `.pdf-page-sheet` 内叠加 `PdfAnnotationLayer`，提供阅读 / 批注模式、显示 / 隐藏批注、笔、橡皮、颜色、粗细、撤销、重做、清除当前页和保存状态；翻页和目录跳转前 flush 当前页批注；不恢复旧独立阅读页，不改写原 PDF 或 `.derived` 派生 PDF。
+- V1.11.0 版本号已统一为 `1.11.0`（package.json / package-lock.json / tauri.conf.json / Cargo.toml / Cargo.lock 中本 crate）。
+- V1.11.0 自动化 release gate 已通过：`npm.cmd test`（15 文件、196 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`npm.cmd audit --audit-level=high`、`cargo fmt --check`、`cargo test`（107 测试）、`cargo clippy -- -D warnings`、`tests/check-tauri-windows-subsystem.ps1`、`npm.cmd run tauri -- build --debug`、`npm.cmd run tauri -- build`。
+- V1.11.0 debug/release 产物已生成：`app/src-tauri/target/debug/studyseq.exe`、`app/src-tauri/target/debug/bundle/msi/StudySeq_1.11.0_x64_en-US.msi`、`app/src-tauri/target/debug/bundle/nsis/StudySeq_1.11.0_x64-setup.exe`、`app/src-tauri/target/release/studyseq.exe`、`app/src-tauri/target/release/bundle/msi/StudySeq_1.11.0_x64_en-US.msi`、`app/src-tauri/target/release/bundle/nsis/StudySeq_1.11.0_x64-setup.exe`。
 
 ## 已准备依赖
 

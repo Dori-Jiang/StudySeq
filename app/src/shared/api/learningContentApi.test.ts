@@ -8,22 +8,30 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   applyMaterialLibraryLocationChange,
   cleanupMaterialLibrary,
+  createHandwritingNote,
   createLearningContent,
   createNote,
+  deletePdfPageAnnotation,
+  deleteHandwritingNote,
   deleteLearningContent,
   deleteMaterialItem,
   deleteNote,
+  getHandwritingNote,
   getLearningDetail,
   getMaterialLibraryLocation,
   getMaterialLibraryStats,
   getMaterialReadingState,
+  getPdfPageAnnotation,
   importMaterialFile,
+  listHandwritingNoteSummaries,
   listLearningContents,
   prepareMaterialLibraryLocationChange,
   previewMaterialFile,
   renameMaterialItem,
   saveMaterialReadingState,
+  savePdfPageAnnotation,
   saveVideoPlaybackState,
+  updateHandwritingNote,
   updateLearningContent,
   updateNote,
 } from "./learningContentApi";
@@ -193,12 +201,53 @@ describe("learningContentApi", () => {
       },
       materials: [],
       notes: [],
+      handwritingNotes: [],
     });
 
     const result = await getLearningDetail("study-1");
 
     expect(invokeMock).toHaveBeenCalledWith("get_learning_detail", { id: "study-1" });
     expect(result?.learningContent.name).toBe("Rust 入门");
+  });
+
+  it("rejects invalid learning detail material and note payloads", async () => {
+    invokeMock.mockResolvedValueOnce({
+      learningContent: {
+        id: "study-1",
+        name: "Rust 入门",
+        status: "planned",
+        deadline: null,
+        estimatedHours: 10,
+        progress: 20,
+        createdAt: "2026-06-08T00:00:00Z",
+        updatedAt: "2026-06-08T00:00:00Z",
+        lastOpenedAt: null,
+        recentOpen: null,
+      },
+      materials: [{ kind: "file", id: "mat-1" }],
+      notes: [],
+      handwritingNotes: [],
+    });
+    await expect(getLearningDetail("study-1")).rejects.toThrow("Invalid API string value");
+
+    invokeMock.mockResolvedValueOnce({
+      learningContent: {
+        id: "study-1",
+        name: "Rust 入门",
+        status: "planned",
+        deadline: null,
+        estimatedHours: 10,
+        progress: 20,
+        createdAt: "2026-06-08T00:00:00Z",
+        updatedAt: "2026-06-08T00:00:00Z",
+        lastOpenedAt: null,
+        recentOpen: null,
+      },
+      materials: [],
+      notes: [{ id: "note-1" }],
+      handwritingNotes: [],
+    });
+    await expect(getLearningDetail("study-1")).rejects.toThrow("Invalid API string value");
   });
 
   it("deletes learning content through the Rust command", async () => {
@@ -348,6 +397,170 @@ describe("learningContentApi", () => {
     expect(invokeMock).toHaveBeenCalledWith("delete_note", { id: "note-1" });
   });
 
+  it("manages handwriting notes through Rust commands", async () => {
+    const strokeDataJson =
+      '{"schemaVersion":1,"coordinateSpace":"normalized","strokes":[]}';
+    const handwritingNote = {
+      id: "hand-1",
+      learningContentId: "study-1",
+      title: "手写笔记",
+      strokeDataJson,
+      strokeSchemaVersion: 1,
+      canvasWidth: 1024,
+      canvasHeight: 768,
+      createdAt: "2026-06-16T00:00:00Z",
+      updatedAt: "2026-06-16T00:00:00Z",
+    };
+    invokeMock
+      .mockResolvedValueOnce([{ ...handwritingNote, strokeDataJson: undefined }])
+      .mockResolvedValueOnce(handwritingNote)
+      .mockResolvedValueOnce(handwritingNote)
+      .mockResolvedValueOnce({ ...handwritingNote, title: "更新后的手写" })
+      .mockResolvedValueOnce(undefined);
+
+    const summaries = await listHandwritingNoteSummaries("study-1");
+    const loaded = await getHandwritingNote("study-1", "hand-1");
+    const created = await createHandwritingNote({
+      learningContentId: "study-1",
+      title: "手写笔记",
+      strokeDataJson,
+      canvasWidth: 1024,
+      canvasHeight: 768,
+    });
+    const updated = await updateHandwritingNote({
+      learningContentId: "study-1",
+      noteId: "hand-1",
+      title: "更新后的手写",
+      strokeDataJson,
+      canvasWidth: 1024,
+      canvasHeight: 768,
+    });
+    await deleteHandwritingNote("study-1", "hand-1");
+
+    expect(summaries[0].title).toBe("手写笔记");
+    expect(loaded.strokeDataJson).toBe(strokeDataJson);
+    expect(created.strokeSchemaVersion).toBe(1);
+    expect(updated.title).toBe("更新后的手写");
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "list_handwriting_note_summaries", {
+      learningContentId: "study-1",
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "get_handwriting_note", {
+      learningContentId: "study-1",
+      id: "hand-1",
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "create_handwriting_note", {
+      input: {
+        learningContentId: "study-1",
+        title: "手写笔记",
+        strokeDataJson,
+        canvasWidth: 1024,
+        canvasHeight: 768,
+      },
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "update_handwriting_note", {
+      input: {
+        learningContentId: "study-1",
+        noteId: "hand-1",
+        title: "更新后的手写",
+        strokeDataJson,
+        canvasWidth: 1024,
+        canvasHeight: 768,
+      },
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(5, "delete_handwriting_note", {
+      learningContentId: "study-1",
+      id: "hand-1",
+    });
+  });
+
+  it("rejects invalid handwriting schema payloads at the API boundary", async () => {
+    invokeMock.mockResolvedValueOnce({
+      id: "hand-1",
+      learningContentId: "study-1",
+      title: "坏手写",
+      strokeDataJson:
+        '{"schemaVersion":2,"coordinateSpace":"normalized","strokes":[]}',
+      strokeSchemaVersion: 2,
+      canvasWidth: 1024,
+      canvasHeight: 768,
+      createdAt: "2026-06-16T00:00:00Z",
+      updatedAt: "2026-06-16T00:00:00Z",
+    });
+
+    await expect(getHandwritingNote("study-1", "hand-1")).rejects.toThrow(
+      "Invalid handwriting schema version",
+    );
+  });
+
+  it("manages PDF page annotations through Rust commands", async () => {
+    const strokeData =
+      '{"schemaVersion":1,"coordinateSpace":"normalized","strokes":[]}';
+    const annotation = {
+      id: "annotation-1",
+      materialId: "mat-pdf",
+      pageNumber: 2,
+      strokeDataJson: strokeData,
+      strokeSchemaVersion: 1,
+      pageWidth: 595,
+      pageHeight: 842,
+      createdAt: "2026-06-17T00:00:00Z",
+      updatedAt: "2026-06-17T00:00:00Z",
+    };
+    invokeMock
+      .mockResolvedValueOnce(annotation)
+      .mockResolvedValueOnce({ ...annotation, pageNumber: 3 })
+      .mockResolvedValueOnce(undefined);
+
+    const loaded = await getPdfPageAnnotation("mat-pdf", 2);
+    const saved = await savePdfPageAnnotation({
+      materialId: "mat-pdf",
+      pageNumber: 3,
+      pageWidth: 595,
+      pageHeight: 842,
+      strokeData,
+    });
+    await deletePdfPageAnnotation("mat-pdf", 3);
+
+    expect(loaded?.strokeDataJson).toBe(strokeData);
+    expect(saved.pageNumber).toBe(3);
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "get_pdf_page_annotation", {
+      materialId: "mat-pdf",
+      pageNumber: 2,
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "save_pdf_page_annotation", {
+      input: {
+        materialId: "mat-pdf",
+        pageNumber: 3,
+        pageWidth: 595,
+        pageHeight: 842,
+        strokeData,
+      },
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "delete_pdf_page_annotation", {
+      materialId: "mat-pdf",
+      pageNumber: 3,
+    });
+  });
+
+  it("rejects invalid PDF annotation payloads at the API boundary", async () => {
+    invokeMock.mockResolvedValueOnce({
+      id: "annotation-1",
+      materialId: "mat-pdf",
+      pageNumber: 0,
+      strokeDataJson:
+        '{"schemaVersion":1,"coordinateSpace":"normalized","strokes":[]}',
+      strokeSchemaVersion: 1,
+      pageWidth: 595,
+      pageHeight: 842,
+      createdAt: "2026-06-17T00:00:00Z",
+      updatedAt: "2026-06-17T00:00:00Z",
+    });
+
+    await expect(getPdfPageAnnotation("mat-pdf", 1)).rejects.toThrow(
+      "Invalid PDF annotation page number",
+    );
+  });
+
   it("previews material through the Rust command", async () => {
     invokeMock.mockResolvedValueOnce({
       materialId: "mat-1",
@@ -357,6 +570,11 @@ describe("learningContentApi", () => {
       dataUrl: null,
       assetPath: null,
       encoding: "utf-8",
+      language: null,
+      languageLabel: null,
+      lineCount: null,
+      isTruncated: false,
+      highlightingMode: null,
     });
 
     const result = await previewMaterialFile("mat-1");
@@ -367,6 +585,109 @@ describe("learningContentApi", () => {
     expect(result.text).toBe("资料正文");
   });
 
+  it("decodes code material preview payloads at the API boundary", async () => {
+    invokeMock.mockResolvedValueOnce({
+      materialId: "mat-code",
+      kind: "code",
+      mimeType: "application/x-typescript",
+      text: "const answer: number = 42;",
+      dataUrl: null,
+      assetPath: null,
+      encoding: "utf-8",
+      language: "typescript",
+      languageLabel: "TypeScript",
+      lineCount: 1,
+      isTruncated: false,
+      highlightingMode: "highlight",
+    });
+
+    const result = await previewMaterialFile("mat-code");
+
+    expect(result.kind).toBe("code");
+    expect(result.language).toBe("typescript");
+    expect(result.languageLabel).toBe("TypeScript");
+    expect(result.lineCount).toBe(1);
+    expect(result.highlightingMode).toBe("highlight");
+  });
+
+  it("rejects invalid code highlighting mode payloads at the API boundary", async () => {
+    invokeMock.mockResolvedValueOnce({
+      materialId: "mat-code",
+      kind: "code",
+      mimeType: "application/x-typescript",
+      text: "const answer = 42;",
+      dataUrl: null,
+      assetPath: null,
+      encoding: "utf-8",
+      language: "typescript",
+      languageLabel: "TypeScript",
+      lineCount: 1,
+      isTruncated: false,
+      highlightingMode: "unsafe_html",
+    });
+
+    await expect(previewMaterialFile("mat-code")).rejects.toThrow(
+      "Invalid code highlighting mode",
+    );
+  });
+
+  it("rejects invalid code material preview contracts at the API boundary", async () => {
+    invokeMock.mockResolvedValueOnce({
+      materialId: "mat-code",
+      kind: "code",
+      mimeType: "application/x-typescript",
+      text: null,
+      dataUrl: null,
+      assetPath: null,
+      encoding: "utf-8",
+      language: "typescript",
+      languageLabel: "TypeScript",
+      lineCount: 1,
+      isTruncated: false,
+      highlightingMode: "highlight",
+    });
+
+    await expect(previewMaterialFile("mat-code")).rejects.toThrow("Invalid code preview text");
+
+    invokeMock.mockResolvedValueOnce({
+      materialId: "mat-code",
+      kind: "code",
+      mimeType: "application/x-typescript",
+      text: "const value = 1;",
+      dataUrl: "data:text/plain;base64,Y29uc3Q=",
+      assetPath: null,
+      encoding: "utf-8",
+      language: "typescript",
+      languageLabel: "TypeScript",
+      lineCount: 1,
+      isTruncated: false,
+      highlightingMode: "highlight",
+    });
+
+    await expect(previewMaterialFile("mat-code")).rejects.toThrow(
+      "Invalid code preview asset payload",
+    );
+
+    invokeMock.mockResolvedValueOnce({
+      materialId: "mat-code",
+      kind: "code",
+      mimeType: "application/x-typescript",
+      text: "const value = 1;",
+      dataUrl: null,
+      assetPath: null,
+      encoding: "utf-8",
+      language: "typescript",
+      languageLabel: "TypeScript",
+      lineCount: -1,
+      isTruncated: false,
+      highlightingMode: "highlight",
+    });
+
+    await expect(previewMaterialFile("mat-code")).rejects.toThrow(
+      "Invalid code preview line count",
+    );
+  });
+
   it("rejects invalid material preview payloads at the API boundary", async () => {
     invokeMock.mockResolvedValueOnce({
       materialId: "mat-1",
@@ -374,7 +695,13 @@ describe("learningContentApi", () => {
       mimeType: "application/pdf",
       text: null,
       dataUrl: 123,
+      assetPath: null,
       encoding: null,
+      language: null,
+      languageLabel: null,
+      lineCount: null,
+      isTruncated: false,
+      highlightingMode: null,
     });
 
     await expect(previewMaterialFile("mat-1")).rejects.toThrow("Invalid API string value");

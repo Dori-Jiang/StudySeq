@@ -807,6 +807,40 @@ button:disabled {
   font-size: 20px;
 }
 
+.note-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.segmented-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid #d9e7f6;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.segmented-control button {
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.segmented-control button:hover,
+.segmented-control button:active,
+.segmented-control button.active {
+  color: #185d9e;
+  background: #eaf4ff;
+  box-shadow: none;
+  transform: none;
+}
+
 .material-list {
   display: grid;
   gap: 10px;
@@ -1124,6 +1158,140 @@ button:disabled {
   border: 1px solid #edf3fa;
   border-radius: 8px;
   background: #fbfdff;
+}
+
+.code-preview {
+  display: grid;
+  gap: 10px;
+  max-height: 620px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e5eef8;
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.code-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.code-preview-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: #69798c;
+  font-size: 12px;
+}
+
+.code-preview-language {
+  color: #1d3047;
+  font-weight: 700;
+}
+
+.compact-button {
+  min-height: 30px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.code-preview-notice {
+  margin: 0;
+  color: #5f7083;
+  font-size: 12px;
+}
+
+.code-preview-scroll {
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid #edf3fa;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.code-preview-body {
+  margin: 0;
+  padding: 10px 0;
+  color: #1d3047;
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre;
+}
+
+.code-preview-line {
+  display: grid;
+  grid-template-columns: 52px max-content;
+  min-width: max-content;
+}
+
+.code-preview-line-number {
+  padding: 0 12px;
+  color: #97a6b7;
+  text-align: right;
+  user-select: none;
+  border-right: 1px solid #edf3fa;
+  background: #f7fbff;
+}
+
+.code-preview-line-content {
+  padding: 0 14px;
+}
+
+.code-preview .token.comment,
+.code-preview .token.prolog,
+.code-preview .token.doctype,
+.code-preview .token.cdata {
+  color: #76889d;
+}
+
+.code-preview .token.punctuation {
+  color: #58708a;
+}
+
+.code-preview .token.property,
+.code-preview .token.tag,
+.code-preview .token.boolean,
+.code-preview .token.number,
+.code-preview .token.constant,
+.code-preview .token.symbol,
+.code-preview .token.deleted {
+  color: #1f6f8b;
+}
+
+.code-preview .token.selector,
+.code-preview .token.attr-name,
+.code-preview .token.string,
+.code-preview .token.char,
+.code-preview .token.builtin,
+.code-preview .token.inserted {
+  color: #2a7a53;
+}
+
+.code-preview .token.operator,
+.code-preview .token.entity,
+.code-preview .token.url,
+.code-preview .token.variable {
+  color: #7a5d2a;
+}
+
+.code-preview .token.atrule,
+.code-preview .token.attr-value,
+.code-preview .token.function,
+.code-preview .token.class-name {
+  color: #265fbd;
+}
+
+.code-preview .token.keyword {
+  color: #7b4bb3;
+}
+
+.code-preview .token.regex,
+.code-preview .token.important {
+  color: #b35b23;
 }
 
 .image-preview {
@@ -1599,6 +1767,78 @@ button:disabled {
   color: #b3261e;
 }
 
+.handwriting-editor {
+  display: grid;
+  grid-template-rows: auto auto minmax(340px, 1fr) auto;
+  gap: 12px;
+  min-height: min(64vh, 720px);
+  padding: 8px 4px 0;
+}
+
+.handwriting-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #edf3fa;
+}
+
+.handwriting-swatches {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.handwriting-swatches button {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px #c8d9ea;
+}
+
+.handwriting-swatches button.active {
+  box-shadow:
+    0 0 0 2px #2f78c6,
+    0 0 0 4px #ffffff;
+}
+
+.handwriting-width-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: #607086;
+  font-size: 13px;
+}
+
+.handwriting-width-control input {
+  width: 110px;
+  accent-color: #2f78c6;
+}
+
+.handwriting-toolbar-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.handwriting-canvas {
+  width: 100%;
+  min-height: 340px;
+  height: 100%;
+  border: 1px solid #d9e7f6;
+  border-radius: 8px;
+  background:
+    linear-gradient(#ffffff, #ffffff),
+    repeating-linear-gradient(0deg, transparent, transparent 23px, #eef5fb 24px);
+  box-shadow: inset 0 0 0 1px rgb(47 120 198 / 3%);
+  touch-action: none;
+}
+
 textarea {
   min-height: 96px;
   padding: 10px 12px;
@@ -1725,9 +1965,33 @@ textarea {
 
 .pdf-preview {
   display: block;
+  width: 100%;
+  height: 100%;
   max-width: 100%;
   max-height: 100%;
   background: #ffffff;
+}
+
+.pdf-annotation-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.pdf-annotation-layer.is-active {
+  pointer-events: auto;
+}
+
+.pdf-annotation-layer .handwriting-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .pdf-toolbar {
@@ -1735,6 +1999,20 @@ textarea {
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+}
+
+.pdf-annotation-toolbar-row {
+  display: grid;
+  gap: 6px;
+  padding: 2px 0 4px;
+}
+
+.pdf-annotation-toolbar-row .handwriting-toolbar {
+  padding-bottom: 6px;
+}
+
+.pdf-annotation-save-status {
+  min-height: 18px;
 }
 
 .pdf-toolbar button {

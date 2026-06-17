@@ -1,9 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import type {
+  CreateHandwritingNoteInput,
   CreateLearningContentInput,
   CreateMaterialFolderInput,
   CreateNoteInput,
+  HandwritingNote,
+  HandwritingNoteSummary,
   ImportMaterialFileInput,
   LearningContent,
   LearningDetail,
@@ -20,11 +23,14 @@ import type {
   MaterialSubtreeCount,
   MoveMaterialItemInput,
   Note,
+  PdfPageAnnotation,
   RenameMaterialItemInput,
   RenameMaterialItemReport,
   RecentMaterialOpenPosition,
   SaveMaterialReadingStateInput,
+  SavePdfPageAnnotationInput,
   SaveVideoPlaybackStateInput,
+  UpdateHandwritingNoteInput,
   UpdateLearningContentInput,
   UpdateNoteInput,
 } from "../types";
@@ -75,8 +81,64 @@ export function deleteNote(id: string): Promise<void> {
   return invoke<void>("delete_note", { id });
 }
 
+export function listHandwritingNoteSummaries(
+  learningContentId: string,
+): Promise<HandwritingNoteSummary[]> {
+  return invoke<unknown>("list_handwriting_note_summaries", {
+    learningContentId,
+  }).then(decodeHandwritingNoteSummaries);
+}
+
+export function getHandwritingNote(
+  learningContentId: string,
+  id: string,
+): Promise<HandwritingNote> {
+  return invoke<unknown>("get_handwriting_note", { learningContentId, id }).then(
+    decodeHandwritingNote,
+  );
+}
+
+export function createHandwritingNote(
+  input: CreateHandwritingNoteInput,
+): Promise<HandwritingNote> {
+  return invoke<unknown>("create_handwriting_note", { input }).then(decodeHandwritingNote);
+}
+
+export function updateHandwritingNote(
+  input: UpdateHandwritingNoteInput,
+): Promise<HandwritingNote> {
+  return invoke<unknown>("update_handwriting_note", { input }).then(decodeHandwritingNote);
+}
+
+export function deleteHandwritingNote(learningContentId: string, id: string): Promise<void> {
+  return invoke<void>("delete_handwriting_note", { learningContentId, id });
+}
+
+export function getPdfPageAnnotation(
+  materialId: string,
+  pageNumber: number,
+): Promise<PdfPageAnnotation | null> {
+  return invoke<unknown>("get_pdf_page_annotation", { materialId, pageNumber }).then((value) =>
+    value === null ? null : decodePdfPageAnnotation(value),
+  );
+}
+
+export function savePdfPageAnnotation(
+  input: SavePdfPageAnnotationInput,
+): Promise<PdfPageAnnotation> {
+  return invoke<unknown>("save_pdf_page_annotation", { input }).then(decodePdfPageAnnotation);
+}
+
+export function deletePdfPageAnnotation(materialId: string, pageNumber: number): Promise<void> {
+  return invoke<void>("delete_pdf_page_annotation", { materialId, pageNumber });
+}
+
 export function previewMaterialFile(materialId: string): Promise<MaterialPreview> {
   return invoke<unknown>("preview_material_file", { materialId }).then(decodeMaterialPreview);
+}
+
+export function copyTextToClipboard(text: string): Promise<void> {
+  return invoke<void>("copy_text_to_clipboard", { text });
 }
 
 export function getMaterialReadingState(
@@ -178,14 +240,132 @@ function decodeLearningDetail(value: unknown): LearningDetail {
   const record = asRecord(value);
   const materials = record.materials;
   const notes = record.notes;
-  if (!Array.isArray(materials) || !Array.isArray(notes)) {
+  const handwritingNotes = record.handwritingNotes;
+  if (!Array.isArray(materials) || !Array.isArray(notes) || !Array.isArray(handwritingNotes)) {
     throw new Error("Invalid learning detail");
   }
   return {
     learningContent: decodeLearningContent(record.learningContent),
-    materials: materials as MaterialItem[],
-    notes: notes as Note[],
+    materials: materials.map(decodeMaterialItem),
+    notes: notes.map(decodeNote),
+    handwritingNotes: handwritingNotes.map(decodeHandwritingNoteSummary),
   };
+}
+
+function decodeMaterialItem(value: unknown): MaterialItem {
+  const record = asRecord(value);
+  const kind = stringValue(record.kind);
+  if (kind !== "file" && kind !== "folder") {
+    throw new Error("Invalid material kind");
+  }
+  return {
+    id: stringValue(record.id),
+    learningContentId: stringValue(record.learningContentId),
+    parentId: optionalNullableString(record.parentId),
+    kind,
+    name: stringValue(record.name),
+    storedPath: optionalNullableString(record.storedPath),
+    mimeType: optionalNullableString(record.mimeType),
+    sizeBytes: finiteNumber(record.sizeBytes),
+    createdAt: stringValue(record.createdAt),
+    updatedAt: stringValue(record.updatedAt),
+  };
+}
+
+function decodeNote(value: unknown): Note {
+  const record = asRecord(value);
+  return {
+    id: stringValue(record.id),
+    learningContentId: stringValue(record.learningContentId),
+    title: stringValue(record.title),
+    body: stringValue(record.body),
+    createdAt: stringValue(record.createdAt),
+    updatedAt: stringValue(record.updatedAt),
+  };
+}
+
+function decodeHandwritingNoteSummaries(value: unknown): HandwritingNoteSummary[] {
+  if (!Array.isArray(value)) {
+    throw new Error("Invalid handwriting note summary list");
+  }
+  return value.map(decodeHandwritingNoteSummary);
+}
+
+function decodeHandwritingNoteSummary(value: unknown): HandwritingNoteSummary {
+  const record = asRecord(value);
+  const summary = {
+    id: stringValue(record.id),
+    learningContentId: stringValue(record.learningContentId),
+    title: stringValue(record.title),
+    strokeSchemaVersion: finiteNumber(record.strokeSchemaVersion),
+    canvasWidth: finiteNumber(record.canvasWidth),
+    canvasHeight: finiteNumber(record.canvasHeight),
+    createdAt: stringValue(record.createdAt),
+    updatedAt: stringValue(record.updatedAt),
+  };
+  validateHandwritingNoteSummary(summary);
+  return summary;
+}
+
+function decodeHandwritingNote(value: unknown): HandwritingNote {
+  const record = asRecord(value);
+  const note = {
+    ...decodeHandwritingNoteSummary(record),
+    strokeDataJson: stringValue(record.strokeDataJson),
+  };
+  validateHandwritingDataContract(note.strokeDataJson);
+  return note;
+}
+
+function decodePdfPageAnnotation(value: unknown): PdfPageAnnotation {
+  const record = asRecord(value);
+  const annotation = {
+    id: stringValue(record.id),
+    materialId: stringValue(record.materialId),
+    pageNumber: finiteNumber(record.pageNumber),
+    strokeDataJson: stringValue(record.strokeDataJson),
+    strokeSchemaVersion: finiteNumber(record.strokeSchemaVersion),
+    pageWidth: finiteNumber(record.pageWidth),
+    pageHeight: finiteNumber(record.pageHeight),
+    createdAt: stringValue(record.createdAt),
+    updatedAt: stringValue(record.updatedAt),
+  };
+  validatePdfPageAnnotation(annotation);
+  return annotation;
+}
+
+function validateHandwritingNoteSummary(summary: HandwritingNoteSummary) {
+  if (summary.strokeSchemaVersion !== 1) {
+    throw new Error("Invalid handwriting schema version");
+  }
+  if (summary.canvasWidth <= 0 || summary.canvasHeight <= 0) {
+    throw new Error("Invalid handwriting canvas size");
+  }
+}
+
+function validatePdfPageAnnotation(annotation: PdfPageAnnotation) {
+  if (annotation.strokeSchemaVersion !== 1) {
+    throw new Error("Invalid PDF annotation schema version");
+  }
+  if (!Number.isInteger(annotation.pageNumber) || annotation.pageNumber < 1) {
+    throw new Error("Invalid PDF annotation page number");
+  }
+  if (annotation.pageWidth <= 0 || annotation.pageHeight <= 0) {
+    throw new Error("Invalid PDF annotation page size");
+  }
+  validateHandwritingDataContract(annotation.strokeDataJson);
+}
+
+function validateHandwritingDataContract(strokeDataJson: string) {
+  const parsed: unknown = JSON.parse(strokeDataJson);
+  const record = asRecord(parsed);
+  if (
+    finiteNumber(record.schemaVersion) !== 1 ||
+    stringValue(record.coordinateSpace) !== "normalized" ||
+    !Array.isArray(record.strokes)
+  ) {
+    throw new Error("Invalid handwriting data");
+  }
 }
 
 function decodeRecentOpen(value: unknown): LearningContent["recentOpen"] {
@@ -229,7 +409,7 @@ function decodeMaterialReadingState(value: unknown): MaterialReadingState {
 
 function decodeMaterialPreview(value: unknown): MaterialPreview {
   const record = asRecord(value);
-  return {
+  const preview = {
     materialId: stringValue(record.materialId),
     kind: decodeMaterialPreviewKind(record.kind),
     mimeType: nullableString(record.mimeType),
@@ -237,7 +417,31 @@ function decodeMaterialPreview(value: unknown): MaterialPreview {
     dataUrl: nullableString(record.dataUrl),
     assetPath: optionalNullableString(record.assetPath),
     encoding: nullableString(record.encoding),
+    language: nullableString(record.language),
+    languageLabel: nullableString(record.languageLabel),
+    lineCount: nullableNumber(record.lineCount),
+    isTruncated: booleanValue(record.isTruncated),
+    highlightingMode: nullableHighlightingMode(record.highlightingMode),
   };
+  validateMaterialPreviewContract(preview);
+  return preview;
+}
+
+function validateMaterialPreviewContract(preview: MaterialPreview) {
+  if (preview.kind !== "code") return;
+
+  if (preview.text === null) {
+    throw new Error("Invalid code preview text");
+  }
+  if (preview.dataUrl !== null || preview.assetPath !== null) {
+    throw new Error("Invalid code preview asset payload");
+  }
+  if (preview.highlightingMode === null) {
+    throw new Error("Invalid code highlighting mode");
+  }
+  if (preview.lineCount === null || !Number.isInteger(preview.lineCount) || preview.lineCount < 0) {
+    throw new Error("Invalid code preview line count");
+  }
 }
 
 function decodeMaterialLibraryLocation(value: unknown): MaterialLibraryLocation {
@@ -318,6 +522,7 @@ function decodePositionKind(value: unknown): MaterialReadingState["positionKind"
 function decodeMaterialPreviewKind(value: unknown): MaterialPreview["kind"] {
   if (
     value === "text" ||
+    value === "code" ||
     value === "image" ||
     value === "pdf" ||
     value === "video" ||
@@ -326,6 +531,19 @@ function decodeMaterialPreviewKind(value: unknown): MaterialPreview["kind"] {
     return value;
   }
   throw new Error("Invalid material preview kind");
+}
+
+function nullableHighlightingMode(value: unknown): MaterialPreview["highlightingMode"] {
+  if (value === null) return null;
+  if (
+    value === "highlight" ||
+    value === "plain_too_large" ||
+    value === "plain_unknown_language" ||
+    value === "plain_decode_lossy"
+  ) {
+    return value;
+  }
+  throw new Error("Invalid code highlighting mode");
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -345,6 +563,11 @@ function stringValue(value: unknown): string {
 function nullableString(value: unknown): string | null {
   if (value === null) return null;
   return stringValue(value);
+}
+
+function nullableNumber(value: unknown): number | null {
+  if (value === null) return null;
+  return finiteNumber(value);
 }
 
 function optionalNullableString(value: unknown): string | null {

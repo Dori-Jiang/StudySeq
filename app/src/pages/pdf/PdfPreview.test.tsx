@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PdfPreview } from "./PdfPreview";
+import * as learningContentApi from "../../shared/api/learningContentApi";
 
 let mockedPageSize = { width: 100, height: 140 };
 const pdfGetPageMock = vi.fn(() =>
@@ -34,6 +35,16 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   getDocument: pdfGetDocumentMock,
 }));
 
+vi.mock("../../shared/api/learningContentApi", () => ({
+  deletePdfPageAnnotation: vi.fn(),
+  getPdfPageAnnotation: vi.fn(),
+  savePdfPageAnnotation: vi.fn(),
+}));
+
+const deletePdfPageAnnotationMock = vi.mocked(learningContentApi.deletePdfPageAnnotation);
+const getPdfPageAnnotationMock = vi.mocked(learningContentApi.getPdfPageAnnotation);
+const savePdfPageAnnotationMock = vi.mocked(learningContentApi.savePdfPageAnnotation);
+
 afterEach(cleanup);
 
 let sourceCounter = 0;
@@ -55,6 +66,22 @@ function largeDataUrl() {
 beforeEach(() => {
   mockedPageSize = { width: 100, height: 140 };
   pdfGetOutlineMock.mockReset();
+  deletePdfPageAnnotationMock.mockReset();
+  getPdfPageAnnotationMock.mockReset();
+  savePdfPageAnnotationMock.mockReset();
+  getPdfPageAnnotationMock.mockResolvedValue(null);
+  savePdfPageAnnotationMock.mockResolvedValue({
+    id: "annotation-1",
+    materialId: "mat-pdf",
+    pageNumber: 1,
+    strokeDataJson: '{"schemaVersion":1,"coordinateSpace":"normalized","strokes":[]}',
+    strokeSchemaVersion: 1,
+    pageWidth: 100,
+    pageHeight: 140,
+    createdAt: "2026-06-17T00:00:00Z",
+    updatedAt: "2026-06-17T00:00:00Z",
+  });
+  deletePdfPageAnnotationMock.mockResolvedValue(undefined);
 });
 
 describe("PdfPreview 目录接线", () => {
@@ -247,4 +274,131 @@ describe("PdfPreview 目录接线", () => {
 
     expect(screen.queryByRole("button", { name: "第一章" })).not.toBeInTheDocument();
   });
+
+  it("loads PDF page annotations by material and page", async () => {
+    pdfGetOutlineMock.mockResolvedValue(null);
+    getPdfPageAnnotationMock.mockResolvedValueOnce({
+      id: "annotation-1",
+      materialId: "mat-pdf",
+      pageNumber: 1,
+      strokeDataJson:
+        '{"schemaVersion":1,"coordinateSpace":"normalized","strokes":[{"id":"s1","tool":"pen","color":"#1f2937","width":0.006,"points":[{"x":0.1,"y":0.2,"t":1}]}]}',
+      strokeSchemaVersion: 1,
+      pageWidth: 100,
+      pageHeight: 140,
+      createdAt: "2026-06-17T00:00:00Z",
+      updatedAt: "2026-06-17T00:00:00Z",
+    });
+
+    render(<PdfPreview sourceUrl={uniquePdfSourceUrl()} materialId="mat-pdf" />);
+    await screen.findByText("第 1 / 5 页");
+
+    expect(getPdfPageAnnotationMock).toHaveBeenCalledWith("mat-pdf", 1);
+  });
+
+  it("saves dirty annotations before changing pages", async () => {
+    const user = userEvent.setup();
+    pdfGetOutlineMock.mockResolvedValue(null);
+    render(<PdfPreview sourceUrl={uniquePdfSourceUrl()} materialId="mat-pdf" />);
+    await screen.findByText("第 1 / 5 页");
+    await user.click(screen.getByRole("button", { name: "批注" }));
+    const canvas = screen.getByLabelText("手写画布");
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 200,
+      height: 100,
+      right: 200,
+      bottom: 100,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+    canvas.setPointerCapture = vi.fn();
+    canvas.releasePointerCapture = vi.fn();
+
+    firePointerStroke(canvas);
+    await user.click(screen.getByRole("button", { name: "下一页" }));
+
+    expect(savePdfPageAnnotationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        materialId: "mat-pdf",
+        pageNumber: 1,
+        pageWidth: 100,
+        pageHeight: 140,
+        strokeData: expect.stringContaining('"strokes"'),
+      }),
+    );
+    expect(await screen.findByText("第 2 / 5 页")).toBeInTheDocument();
+    expect(getPdfPageAnnotationMock).toHaveBeenCalledWith("mat-pdf", 2);
+  });
+
+  it("enters annotation mode when the pen tool is clicked", async () => {
+    const user = userEvent.setup();
+    pdfGetOutlineMock.mockResolvedValue(null);
+    render(<PdfPreview sourceUrl={uniquePdfSourceUrl()} materialId="mat-pdf" />);
+    await screen.findByText("第 1 / 5 页");
+
+    await user.click(screen.getByRole("button", { name: "笔" }));
+    const canvas = screen.getByLabelText("手写画布");
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 200,
+      height: 100,
+      right: 200,
+      bottom: 100,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+    canvas.setPointerCapture = vi.fn();
+    canvas.releasePointerCapture = vi.fn();
+
+    firePointerStroke(canvas);
+    await user.click(screen.getByRole("button", { name: "下一页" }));
+
+    expect(savePdfPageAnnotationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        materialId: "mat-pdf",
+        pageNumber: 1,
+        strokeData: expect.stringContaining('"strokes"'),
+      }),
+    );
+  });
 });
+
+function firePointerStroke(canvas: HTMLElement) {
+  act(() => {
+    canvas.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        bubbles: true,
+        button: 0,
+        clientX: 40,
+        clientY: 20,
+        pointerId: 1,
+        pointerType: "mouse",
+      }),
+    );
+    canvas.dispatchEvent(
+      new PointerEvent("pointermove", {
+        bubbles: true,
+        button: 0,
+        clientX: 100,
+        clientY: 50,
+        pointerId: 1,
+        pointerType: "mouse",
+      }),
+    );
+    canvas.dispatchEvent(
+      new PointerEvent("pointerup", {
+        bubbles: true,
+        button: 0,
+        clientX: 100,
+        clientY: 50,
+        pointerId: 1,
+        pointerType: "mouse",
+      }),
+    );
+  });
+}

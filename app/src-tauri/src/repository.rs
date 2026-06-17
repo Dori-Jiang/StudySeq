@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    fs::File,
     io::{Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
 };
@@ -13,11 +14,13 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::models::{
-    CreateLearningContentInput, LearningContent, LearningDetail, MaterialDeletionReport,
-    MaterialItem, MaterialKind, MaterialLibraryCleanupReport, MaterialLibraryLocation,
+    CreateHandwritingNoteInput, CreateLearningContentInput, HandwritingNote,
+    HandwritingNoteSummary, LearningContent, LearningDetail, MaterialDeletionReport, MaterialItem,
+    MaterialKind, MaterialLibraryCleanupReport, MaterialLibraryLocation,
     MaterialLibraryLocationChangeReport, MaterialLibraryStats, MaterialOpenPositionKind,
     MaterialPreview, MaterialPreviewKind, MaterialReadingState, MaterialSubtreeCount, Note,
-    RecentMaterialOpenPosition, RecentMaterialOpenSummary, RenameMaterialItemReport, StudyStatus,
+    PdfPageAnnotation, RecentMaterialOpenPosition, RecentMaterialOpenSummary,
+    RenameMaterialItemReport, SavePdfPageAnnotationInput, StudyStatus, UpdateHandwritingNoteInput,
 };
 
 pub struct LearningContentRepository {
@@ -28,6 +31,17 @@ const OFFICE_CONVERSION_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const XLSX_DERIVED_PDF_CACHE_DIR: &str = "office-pdf-xlsx-wide-v1";
 const XLSX_PREVIEW_WIDTH_PT: f64 = 1190.56;
 const XLSX_PREVIEW_HEIGHT_PT: f64 = 841.89;
+const CODE_HIGHLIGHT_MAX_BYTES: u64 = 1024 * 1024;
+const CODE_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
+const CODE_PREVIEW_MAX_LINES: usize = 20_000;
+const HANDWRITING_SCHEMA_VERSION: i64 = 1;
+const HANDWRITING_DATA_MAX_BYTES: usize = 5 * 1024 * 1024;
+const HANDWRITING_MAX_STROKES: usize = 2_000;
+const HANDWRITING_MAX_POINTS: usize = 100_000;
+const HANDWRITING_MAX_WIDTH: f64 = 0.2;
+const NOTE_TITLE_MAX_CHARS: usize = 200;
+const HANDWRITING_CANVAS_MAX_SIZE: f64 = 10_000.0;
+const PDF_ANNOTATION_PAGE_MAX_SIZE: f64 = 50_000.0;
 
 #[derive(Debug)]
 pub struct MaterialLibraryLocationChangePlan {
@@ -228,6 +242,7 @@ impl LearningContentRepository {
         Ok(Some(LearningDetail {
             materials: self.list_materials(id)?,
             notes: self.list_notes(id)?,
+            handwriting_notes: self.list_handwriting_note_summaries(id)?,
             learning_content,
         }))
     }
@@ -250,11 +265,21 @@ impl LearningContentRepository {
             params![id],
         )?;
         transaction.execute(
+            "DELETE FROM pdf_page_annotations WHERE material_id IN (
+                SELECT id FROM material_items WHERE learning_content_id = ?1
+            )",
+            params![id],
+        )?;
+        transaction.execute(
             "DELETE FROM material_items WHERE learning_content_id = ?1",
             params![id],
         )?;
         transaction.execute(
             "DELETE FROM notes WHERE learning_content_id = ?1",
+            params![id],
+        )?;
+        transaction.execute(
+            "DELETE FROM handwriting_notes WHERE learning_content_id = ?1",
             params![id],
         )?;
         transaction.execute("DELETE FROM learning_contents WHERE id = ?1", params![id])?;
@@ -458,6 +483,10 @@ impl LearningContentRepository {
                 "DELETE FROM material_reading_states WHERE material_id = ?1",
                 params![item.id],
             )?;
+            transaction.execute(
+                "DELETE FROM pdf_page_annotations WHERE material_id = ?1",
+                params![item.id],
+            )?;
             transaction.execute("DELETE FROM material_items WHERE id = ?1", params![item.id])?;
         }
         transaction.commit()?;
@@ -519,6 +548,15 @@ impl LearningContentRepository {
             std::fs::rename(&source_path, &target_path)?;
         }
 
+        let resolved_legacy_mime_type = material
+            .mime_type
+            .as_deref()
+            .filter(|mime_type| *mime_type == "application/octet-stream")
+            .and_then(|_| guess_mime_type(&source_path))
+            .filter(|mime_type| mime_type != "application/octet-stream");
+        let next_mime_type = resolved_legacy_mime_type
+            .clone()
+            .or_else(|| material.mime_type.clone());
         let should_cleanup_derived_pdfs = office_format_for_material(&material).is_some()
             || office_format_for_path(&target_path).is_some();
         let now = Utc::now().to_rfc3339();
@@ -531,11 +569,12 @@ impl LearningContentRepository {
         };
         let update_result = self.connection.execute(
             "UPDATE material_items
-             SET name = ?1, stored_path = ?2, size_bytes = ?3, updated_at = ?4
-             WHERE id = ?5",
+             SET name = ?1, stored_path = ?2, mime_type = ?3, size_bytes = ?4, updated_at = ?5
+             WHERE id = ?6",
             params![
                 display_name,
                 target_path.to_string_lossy().to_string(),
+                next_mime_type,
                 metadata.len() as i64,
                 now,
                 material.id,
@@ -560,6 +599,7 @@ impl LearningContentRepository {
             material: MaterialItem {
                 name: display_name,
                 stored_path: Some(target_path.to_string_lossy().to_string()),
+                mime_type: next_mime_type,
                 size_bytes: metadata.len() as i64,
                 updated_at: now,
                 ..material
@@ -578,10 +618,7 @@ impl LearningContentRepository {
             return Err(AppError::LearningContentNotFound);
         }
 
-        let title = title.trim().to_string();
-        if title.is_empty() {
-            return Err(AppError::EmptyNoteTitle);
-        }
+        let title = validate_note_title(title)?;
 
         let now = Utc::now().to_rfc3339();
         let note = Note {
@@ -616,10 +653,7 @@ impl LearningContentRepository {
         title: String,
         body: String,
     ) -> Result<Note, AppError> {
-        let title = title.trim().to_string();
-        if title.is_empty() {
-            return Err(AppError::EmptyNoteTitle);
-        }
+        let title = validate_note_title(title)?;
 
         let Some(existing) = self.get_note(note_id)? else {
             return Err(AppError::NoteNotFound);
@@ -651,6 +685,269 @@ impl LearningContentRepository {
         Ok(())
     }
 
+    pub fn list_handwriting_note_summaries(
+        &self,
+        learning_content_id: &str,
+    ) -> Result<Vec<HandwritingNoteSummary>, AppError> {
+        if self.get_learning_content(learning_content_id)?.is_none() {
+            return Err(AppError::LearningContentNotFound);
+        }
+
+        self.list_handwriting_note_summaries_unchecked(learning_content_id)
+    }
+
+    pub fn get_handwriting_note(&self, note_id: &str) -> Result<Option<HandwritingNote>, AppError> {
+        self.connection
+            .query_row(
+                "SELECT id, learning_content_id, title, stroke_data_json,
+                        stroke_schema_version, canvas_width, canvas_height, created_at, updated_at
+                 FROM handwriting_notes
+                 WHERE id = ?1",
+                params![note_id],
+                handwriting_note_from_row,
+            )
+            .optional()
+            .map_err(AppError::from)
+    }
+
+    pub fn get_handwriting_note_in_content(
+        &self,
+        learning_content_id: &str,
+        note_id: &str,
+    ) -> Result<Option<HandwritingNote>, AppError> {
+        self.connection
+            .query_row(
+                "SELECT id, learning_content_id, title, stroke_data_json,
+                        stroke_schema_version, canvas_width, canvas_height, created_at, updated_at
+                 FROM handwriting_notes
+                 WHERE id = ?1 AND learning_content_id = ?2",
+                params![note_id, learning_content_id],
+                handwriting_note_from_row,
+            )
+            .optional()
+            .map_err(AppError::from)
+    }
+
+    pub fn create_handwriting_note(
+        &self,
+        input: CreateHandwritingNoteInput,
+    ) -> Result<HandwritingNote, AppError> {
+        if self
+            .get_learning_content(&input.learning_content_id)?
+            .is_none()
+        {
+            return Err(AppError::LearningContentNotFound);
+        }
+
+        let title = validate_note_title(input.title)?;
+        validate_canvas_size(input.canvas_width, input.canvas_height)?;
+        validate_handwriting_data(&input.stroke_data_json)?;
+
+        let now = Utc::now().to_rfc3339();
+        let note = HandwritingNote {
+            id: Uuid::new_v4().to_string(),
+            learning_content_id: input.learning_content_id,
+            title,
+            stroke_data_json: input.stroke_data_json,
+            stroke_schema_version: HANDWRITING_SCHEMA_VERSION,
+            canvas_width: input.canvas_width,
+            canvas_height: input.canvas_height,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+
+        self.connection.execute(
+            "INSERT INTO handwriting_notes (
+                id, learning_content_id, title, stroke_data_json, stroke_schema_version,
+                canvas_width, canvas_height, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                note.id,
+                note.learning_content_id,
+                note.title,
+                note.stroke_data_json,
+                note.stroke_schema_version,
+                note.canvas_width,
+                note.canvas_height,
+                note.created_at,
+                note.updated_at,
+            ],
+        )?;
+
+        Ok(note)
+    }
+
+    pub fn update_handwriting_note(
+        &self,
+        input: UpdateHandwritingNoteInput,
+    ) -> Result<HandwritingNote, AppError> {
+        let Some(existing) =
+            self.get_handwriting_note_in_content(&input.learning_content_id, &input.note_id)?
+        else {
+            return Err(AppError::HandwritingNoteNotFound);
+        };
+
+        let title = validate_note_title(input.title)?;
+        validate_canvas_size(input.canvas_width, input.canvas_height)?;
+        validate_handwriting_data(&input.stroke_data_json)?;
+
+        let now = Utc::now().to_rfc3339();
+        self.connection.execute(
+            "UPDATE handwriting_notes
+             SET title = ?1, stroke_data_json = ?2, stroke_schema_version = ?3,
+                 canvas_width = ?4, canvas_height = ?5, updated_at = ?6
+             WHERE id = ?7 AND learning_content_id = ?8",
+            params![
+                title,
+                input.stroke_data_json,
+                HANDWRITING_SCHEMA_VERSION,
+                input.canvas_width,
+                input.canvas_height,
+                now,
+                input.note_id,
+                input.learning_content_id,
+            ],
+        )?;
+
+        Ok(HandwritingNote {
+            title,
+            stroke_data_json: input.stroke_data_json,
+            stroke_schema_version: HANDWRITING_SCHEMA_VERSION,
+            canvas_width: input.canvas_width,
+            canvas_height: input.canvas_height,
+            updated_at: now,
+            ..existing
+        })
+    }
+
+    pub fn delete_handwriting_note(
+        &self,
+        learning_content_id: &str,
+        note_id: &str,
+    ) -> Result<(), AppError> {
+        let deleted = self.connection.execute(
+            "DELETE FROM handwriting_notes WHERE id = ?1 AND learning_content_id = ?2",
+            params![note_id, learning_content_id],
+        )?;
+        if deleted == 0 {
+            return Err(AppError::HandwritingNoteNotFound);
+        }
+        Ok(())
+    }
+
+    pub fn get_pdf_page_annotation(
+        &self,
+        material_id: &str,
+        page_number: i64,
+        material_library_dir: impl AsRef<Path>,
+    ) -> Result<Option<PdfPageAnnotation>, AppError> {
+        self.ensure_pdf_annotatable_material(material_id, material_library_dir.as_ref())?;
+        if page_number < 1 {
+            return Err(AppError::InvalidPdfAnnotationData);
+        }
+
+        self.connection
+            .query_row(
+                "SELECT id, material_id, page_number, stroke_data_json, stroke_schema_version,
+                        page_width, page_height, created_at, updated_at
+                 FROM pdf_page_annotations
+                 WHERE material_id = ?1 AND page_number = ?2",
+                params![material_id, page_number],
+                pdf_page_annotation_from_row,
+            )
+            .optional()
+            .map_err(AppError::from)
+    }
+
+    pub fn save_pdf_page_annotation(
+        &self,
+        input: SavePdfPageAnnotationInput,
+        material_library_dir: impl AsRef<Path>,
+    ) -> Result<PdfPageAnnotation, AppError> {
+        self.ensure_pdf_annotatable_material(&input.material_id, material_library_dir.as_ref())?;
+        validate_pdf_page_number(input.page_number)?;
+        validate_pdf_page_size(input.page_width, input.page_height)?;
+        validate_pdf_annotation_data(&input.stroke_data)?;
+
+        if handwriting_data_is_empty(&input.stroke_data)? {
+            self.delete_pdf_page_annotation_unchecked(&input.material_id, input.page_number)?;
+            return Ok(PdfPageAnnotation {
+                id: Uuid::new_v4().to_string(),
+                material_id: input.material_id,
+                page_number: input.page_number,
+                stroke_data_json: input.stroke_data,
+                stroke_schema_version: HANDWRITING_SCHEMA_VERSION,
+                page_width: input.page_width,
+                page_height: input.page_height,
+                created_at: Utc::now().to_rfc3339(),
+                updated_at: Utc::now().to_rfc3339(),
+            });
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let existing_id: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT id FROM pdf_page_annotations WHERE material_id = ?1 AND page_number = ?2",
+                params![input.material_id, input.page_number],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let id = existing_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+
+        self.connection.execute(
+            "INSERT INTO pdf_page_annotations (
+                id, material_id, page_number, stroke_data_json, stroke_schema_version,
+                page_width, page_height, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+            ON CONFLICT(material_id, page_number) DO UPDATE SET
+                stroke_data_json = excluded.stroke_data_json,
+                stroke_schema_version = excluded.stroke_schema_version,
+                page_width = excluded.page_width,
+                page_height = excluded.page_height,
+                updated_at = excluded.updated_at",
+            params![
+                &id,
+                &input.material_id,
+                input.page_number,
+                &input.stroke_data,
+                HANDWRITING_SCHEMA_VERSION,
+                input.page_width,
+                input.page_height,
+                &now,
+            ],
+        )?;
+
+        self.get_pdf_page_annotation(&input.material_id, input.page_number, material_library_dir)?
+            .ok_or(AppError::PdfAnnotationNotFound)
+    }
+
+    pub fn delete_pdf_page_annotation(
+        &self,
+        material_id: &str,
+        page_number: i64,
+        material_library_dir: impl AsRef<Path>,
+    ) -> Result<(), AppError> {
+        self.ensure_pdf_annotatable_material(material_id, material_library_dir.as_ref())?;
+        self.delete_pdf_page_annotation_unchecked(material_id, page_number)
+    }
+
+    fn delete_pdf_page_annotation_unchecked(
+        &self,
+        material_id: &str,
+        page_number: i64,
+    ) -> Result<(), AppError> {
+        if page_number < 1 {
+            return Err(AppError::InvalidPdfAnnotationData);
+        }
+
+        self.connection.execute(
+            "DELETE FROM pdf_page_annotations WHERE material_id = ?1 AND page_number = ?2",
+            params![material_id, page_number],
+        )?;
+        Ok(())
+    }
+
     pub fn preview_material_file(
         &self,
         material_id: &str,
@@ -670,6 +967,11 @@ impl LearningContentRepository {
                 data_url: None,
                 asset_path: None,
                 encoding: None,
+                language: None,
+                language_label: None,
+                line_count: None,
+                is_truncated: false,
+                highlighting_mode: None,
             });
         };
         let stored_path_buf = PathBuf::from(&stored_path);
@@ -698,6 +1000,11 @@ impl LearningContentRepository {
                 data_url: None,
                 asset_path: Some(pdf_path.to_string_lossy().to_string()),
                 encoding: None,
+                language: None,
+                language_label: None,
+                line_count: None,
+                is_truncated: false,
+                highlighting_mode: None,
             });
         }
         if matches!(
@@ -719,6 +1026,31 @@ impl LearningContentRepository {
                     data_url: None,
                     asset_path: None,
                     encoding: Some(encoding),
+                    language: None,
+                    language_label: None,
+                    line_count: None,
+                    is_truncated: false,
+                    highlighting_mode: None,
+                }
+            }
+            MaterialPreviewKind::Code => {
+                let language = code_language_for_material(&material, mime_type.as_deref());
+                let language_id = language.as_ref().map(|value| value.id.to_string());
+                let language_label = language.as_ref().map(|value| value.label.to_string());
+                let preview = read_code_preview(&stored_path_buf, language.is_some())?;
+                MaterialPreview {
+                    material_id: material.id,
+                    kind: MaterialPreviewKind::Code,
+                    mime_type,
+                    text: Some(preview.text),
+                    data_url: None,
+                    asset_path: None,
+                    encoding: Some(preview.encoding),
+                    language: language_id,
+                    language_label,
+                    line_count: Some(preview.line_count as i64),
+                    is_truncated: preview.is_truncated,
+                    highlighting_mode: Some(preview.highlighting_mode.to_string()),
                 }
             }
             MaterialPreviewKind::Image => MaterialPreview {
@@ -729,6 +1061,11 @@ impl LearningContentRepository {
                 data_url: None,
                 asset_path: Some(stored_path),
                 encoding: None,
+                language: None,
+                language_label: None,
+                line_count: None,
+                is_truncated: false,
+                highlighting_mode: None,
             },
             // PDF/视频走前端 asset 协议读取，不把大文件通过 invoke 搬进前端
             MaterialPreviewKind::Pdf => MaterialPreview {
@@ -739,6 +1076,11 @@ impl LearningContentRepository {
                 data_url: None,
                 asset_path: Some(stored_path),
                 encoding: None,
+                language: None,
+                language_label: None,
+                line_count: None,
+                is_truncated: false,
+                highlighting_mode: None,
             },
             MaterialPreviewKind::Video => MaterialPreview {
                 material_id: material.id,
@@ -748,6 +1090,11 @@ impl LearningContentRepository {
                 data_url: None,
                 asset_path: Some(stored_path),
                 encoding: None,
+                language: None,
+                language_label: None,
+                line_count: None,
+                is_truncated: false,
+                highlighting_mode: None,
             },
             MaterialPreviewKind::Unsupported => MaterialPreview {
                 material_id: material.id,
@@ -757,6 +1104,11 @@ impl LearningContentRepository {
                 data_url: None,
                 asset_path: None,
                 encoding: None,
+                language: None,
+                language_label: None,
+                line_count: None,
+                is_truncated: false,
+                highlighting_mode: None,
             },
         };
 
@@ -1099,10 +1451,12 @@ impl LearningContentRepository {
         }
 
         let orphan_materials = self.list_orphan_materials()?;
+        let orphan_pdf_annotation_count = self.count_orphan_pdf_page_annotations()?;
         let orphan_material_file_paths =
             collect_material_file_cleanup_paths(&orphan_materials, material_library_dir)?;
-        let deleted_orphan_database_record_count = orphan_materials.len() as i64;
-        if !orphan_materials.is_empty() {
+        let deleted_orphan_database_record_count =
+            orphan_materials.len() as i64 + orphan_pdf_annotation_count;
+        if !orphan_materials.is_empty() || orphan_pdf_annotation_count > 0 {
             let transaction = self.connection.unchecked_transaction()?;
             for material in &orphan_materials {
                 transaction.execute(
@@ -1110,10 +1464,19 @@ impl LearningContentRepository {
                     params![material.id],
                 )?;
                 transaction.execute(
+                    "DELETE FROM pdf_page_annotations WHERE material_id = ?1",
+                    params![material.id],
+                )?;
+                transaction.execute(
                     "DELETE FROM material_items WHERE id = ?1",
                     params![material.id],
                 )?;
             }
+            transaction.execute(
+                "DELETE FROM pdf_page_annotations
+                 WHERE material_id NOT IN (SELECT id FROM material_items)",
+                [],
+            )?;
             transaction.commit()?;
         }
         for stored_path in orphan_material_file_paths {
@@ -1158,9 +1521,27 @@ impl LearningContentRepository {
     }
 
     #[cfg(test)]
+    pub fn debug_count_handwriting_notes(&self) -> Result<i64, AppError> {
+        self.connection
+            .query_row("SELECT COUNT(*) FROM handwriting_notes", [], |row| {
+                row.get(0)
+            })
+            .map_err(AppError::from)
+    }
+
+    #[cfg(test)]
     pub fn debug_count_material_reading_states(&self) -> Result<i64, AppError> {
         self.connection
             .query_row("SELECT COUNT(*) FROM material_reading_states", [], |row| {
+                row.get(0)
+            })
+            .map_err(AppError::from)
+    }
+
+    #[cfg(test)]
+    pub fn debug_count_pdf_page_annotations(&self) -> Result<i64, AppError> {
+        self.connection
+            .query_row("SELECT COUNT(*) FROM pdf_page_annotations", [], |row| {
                 row.get(0)
             })
             .map_err(AppError::from)
@@ -1276,6 +1657,31 @@ impl LearningContentRepository {
         if material.kind != MaterialKind::File {
             return Err(AppError::MaterialNotFound);
         }
+        Ok(material)
+    }
+
+    fn ensure_pdf_annotatable_material(
+        &self,
+        material_id: &str,
+        material_library_dir: &Path,
+    ) -> Result<MaterialItem, AppError> {
+        let material = self.ensure_previewable_file_material(material_id)?;
+        let Some(stored_path) = material.stored_path.as_deref() else {
+            return Err(AppError::MaterialNotFound);
+        };
+        let stored_path_buf = PathBuf::from(stored_path);
+        if !is_material_preview_path_inside_library(&stored_path_buf, material_library_dir)? {
+            return Err(AppError::MaterialPathOutsideLibrary);
+        }
+
+        let resolved_mime = resolve_preview_mime(material.mime_type.as_deref(), stored_path);
+        if preview_kind(resolved_mime.as_deref()) != MaterialPreviewKind::Pdf
+            && office_format_for_material(&material).is_none()
+        {
+            return Err(AppError::MaterialNotFound);
+        }
+        ensure_material_file_exists(&stored_path_buf)?;
+
         Ok(material)
     }
 
@@ -1395,6 +1801,17 @@ impl LearningContentRepository {
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
     }
 
+    fn count_orphan_pdf_page_annotations(&self) -> Result<i64, AppError> {
+        self.connection
+            .query_row(
+                "SELECT COUNT(*) FROM pdf_page_annotations
+                 WHERE material_id NOT IN (SELECT id FROM material_items)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(AppError::from)
+    }
+
     fn list_notes(&self, learning_content_id: &str) -> Result<Vec<Note>, AppError> {
         let mut statement = self.connection.prepare(
             "SELECT id, learning_content_id, title, body, created_at, updated_at
@@ -1437,6 +1854,34 @@ impl LearningContentRepository {
             )
             .optional()
             .map_err(AppError::from)
+    }
+
+    fn list_handwriting_note_summaries_unchecked(
+        &self,
+        learning_content_id: &str,
+    ) -> Result<Vec<HandwritingNoteSummary>, AppError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, learning_content_id, title, stroke_schema_version,
+                    canvas_width, canvas_height, created_at, updated_at
+             FROM handwriting_notes
+             WHERE learning_content_id = ?1
+             ORDER BY updated_at DESC, created_at DESC, id ASC",
+        )?;
+
+        let rows = statement.query_map(params![learning_content_id], |row| {
+            Ok(HandwritingNoteSummary {
+                id: row.get(0)?,
+                learning_content_id: row.get(1)?,
+                title: row.get(2)?,
+                stroke_schema_version: row.get(3)?,
+                canvas_width: row.get(4)?,
+                canvas_height: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
     }
 
     /// 同级兄弟节点（文件与文件夹同池）范围内判重，重名追加 ` (n)` 后缀。
@@ -1577,6 +2022,37 @@ impl LearningContentRepository {
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS handwriting_notes (
+                id TEXT PRIMARY KEY,
+                learning_content_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stroke_data_json TEXT NOT NULL,
+                stroke_schema_version INTEGER NOT NULL DEFAULT 1,
+                canvas_width REAL NOT NULL DEFAULT 1,
+                canvas_height REAL NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_handwriting_notes_learning_content
+            ON handwriting_notes(learning_content_id, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS pdf_page_annotations (
+                id TEXT PRIMARY KEY,
+                material_id TEXT NOT NULL,
+                page_number INTEGER NOT NULL,
+                stroke_data_json TEXT NOT NULL,
+                stroke_schema_version INTEGER NOT NULL DEFAULT 1,
+                page_width REAL NOT NULL,
+                page_height REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(material_id, page_number)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_pdf_page_annotations_material
+            ON pdf_page_annotations(material_id, page_number);
+
             ",
         )?;
 
@@ -1681,6 +2157,49 @@ impl LearningContentRepository {
             )?;
             self.connection.pragma_update(None, "user_version", 6)?;
         }
+        if user_version < 7 {
+            self.connection.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS handwriting_notes (
+                    id TEXT PRIMARY KEY,
+                    learning_content_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    stroke_data_json TEXT NOT NULL,
+                    stroke_schema_version INTEGER NOT NULL DEFAULT 1,
+                    canvas_width REAL NOT NULL DEFAULT 1,
+                    canvas_height REAL NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_handwriting_notes_learning_content
+                ON handwriting_notes(learning_content_id, updated_at DESC);
+                ",
+            )?;
+            self.connection.pragma_update(None, "user_version", 7)?;
+        }
+        if user_version < 8 {
+            self.connection.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS pdf_page_annotations (
+                    id TEXT PRIMARY KEY,
+                    material_id TEXT NOT NULL,
+                    page_number INTEGER NOT NULL,
+                    stroke_data_json TEXT NOT NULL,
+                    stroke_schema_version INTEGER NOT NULL DEFAULT 1,
+                    page_width REAL NOT NULL,
+                    page_height REAL NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(material_id, page_number)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_pdf_page_annotations_material
+                ON pdf_page_annotations(material_id, page_number);
+                ",
+            )?;
+            self.connection.pragma_update(None, "user_version", 8)?;
+        }
 
         Ok(())
     }
@@ -1713,6 +2232,202 @@ fn rollback_material_rename(source_path: &Path, target_path: &Path) -> Result<()
         eprintln!("material rename rollback failed after database update error: {rollback_error}");
         AppError::MaterialRenameRollbackFailed
     })
+}
+
+fn handwriting_note_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HandwritingNote> {
+    Ok(HandwritingNote {
+        id: row.get(0)?,
+        learning_content_id: row.get(1)?,
+        title: row.get(2)?,
+        stroke_data_json: row.get(3)?,
+        stroke_schema_version: row.get(4)?,
+        canvas_width: row.get(5)?,
+        canvas_height: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
+}
+
+fn pdf_page_annotation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PdfPageAnnotation> {
+    Ok(PdfPageAnnotation {
+        id: row.get(0)?,
+        material_id: row.get(1)?,
+        page_number: row.get(2)?,
+        stroke_data_json: row.get(3)?,
+        stroke_schema_version: row.get(4)?,
+        page_width: row.get(5)?,
+        page_height: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
+}
+
+fn validate_note_title(title: String) -> Result<String, AppError> {
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err(AppError::EmptyNoteTitle);
+    }
+    if title.chars().count() > NOTE_TITLE_MAX_CHARS {
+        return Err(AppError::InvalidHandwritingData);
+    }
+    Ok(title)
+}
+
+fn validate_canvas_size(width: f64, height: f64) -> Result<(), AppError> {
+    if !width.is_finite()
+        || !height.is_finite()
+        || width <= 0.0
+        || height <= 0.0
+        || width > HANDWRITING_CANVAS_MAX_SIZE
+        || height > HANDWRITING_CANVAS_MAX_SIZE
+    {
+        return Err(AppError::InvalidHandwritingData);
+    }
+    Ok(())
+}
+
+fn validate_pdf_page_number(page_number: i64) -> Result<(), AppError> {
+    if page_number < 1 {
+        return Err(AppError::InvalidPdfAnnotationData);
+    }
+    Ok(())
+}
+
+fn validate_pdf_page_size(width: f64, height: f64) -> Result<(), AppError> {
+    if !width.is_finite()
+        || !height.is_finite()
+        || width <= 0.0
+        || height <= 0.0
+        || width > PDF_ANNOTATION_PAGE_MAX_SIZE
+        || height > PDF_ANNOTATION_PAGE_MAX_SIZE
+    {
+        return Err(AppError::InvalidPdfAnnotationData);
+    }
+    Ok(())
+}
+
+fn validate_pdf_annotation_data(stroke_data_json: &str) -> Result<(), AppError> {
+    match validate_handwriting_data(stroke_data_json) {
+        Ok(()) => Ok(()),
+        Err(AppError::HandwritingDataTooLarge) => Err(AppError::PdfAnnotationDataTooLarge),
+        Err(AppError::InvalidHandwritingData) => Err(AppError::InvalidPdfAnnotationData),
+        Err(error) => Err(error),
+    }
+}
+
+fn handwriting_data_is_empty(stroke_data_json: &str) -> Result<bool, AppError> {
+    let value: serde_json::Value =
+        serde_json::from_str(stroke_data_json).map_err(|_| AppError::InvalidPdfAnnotationData)?;
+    let Some(strokes) = value.get("strokes").and_then(serde_json::Value::as_array) else {
+        return Err(AppError::InvalidPdfAnnotationData);
+    };
+    Ok(strokes.is_empty())
+}
+
+fn validate_handwriting_data(stroke_data_json: &str) -> Result<(), AppError> {
+    if stroke_data_json.len() > HANDWRITING_DATA_MAX_BYTES {
+        return Err(AppError::HandwritingDataTooLarge);
+    }
+
+    let value: serde_json::Value =
+        serde_json::from_str(stroke_data_json).map_err(|_| AppError::InvalidHandwritingData)?;
+    let Some(object) = value.as_object() else {
+        return Err(AppError::InvalidHandwritingData);
+    };
+
+    if object
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_i64)
+        != Some(HANDWRITING_SCHEMA_VERSION)
+    {
+        return Err(AppError::InvalidHandwritingData);
+    }
+    if object
+        .get("coordinateSpace")
+        .and_then(serde_json::Value::as_str)
+        != Some("normalized")
+    {
+        return Err(AppError::InvalidHandwritingData);
+    }
+
+    let Some(strokes) = object.get("strokes").and_then(serde_json::Value::as_array) else {
+        return Err(AppError::InvalidHandwritingData);
+    };
+    if strokes.len() > HANDWRITING_MAX_STROKES {
+        return Err(AppError::HandwritingDataTooLarge);
+    }
+
+    let mut point_count = 0usize;
+    for stroke in strokes {
+        let Some(stroke) = stroke.as_object() else {
+            return Err(AppError::InvalidHandwritingData);
+        };
+        if stroke
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .is_none()
+        {
+            return Err(AppError::InvalidHandwritingData);
+        }
+        match stroke.get("tool").and_then(serde_json::Value::as_str) {
+            Some("pen") | Some("eraser") => {}
+            _ => return Err(AppError::InvalidHandwritingData),
+        }
+        if stroke
+            .get("color")
+            .and_then(serde_json::Value::as_str)
+            .filter(|color| is_valid_hex_color(color))
+            .is_none()
+        {
+            return Err(AppError::InvalidHandwritingData);
+        }
+        let Some(width) = stroke.get("width").and_then(serde_json::Value::as_f64) else {
+            return Err(AppError::InvalidHandwritingData);
+        };
+        if !width.is_finite() || width <= 0.0 || width > HANDWRITING_MAX_WIDTH {
+            return Err(AppError::InvalidHandwritingData);
+        }
+        let Some(points) = stroke.get("points").and_then(serde_json::Value::as_array) else {
+            return Err(AppError::InvalidHandwritingData);
+        };
+        point_count = point_count.saturating_add(points.len());
+        if point_count > HANDWRITING_MAX_POINTS {
+            return Err(AppError::HandwritingDataTooLarge);
+        }
+        for point in points {
+            let Some(point) = point.as_object() else {
+                return Err(AppError::InvalidHandwritingData);
+            };
+            let Some(x) = point.get("x").and_then(serde_json::Value::as_f64) else {
+                return Err(AppError::InvalidHandwritingData);
+            };
+            let Some(y) = point.get("y").and_then(serde_json::Value::as_f64) else {
+                return Err(AppError::InvalidHandwritingData);
+            };
+            let Some(t) = point.get("t").and_then(serde_json::Value::as_i64) else {
+                return Err(AppError::InvalidHandwritingData);
+            };
+            if !x.is_finite()
+                || !y.is_finite()
+                || !(0.0..=1.0).contains(&x)
+                || !(0.0..=1.0).contains(&y)
+                || t < 0
+            {
+                return Err(AppError::InvalidHandwritingData);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn is_valid_hex_color(color: &str) -> bool {
+    color.len() == 7
+        && color.starts_with('#')
+        && color[1..]
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
 }
 
 fn material_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MaterialItem> {
@@ -2350,6 +3065,85 @@ fn read_text_preview_bytes_with_limit(path: &Path) -> Result<Vec<u8>, AppError> 
     })
 }
 
+struct CodeLanguage {
+    id: &'static str,
+    label: &'static str,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CodePreviewData {
+    text: String,
+    encoding: String,
+    line_count: usize,
+    is_truncated: bool,
+    highlighting_mode: &'static str,
+}
+
+fn read_code_preview(
+    path: &Path,
+    has_highlight_language: bool,
+) -> Result<CodePreviewData, AppError> {
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            AppError::MaterialFileMissing
+        } else {
+            AppError::Io(error)
+        }
+    })?;
+    if !metadata.is_file() {
+        return Err(AppError::MaterialFileMissing);
+    }
+
+    let byte_limit = metadata.len().min(CODE_PREVIEW_MAX_BYTES);
+    let mut file = File::open(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            AppError::MaterialFileMissing
+        } else {
+            AppError::Io(error)
+        }
+    })?;
+    let mut bytes = Vec::with_capacity(byte_limit as usize);
+    file.by_ref()
+        .take(byte_limit)
+        .read_to_end(&mut bytes)
+        .map_err(AppError::Io)?;
+
+    let (decoded_text, encoding) = decode_text(&bytes);
+    let (text, line_count, line_truncated) = limit_code_preview_lines(decoded_text);
+    let is_truncated = metadata.len() > byte_limit || line_truncated;
+    let highlighting_mode = if metadata.len() > CODE_HIGHLIGHT_MAX_BYTES || is_truncated {
+        "plain_too_large"
+    } else if encoding.ends_with("-lossy") {
+        "plain_decode_lossy"
+    } else if !has_highlight_language {
+        "plain_unknown_language"
+    } else {
+        "highlight"
+    };
+
+    Ok(CodePreviewData {
+        text,
+        encoding,
+        line_count,
+        is_truncated,
+        highlighting_mode,
+    })
+}
+
+fn limit_code_preview_lines(text: String) -> (String, usize, bool) {
+    let line_count = text.lines().count();
+    if line_count <= CODE_PREVIEW_MAX_LINES {
+        return (text, line_count, false);
+    }
+
+    let limited = text
+        .lines()
+        .take(CODE_PREVIEW_MAX_LINES)
+        .collect::<Vec<_>>()
+        .join("\n");
+    (limited, CODE_PREVIEW_MAX_LINES, true)
+}
+
 fn ensure_material_file_exists(path: &Path) -> Result<(), AppError> {
     match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(()),
@@ -2365,6 +3159,29 @@ fn guess_mime_type(path: &Path) -> Option<String> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
     let mime = match extension.as_str() {
         "txt" => "text/plain",
+        "ts" => "application/x-typescript",
+        "tsx" => "application/x-tsx",
+        "js" => "text/javascript",
+        "jsx" => "text/jsx",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "json" => "application/json",
+        "py" => "text/x-python",
+        "rs" => "text/x-rust",
+        "go" => "text/x-go",
+        "java" => "text/x-java-source",
+        "cs" => "text/x-csharp",
+        "c" => "text/x-c",
+        "h" => "text/x-c-header",
+        "cpp" | "cc" | "cxx" => "text/x-c++src",
+        "hpp" | "hh" | "hxx" => "text/x-c++hdr",
+        "yaml" | "yml" => "application/x-yaml",
+        "toml" => "application/toml",
+        "xml" => "application/xml",
+        "sql" => "application/sql",
+        "sh" => "application/x-sh",
+        "ps1" => "application/x-powershell",
+        "md" | "markdown" => "text/markdown",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
@@ -2392,11 +3209,100 @@ fn guess_mime_type(path: &Path) -> Option<String> {
 fn preview_kind(mime_type: Option<&str>) -> MaterialPreviewKind {
     match mime_type {
         Some("text/plain") => MaterialPreviewKind::Text,
+        Some(value) if is_code_preview_mime(value) => MaterialPreviewKind::Code,
         Some("application/pdf") => MaterialPreviewKind::Pdf,
         Some("video/mp4") | Some("video/webm") => MaterialPreviewKind::Video,
         Some(value) if value.starts_with("image/") => MaterialPreviewKind::Image,
         _ => MaterialPreviewKind::Unsupported,
     }
+}
+
+fn is_code_preview_mime(mime_type: &str) -> bool {
+    matches!(
+        mime_type,
+        "application/x-typescript"
+            | "application/x-tsx"
+            | "text/javascript"
+            | "text/jsx"
+            | "text/html"
+            | "text/css"
+            | "application/json"
+            | "text/x-python"
+            | "text/x-rust"
+            | "text/x-go"
+            | "text/x-java-source"
+            | "text/x-csharp"
+            | "text/x-c"
+            | "text/x-c-header"
+            | "text/x-c++src"
+            | "text/x-c++hdr"
+            | "application/x-yaml"
+            | "application/toml"
+            | "application/xml"
+            | "application/sql"
+            | "application/x-sh"
+            | "application/x-powershell"
+            | "text/markdown"
+    )
+}
+
+fn code_language_for_material(
+    material: &MaterialItem,
+    mime_type: Option<&str>,
+) -> Option<CodeLanguage> {
+    mime_type.and_then(code_language_for_mime_type).or_else(|| {
+        material
+            .stored_path
+            .as_deref()
+            .and_then(|path| code_language_for_path(Path::new(path)))
+    })
+}
+
+fn code_language_for_mime_type(mime_type: &str) -> Option<CodeLanguage> {
+    match mime_type {
+        "application/x-typescript" => Some(code_language("typescript", "TypeScript")),
+        "application/x-tsx" => Some(code_language("tsx", "TSX")),
+        "text/javascript" => Some(code_language("javascript", "JavaScript")),
+        "text/jsx" => Some(code_language("jsx", "JSX")),
+        "text/html" => Some(code_language("markup", "HTML")),
+        "text/css" => Some(code_language("css", "CSS")),
+        "application/json" => Some(code_language("json", "JSON")),
+        "text/x-python" => Some(code_language("python", "Python")),
+        "text/x-rust" => Some(code_language("rust", "Rust")),
+        "text/x-go" => Some(code_language("go", "Go")),
+        "text/x-java-source" => Some(code_language("java", "Java")),
+        "text/x-csharp" => Some(code_language("csharp", "C#")),
+        "text/x-c" | "text/x-c-header" => Some(code_language("c", "C")),
+        "text/x-c++src" | "text/x-c++hdr" => Some(code_language("cpp", "C++")),
+        "application/x-yaml" => Some(code_language("yaml", "YAML")),
+        _ => None,
+    }
+}
+
+fn code_language_for_path(path: &Path) -> Option<CodeLanguage> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "ts" => Some(code_language("typescript", "TypeScript")),
+        "tsx" => Some(code_language("tsx", "TSX")),
+        "js" => Some(code_language("javascript", "JavaScript")),
+        "jsx" => Some(code_language("jsx", "JSX")),
+        "html" | "htm" => Some(code_language("markup", "HTML")),
+        "css" => Some(code_language("css", "CSS")),
+        "json" => Some(code_language("json", "JSON")),
+        "py" => Some(code_language("python", "Python")),
+        "rs" => Some(code_language("rust", "Rust")),
+        "go" => Some(code_language("go", "Go")),
+        "java" => Some(code_language("java", "Java")),
+        "cs" => Some(code_language("csharp", "C#")),
+        "c" | "h" => Some(code_language("c", "C")),
+        "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => Some(code_language("cpp", "C++")),
+        "yaml" | "yml" => Some(code_language("yaml", "YAML")),
+        _ => None,
+    }
+}
+
+fn code_language(id: &'static str, label: &'static str) -> CodeLanguage {
+    CodeLanguage { id, label }
 }
 
 fn office_format_for_path(path: &Path) -> Option<Format> {
@@ -2883,6 +3789,452 @@ mod tests {
     }
 
     #[test]
+    fn handwriting_notes_roundtrip_and_detail_only_lists_summaries() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let database_path = temp_dir.path().join("studyseq.sqlite");
+        let repository = LearningContentRepository::open(&database_path).expect("open db");
+        let learning_content = create_content(&repository, "手写笔记闭环");
+
+        let note = repository
+            .create_handwriting_note(CreateHandwritingNoteInput {
+                learning_content_id: learning_content.id.clone(),
+                title: "草稿".to_string(),
+                stroke_data_json: handwriting_json(),
+                canvas_width: 1024.0,
+                canvas_height: 720.0,
+            })
+            .expect("create handwriting note");
+        let updated = repository
+            .update_handwriting_note(UpdateHandwritingNoteInput {
+                learning_content_id: learning_content.id.clone(),
+                note_id: note.id.clone(),
+                title: "课堂板书".to_string(),
+                stroke_data_json: handwriting_json_with_width(0.01),
+                canvas_width: 1280.0,
+                canvas_height: 720.0,
+            })
+            .expect("update handwriting note");
+        drop(repository);
+
+        let reopened_repository =
+            LearningContentRepository::open(&database_path).expect("reopen db");
+        let detail = reopened_repository
+            .get_detail(&learning_content.id)
+            .expect("get detail")
+            .expect("detail exists");
+        let loaded = reopened_repository
+            .get_handwriting_note_in_content(&learning_content.id, &note.id)
+            .expect("get handwriting note")
+            .expect("handwriting note exists");
+
+        assert_eq!(detail.handwriting_notes.len(), 1);
+        assert_eq!(detail.handwriting_notes[0].id, note.id);
+        assert_eq!(detail.handwriting_notes[0].title, "课堂板书");
+        assert_eq!(detail.handwriting_notes[0].stroke_schema_version, 1);
+        assert_eq!(loaded.stroke_data_json, updated.stroke_data_json);
+        assert!(loaded.stroke_data_json.contains("\"strokes\""));
+    }
+
+    #[test]
+    fn handwriting_note_validation_rejects_invalid_payloads() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let learning_content = create_content(&repository, "手写校验");
+
+        let invalid_json = repository
+            .create_handwriting_note(CreateHandwritingNoteInput {
+                learning_content_id: learning_content.id.clone(),
+                title: "坏 JSON".to_string(),
+                stroke_data_json: "{".to_string(),
+                canvas_width: 1.0,
+                canvas_height: 1.0,
+            })
+            .expect_err("invalid json rejected");
+        assert!(matches!(invalid_json, AppError::InvalidHandwritingData));
+
+        let unknown_schema =
+            repository
+                .create_handwriting_note(CreateHandwritingNoteInput {
+                    learning_content_id: learning_content.id.clone(),
+                    title: "坏版本".to_string(),
+                    stroke_data_json:
+                        r#"{"schemaVersion":2,"coordinateSpace":"normalized","strokes":[]}"#
+                            .to_string(),
+                    canvas_width: 1.0,
+                    canvas_height: 1.0,
+                })
+                .expect_err("unknown schema rejected");
+        assert!(matches!(unknown_schema, AppError::InvalidHandwritingData));
+
+        let out_of_bounds = repository
+            .create_handwriting_note(CreateHandwritingNoteInput {
+                learning_content_id: learning_content.id.clone(),
+                title: "越界".to_string(),
+                stroke_data_json: r##"{"schemaVersion":1,"coordinateSpace":"normalized","strokes":[{"id":"s1","tool":"pen","color":"#1f2937","width":0.006,"points":[{"x":1.5,"y":0.2,"t":1}]}]}"##.to_string(),
+                canvas_width: 1.0,
+                canvas_height: 1.0,
+            })
+            .expect_err("out of bounds rejected");
+        assert!(matches!(out_of_bounds, AppError::InvalidHandwritingData));
+
+        let invalid_canvas = repository
+            .create_handwriting_note(CreateHandwritingNoteInput {
+                learning_content_id: learning_content.id.clone(),
+                title: "超大画布".to_string(),
+                stroke_data_json: handwriting_json(),
+                canvas_width: 10001.0,
+                canvas_height: 1.0,
+            })
+            .expect_err("oversized canvas rejected");
+        assert!(matches!(invalid_canvas, AppError::InvalidHandwritingData));
+
+        let long_title = repository
+            .create_handwriting_note(CreateHandwritingNoteInput {
+                learning_content_id: learning_content.id.clone(),
+                title: "长".repeat(201),
+                stroke_data_json: handwriting_json(),
+                canvas_width: 1.0,
+                canvas_height: 1.0,
+            })
+            .expect_err("long title rejected");
+        assert!(matches!(long_title, AppError::InvalidHandwritingData));
+
+        let too_many_strokes = repository
+            .create_handwriting_note(CreateHandwritingNoteInput {
+                learning_content_id: learning_content.id.clone(),
+                title: "过多笔画".to_string(),
+                stroke_data_json: handwriting_json_with_stroke_count(2001),
+                canvas_width: 1.0,
+                canvas_height: 1.0,
+            })
+            .expect_err("too many strokes rejected");
+        assert!(matches!(
+            too_many_strokes,
+            AppError::HandwritingDataTooLarge
+        ));
+
+        let too_many_points = repository
+            .create_handwriting_note(CreateHandwritingNoteInput {
+                learning_content_id: learning_content.id,
+                title: "过多点".to_string(),
+                stroke_data_json: handwriting_json_with_point_count(100001),
+                canvas_width: 1.0,
+                canvas_height: 1.0,
+            })
+            .expect_err("too many points rejected");
+        assert!(matches!(too_many_points, AppError::HandwritingDataTooLarge));
+    }
+
+    #[test]
+    fn deleting_learning_content_cascades_handwriting_notes() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let learning_content = create_content(&repository, "删除手写笔记");
+        repository
+            .create_handwriting_note(CreateHandwritingNoteInput {
+                learning_content_id: learning_content.id.clone(),
+                title: "待删除手写".to_string(),
+                stroke_data_json: handwriting_json(),
+                canvas_width: 1024.0,
+                canvas_height: 768.0,
+            })
+            .expect("create handwriting note");
+
+        repository
+            .delete_learning_content(&learning_content.id, &material_library_dir)
+            .expect("delete learning content");
+
+        assert_eq!(
+            repository
+                .debug_count_handwriting_notes()
+                .expect("count handwriting notes"),
+            0
+        );
+    }
+
+    #[test]
+    fn pdf_page_annotations_roundtrip_replace_and_isolate_by_material_and_page() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let first_pdf = temp_dir.path().join("讲义（第1章）#A.pdf");
+        let second_pdf = temp_dir.path().join("讲义（第2章）#B.pdf");
+        std::fs::write(&first_pdf, b"%PDF-1.7\n%%EOF").expect("write first pdf");
+        std::fs::write(&second_pdf, b"%PDF-1.7\n%%EOF").expect("write second pdf");
+        let content = create_content(&repository, "PDF 批注隔离");
+        let first = repository
+            .import_material_file(&content.id, &first_pdf, &material_library_dir, None)
+            .expect("import first pdf");
+        let second = repository
+            .import_material_file(&content.id, &second_pdf, &material_library_dir, None)
+            .expect("import second pdf");
+
+        let first_page_one = repository
+            .save_pdf_page_annotation(
+                SavePdfPageAnnotationInput {
+                    material_id: first.id.clone(),
+                    page_number: 1,
+                    page_width: 595.0,
+                    page_height: 842.0,
+                    stroke_data: handwriting_json_with_width(0.006),
+                },
+                &material_library_dir,
+            )
+            .expect("save first page one");
+        let first_page_two = repository
+            .save_pdf_page_annotation(
+                SavePdfPageAnnotationInput {
+                    material_id: first.id.clone(),
+                    page_number: 2,
+                    page_width: 595.0,
+                    page_height: 842.0,
+                    stroke_data: handwriting_json_with_width(0.012),
+                },
+                &material_library_dir,
+            )
+            .expect("save first page two");
+        let second_page_one = repository
+            .save_pdf_page_annotation(
+                SavePdfPageAnnotationInput {
+                    material_id: second.id.clone(),
+                    page_number: 1,
+                    page_width: 842.0,
+                    page_height: 595.0,
+                    stroke_data: handwriting_json_with_width(0.018),
+                },
+                &material_library_dir,
+            )
+            .expect("save second page one");
+        let replaced = repository
+            .save_pdf_page_annotation(
+                SavePdfPageAnnotationInput {
+                    material_id: first.id.clone(),
+                    page_number: 1,
+                    page_width: 595.0,
+                    page_height: 842.0,
+                    stroke_data: handwriting_json_with_width(0.02),
+                },
+                &material_library_dir,
+            )
+            .expect("replace first page one");
+
+        let loaded_first_page_one = repository
+            .get_pdf_page_annotation(&first.id, 1, &material_library_dir)
+            .expect("get first page one")
+            .expect("first page one exists");
+        let loaded_first_page_two = repository
+            .get_pdf_page_annotation(&first.id, 2, &material_library_dir)
+            .expect("get first page two")
+            .expect("first page two exists");
+        let loaded_second_page_one = repository
+            .get_pdf_page_annotation(&second.id, 1, &material_library_dir)
+            .expect("get second page one")
+            .expect("second page one exists");
+
+        assert_eq!(first_page_one.id, replaced.id);
+        assert_ne!(first_page_one.id, first_page_two.id);
+        assert_ne!(first_page_one.id, second_page_one.id);
+        assert!(loaded_first_page_one.stroke_data_json.contains("0.02"));
+        assert!(loaded_first_page_two.stroke_data_json.contains("0.012"));
+        assert!(loaded_second_page_one.stroke_data_json.contains("0.018"));
+        assert_eq!(
+            repository
+                .debug_count_pdf_page_annotations()
+                .expect("count annotations"),
+            3
+        );
+        assert!(repository
+            .get_pdf_page_annotation(&first.id, 3, &material_library_dir)
+            .expect("get missing page")
+            .is_none());
+    }
+
+    #[test]
+    fn pdf_page_annotations_reject_invalid_inputs_and_non_pdf_materials() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let content = create_content(&repository, "PDF 批注校验");
+        let pdf_source = temp_dir.path().join("safe.pdf");
+        let text_source = temp_dir.path().join("safe.txt");
+        std::fs::write(&pdf_source, b"%PDF-1.7\n%%EOF").expect("write pdf");
+        std::fs::write(&text_source, "hello").expect("write text");
+        let pdf = repository
+            .import_material_file(&content.id, &pdf_source, &material_library_dir, None)
+            .expect("import pdf");
+        let text = repository
+            .import_material_file(&content.id, &text_source, &material_library_dir, None)
+            .expect("import text");
+        let folder = repository
+            .create_material_folder(&content.id, None, "资料夹")
+            .expect("create folder");
+
+        let bad_page = repository
+            .save_pdf_page_annotation(
+                SavePdfPageAnnotationInput {
+                    material_id: pdf.id.clone(),
+                    page_number: 0,
+                    page_width: 595.0,
+                    page_height: 842.0,
+                    stroke_data: handwriting_json(),
+                },
+                &material_library_dir,
+            )
+            .expect_err("page number should be rejected");
+        let bad_size = repository
+            .save_pdf_page_annotation(
+                SavePdfPageAnnotationInput {
+                    material_id: pdf.id.clone(),
+                    page_number: 1,
+                    page_width: f64::NAN,
+                    page_height: 842.0,
+                    stroke_data: handwriting_json(),
+                },
+                &material_library_dir,
+            )
+            .expect_err("page size should be rejected");
+        let bad_json = repository
+            .save_pdf_page_annotation(
+                SavePdfPageAnnotationInput {
+                    material_id: pdf.id.clone(),
+                    page_number: 1,
+                    page_width: 595.0,
+                    page_height: 842.0,
+                    stroke_data: "not-json".to_string(),
+                },
+                &material_library_dir,
+            )
+            .expect_err("bad json should be rejected");
+        let non_pdf = repository
+            .save_pdf_page_annotation(
+                SavePdfPageAnnotationInput {
+                    material_id: text.id.clone(),
+                    page_number: 1,
+                    page_width: 595.0,
+                    page_height: 842.0,
+                    stroke_data: handwriting_json(),
+                },
+                &material_library_dir,
+            )
+            .expect_err("text material should be rejected");
+        let folder_error = repository
+            .save_pdf_page_annotation(
+                SavePdfPageAnnotationInput {
+                    material_id: folder.id,
+                    page_number: 1,
+                    page_width: 595.0,
+                    page_height: 842.0,
+                    stroke_data: handwriting_json(),
+                },
+                &material_library_dir,
+            )
+            .expect_err("folder should be rejected");
+
+        assert!(matches!(bad_page, AppError::InvalidPdfAnnotationData));
+        assert!(matches!(bad_size, AppError::InvalidPdfAnnotationData));
+        assert!(matches!(bad_json, AppError::InvalidPdfAnnotationData));
+        assert!(matches!(non_pdf, AppError::MaterialNotFound));
+        assert!(matches!(folder_error, AppError::MaterialNotFound));
+    }
+
+    #[test]
+    fn deleting_material_folder_learning_content_and_cleanup_remove_pdf_annotations() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let content = create_content(&repository, "PDF 批注清理");
+        let pdf_source = temp_dir.path().join("annotated.pdf");
+        std::fs::write(&pdf_source, b"%PDF-1.7\n%%EOF").expect("write pdf");
+        let folder = repository
+            .create_material_folder(&content.id, None, "第一章")
+            .expect("create folder");
+        let nested = repository
+            .import_material_file(
+                &content.id,
+                &pdf_source,
+                &material_library_dir,
+                Some(&folder.id),
+            )
+            .expect("import nested pdf");
+
+        repository
+            .save_pdf_page_annotation(
+                SavePdfPageAnnotationInput {
+                    material_id: nested.id.clone(),
+                    page_number: 1,
+                    page_width: 595.0,
+                    page_height: 842.0,
+                    stroke_data: handwriting_json(),
+                },
+                &material_library_dir,
+            )
+            .expect("save nested annotation");
+        repository
+            .delete_material_item(&folder.id, &material_library_dir)
+            .expect("delete folder");
+        assert_eq!(
+            repository
+                .debug_count_pdf_page_annotations()
+                .expect("count after folder delete"),
+            0
+        );
+
+        let second = create_content(&repository, "PDF 批注学习内容删除");
+        let second_material = repository
+            .import_material_file(&second.id, &pdf_source, &material_library_dir, None)
+            .expect("import second pdf");
+        repository
+            .save_pdf_page_annotation(
+                SavePdfPageAnnotationInput {
+                    material_id: second_material.id.clone(),
+                    page_number: 1,
+                    page_width: 595.0,
+                    page_height: 842.0,
+                    stroke_data: handwriting_json(),
+                },
+                &material_library_dir,
+            )
+            .expect("save second annotation");
+        repository
+            .delete_learning_content(&second.id, &material_library_dir)
+            .expect("delete learning content");
+        assert_eq!(
+            repository
+                .debug_count_pdf_page_annotations()
+                .expect("count after learning content delete"),
+            0
+        );
+
+        repository
+            .connection
+            .execute(
+                "INSERT INTO pdf_page_annotations (
+                    id, material_id, page_number, stroke_data_json, stroke_schema_version,
+                    page_width, page_height, created_at, updated_at
+                ) VALUES ('orphan-annotation', 'missing-material', 1, ?1, 1, 595.0, 842.0, '2026-06-17T00:00:00Z', '2026-06-17T00:00:00Z')",
+                params![handwriting_json()],
+            )
+            .expect("insert orphan annotation");
+        let cleanup = repository
+            .cleanup_material_library(&material_library_dir)
+            .expect("cleanup annotations");
+
+        assert_eq!(cleanup.deleted_orphan_database_record_count, 1);
+        assert_eq!(
+            repository
+                .debug_count_pdf_page_annotations()
+                .expect("count after orphan cleanup"),
+            0
+        );
+    }
+
+    #[test]
     fn importing_duplicate_material_names_appends_suffix() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
@@ -3108,6 +4460,171 @@ mod tests {
 
         assert!(matches!(error, AppError::TextPreviewTooLarge));
         assert_eq!(repository.list().expect("list")[0].recent_open, None);
+    }
+
+    #[test]
+    fn previews_supported_code_material_with_language_metadata() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("example.ts");
+        std::fs::write(
+            &source_file,
+            "const message: string = '<script>alert(1)</script>';\nconsole.log(message);\n",
+        )
+        .expect("write source");
+        let learning_content = repository
+            .create(CreateLearningContentInput {
+                name: "代码预览".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(
+                &learning_content.id,
+                &source_file,
+                &material_library_dir,
+                None,
+            )
+            .expect("import material");
+
+        let preview = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("preview code");
+
+        assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Code);
+        assert_eq!(
+            preview.mime_type.as_deref(),
+            Some("application/x-typescript")
+        );
+        assert_eq!(preview.language.as_deref(), Some("typescript"));
+        assert_eq!(preview.language_label.as_deref(), Some("TypeScript"));
+        assert_eq!(preview.line_count, Some(2));
+        assert_eq!(preview.highlighting_mode.as_deref(), Some("highlight"));
+        assert!(!preview.is_truncated);
+        assert!(preview
+            .text
+            .as_deref()
+            .expect("code text")
+            .contains("<script>alert(1)</script>"));
+        assert_eq!(preview.asset_path, None);
+        assert_eq!(preview.data_url, None);
+        assert!(repository.list().expect("list")[0].recent_open.is_some());
+    }
+
+    #[test]
+    fn code_preview_uses_stored_extension_when_mime_is_octet_stream() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("component.tsx");
+        std::fs::write(&source_file, "export function View() { return <div />; }\n")
+            .expect("write source");
+        let content = repository
+            .create(CreateLearningContentInput {
+                name: "octet fallback".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(&content.id, &source_file, &material_library_dir, None)
+            .expect("import material");
+        repository
+            .connection
+            .execute(
+                "UPDATE material_items SET name = ?1, mime_type = ?2 WHERE id = ?3",
+                params!["重命名资料", "application/octet-stream", material.id],
+            )
+            .expect("update material");
+
+        let preview = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("preview code");
+
+        assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Code);
+        assert_eq!(preview.language.as_deref(), Some("tsx"));
+        assert_eq!(preview.language_label.as_deref(), Some("TSX"));
+    }
+
+    #[test]
+    fn unsupported_code_like_extension_previews_as_plain_code_without_highlighting() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("settings.toml");
+        std::fs::write(&source_file, "[package]\nname = \"studyseq\"\n").expect("write source");
+        let content = repository
+            .create(CreateLearningContentInput {
+                name: "toml fallback".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(&content.id, &source_file, &material_library_dir, None)
+            .expect("import material");
+
+        let preview = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("preview toml");
+
+        assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Code);
+        assert_eq!(preview.language, None);
+        assert_eq!(preview.language_label, None);
+        assert_eq!(
+            preview.highlighting_mode.as_deref(),
+            Some("plain_unknown_language")
+        );
+        assert!(!preview.is_truncated);
+    }
+
+    #[test]
+    fn large_code_preview_disables_highlighting_and_truncates_at_two_mb() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("large.py");
+        std::fs::write(
+            &source_file,
+            vec![b'a'; (CODE_PREVIEW_MAX_BYTES + 128) as usize],
+        )
+        .expect("write large code");
+        let content = repository
+            .create(CreateLearningContentInput {
+                name: "large code".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create learning content");
+        let material = repository
+            .import_material_file(&content.id, &source_file, &material_library_dir, None)
+            .expect("import material");
+
+        let preview = repository
+            .preview_material_file(&material.id, &material_library_dir)
+            .expect("preview large code");
+
+        assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Code);
+        assert_eq!(preview.language.as_deref(), Some("python"));
+        assert_eq!(
+            preview.highlighting_mode.as_deref(),
+            Some("plain_too_large")
+        );
+        assert!(preview.is_truncated);
+        assert_eq!(
+            preview.text.as_deref().expect("text").len(),
+            CODE_PREVIEW_MAX_BYTES as usize
+        );
     }
 
     #[test]
@@ -3959,7 +5476,7 @@ mod tests {
                 .expect("create v3 schema with data");
         }
 
-        let repository = LearningContentRepository::open(&database_path).expect("migrate to v6");
+        let repository = LearningContentRepository::open(&database_path).expect("migrate to v8");
 
         let user_version: i64 = repository
             .connection
@@ -3979,7 +5496,7 @@ mod tests {
             )
             .expect("check last_opened_at column");
 
-        assert_eq!(user_version, 6);
+        assert_eq!(user_version, 8);
         assert_eq!(materials.len(), 1);
         assert_eq!(materials[0].id, "mat-1");
         assert_eq!(materials[0].name, "旧资料.pdf");
@@ -4004,7 +5521,122 @@ mod tests {
     }
 
     #[test]
-    fn fresh_database_initializes_v6_settings_and_recent_open_schema() {
+    fn migrates_v4_database_to_v8_pdf_annotation_schema() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let database_path = temp_dir.path().join("studyseq.sqlite");
+        {
+            let connection = rusqlite::Connection::open(&database_path).expect("open raw db");
+            connection
+                .execute_batch(
+                    "
+                    CREATE TABLE learning_contents (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        deadline TEXT,
+                        estimated_hours REAL DEFAULT 0,
+                        progress INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        last_opened_at TEXT
+                    );
+
+                    CREATE TABLE material_items (
+                        id TEXT PRIMARY KEY,
+                        learning_content_id TEXT NOT NULL,
+                        parent_id TEXT,
+                        kind TEXT NOT NULL DEFAULT 'file' CHECK (kind IN ('file', 'folder')),
+                        name TEXT NOT NULL,
+                        original_path TEXT,
+                        stored_path TEXT,
+                        mime_type TEXT,
+                        size_bytes INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE notes (
+                        id TEXT PRIMARY KEY,
+                        learning_content_id TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        body TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE material_reading_states (
+                        material_id TEXT PRIMARY KEY,
+                        page_number INTEGER NOT NULL DEFAULT 1,
+                        scale REAL NOT NULL DEFAULT 1.0,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    INSERT INTO learning_contents (id, name, status, created_at, updated_at)
+                    VALUES ('lc-v4', 'V4 内容', 'planned', '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z');
+
+                    INSERT INTO material_items (
+                        id, learning_content_id, parent_id, kind, name, original_path, stored_path,
+                        mime_type, size_bytes, created_at, updated_at
+                    ) VALUES (
+                        'mat-v4', 'lc-v4', NULL, 'file', 'V4资料.pdf', 'D:\\src\\v4.pdf',
+                        'C:\\lib\\v4.pdf', 'application/pdf', 9,
+                        '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z'
+                    );
+
+                    INSERT INTO material_reading_states (material_id, page_number, scale, updated_at)
+                    VALUES ('mat-v4', 5, 1.25, '2026-06-01T00:00:00Z');
+
+                    PRAGMA user_version = 4;
+                    ",
+                )
+                .expect("create v4 schema with data");
+        }
+
+        let repository = LearningContentRepository::open(&database_path).expect("migrate v4 to v8");
+        let user_version: i64 = repository
+            .connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("read user version");
+        let reading_state = repository
+            .get_material_reading_state("mat-v4")
+            .expect("get migrated state")
+            .expect("migrated state exists");
+        let app_settings_count: i64 = repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check app_settings");
+        let handwriting_table_count: i64 = repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'handwriting_notes'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check handwriting table");
+        let pdf_annotation_table_count: i64 = repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'pdf_page_annotations'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check pdf annotation table");
+
+        assert_eq!(user_version, 8);
+        assert_eq!(reading_state.page_number, 5);
+        assert_eq!(reading_state.scale, 1.25);
+        assert_eq!(reading_state.position_kind, MaterialOpenPositionKind::None);
+        assert_eq!(app_settings_count, 1);
+        assert_eq!(handwriting_table_count, 1);
+        assert_eq!(pdf_annotation_table_count, 1);
+    }
+
+    #[test]
+    fn fresh_database_initializes_v8_pdf_annotation_schema() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
             .expect("open db");
@@ -4038,11 +5670,262 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("check app_settings table");
+        let handwriting_table_count: i64 = repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'handwriting_notes'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check handwriting table");
+        let handwriting_index_count: i64 = repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_handwriting_notes_learning_content'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check handwriting index");
+        let pdf_annotation_table_count: i64 = repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'pdf_page_annotations'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check pdf annotation table");
+        let pdf_annotation_index_count: i64 = repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_pdf_page_annotations_material'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check pdf annotation index");
+        let pdf_annotation_unique_index_count: i64 = repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_index_list('pdf_page_annotations') WHERE [unique] = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check pdf annotation unique index");
 
-        assert_eq!(user_version, 6);
+        assert_eq!(user_version, 8);
         assert_eq!(parent_id_column_count, 1);
         assert_eq!(position_kind_column_count, 1);
         assert_eq!(app_settings_table_count, 1);
+        assert_eq!(handwriting_table_count, 1);
+        assert_eq!(handwriting_index_count, 1);
+        assert_eq!(pdf_annotation_table_count, 1);
+        assert_eq!(pdf_annotation_index_count, 1);
+        assert!(pdf_annotation_unique_index_count >= 1);
+    }
+
+    #[test]
+    fn migrates_v6_database_to_v8_pdf_annotation_schema() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let database_path = temp_dir.path().join("studyseq.sqlite");
+        {
+            let connection = rusqlite::Connection::open(&database_path).expect("open raw db");
+            connection
+                .execute_batch(
+                    "
+                    CREATE TABLE learning_contents (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        deadline TEXT,
+                        estimated_hours REAL DEFAULT 0,
+                        progress INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        last_opened_at TEXT
+                    );
+
+                    CREATE TABLE material_items (
+                        id TEXT PRIMARY KEY,
+                        learning_content_id TEXT NOT NULL,
+                        parent_id TEXT,
+                        kind TEXT NOT NULL DEFAULT 'file' CHECK (kind IN ('file', 'folder')),
+                        name TEXT NOT NULL,
+                        original_path TEXT,
+                        stored_path TEXT,
+                        mime_type TEXT,
+                        size_bytes INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE notes (
+                        id TEXT PRIMARY KEY,
+                        learning_content_id TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        body TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE material_reading_states (
+                        material_id TEXT PRIMARY KEY,
+                        page_number INTEGER NOT NULL DEFAULT 1,
+                        scale REAL NOT NULL DEFAULT 1.0,
+                        last_opened_at TEXT,
+                        position_kind TEXT NOT NULL DEFAULT 'none',
+                        video_position_seconds REAL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE app_settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    PRAGMA user_version = 6;
+                    ",
+                )
+                .expect("create v6 schema");
+        }
+
+        let repository = LearningContentRepository::open(&database_path).expect("migrate db");
+        let user_version: i64 = repository
+            .connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("read user version");
+        let handwriting_table_count: i64 = repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'handwriting_notes'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check handwriting table");
+
+        assert_eq!(user_version, 8);
+        assert_eq!(handwriting_table_count, 1);
+    }
+
+    #[test]
+    fn migrates_v7_database_to_v8_pdf_annotation_schema() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let database_path = temp_dir.path().join("studyseq.sqlite");
+        {
+            let connection = rusqlite::Connection::open(&database_path).expect("open raw db");
+            connection
+                .execute_batch(
+                    "
+                    CREATE TABLE learning_contents (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        deadline TEXT,
+                        estimated_hours REAL DEFAULT 0,
+                        progress INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        last_opened_at TEXT
+                    );
+
+                    CREATE TABLE material_items (
+                        id TEXT PRIMARY KEY,
+                        learning_content_id TEXT NOT NULL,
+                        parent_id TEXT,
+                        kind TEXT NOT NULL DEFAULT 'file' CHECK (kind IN ('file', 'folder')),
+                        name TEXT NOT NULL,
+                        original_path TEXT,
+                        stored_path TEXT,
+                        mime_type TEXT,
+                        size_bytes INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE notes (
+                        id TEXT PRIMARY KEY,
+                        learning_content_id TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        body TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE material_reading_states (
+                        material_id TEXT PRIMARY KEY,
+                        page_number INTEGER NOT NULL DEFAULT 1,
+                        scale REAL NOT NULL DEFAULT 1.0,
+                        last_opened_at TEXT,
+                        position_kind TEXT NOT NULL DEFAULT 'none',
+                        video_position_seconds REAL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE app_settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE handwriting_notes (
+                        id TEXT PRIMARY KEY,
+                        learning_content_id TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        stroke_data_json TEXT NOT NULL,
+                        stroke_schema_version INTEGER NOT NULL DEFAULT 1,
+                        canvas_width REAL NOT NULL DEFAULT 1,
+                        canvas_height REAL NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    INSERT INTO learning_contents (id, name, status, created_at, updated_at)
+                    VALUES ('lc-v7', 'V7 内容', 'planned', '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z');
+
+                    INSERT INTO handwriting_notes (
+                        id, learning_content_id, title, stroke_data_json, created_at, updated_at
+                    ) VALUES (
+                        'note-v7', 'lc-v7', 'V7 手写', '{\"schemaVersion\":1,\"coordinateSpace\":\"normalized\",\"strokes\":[]}',
+                        '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z'
+                    );
+
+                    PRAGMA user_version = 7;
+                    ",
+                )
+                .expect("create v7 schema");
+        }
+
+        let repository = LearningContentRepository::open(&database_path).expect("migrate db");
+        let user_version: i64 = repository
+            .connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("read user version");
+        let handwriting_count: i64 = repository
+            .connection
+            .query_row("SELECT COUNT(*) FROM handwriting_notes", [], |row| {
+                row.get(0)
+            })
+            .expect("count handwriting notes");
+        let pdf_annotation_table_count: i64 = repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'pdf_page_annotations'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check pdf annotation table");
+        let pdf_annotation_index_count: i64 = repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_pdf_page_annotations_material'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check pdf annotation index");
+
+        assert_eq!(user_version, 8);
+        assert_eq!(handwriting_count, 1);
+        assert_eq!(pdf_annotation_table_count, 1);
+        assert_eq!(pdf_annotation_index_count, 1);
     }
 
     #[test]
@@ -4630,6 +6513,47 @@ mod tests {
     }
 
     #[test]
+    fn legacy_octet_stream_code_material_stays_code_after_rename_without_extension() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source = temp_dir.path().join("legacy.rs");
+        std::fs::write(&source, "fn main() {}\n").expect("write source");
+        let content = repository
+            .create(CreateLearningContentInput {
+                name: "legacy code".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            })
+            .expect("create content");
+        let material = repository
+            .import_material_file(&content.id, &source, &material_library_dir, None)
+            .expect("import material");
+        repository
+            .connection
+            .execute(
+                "UPDATE material_items SET mime_type = 'application/octet-stream' WHERE id = ?1",
+                params![material.id],
+            )
+            .expect("simulate legacy octet stream");
+
+        let renamed = repository
+            .rename_material_item(&material.id, "重命名代码", &material_library_dir)
+            .expect("rename material")
+            .material;
+        let preview = repository
+            .preview_material_file(&renamed.id, &material_library_dir)
+            .expect("preview renamed code");
+
+        assert_eq!(renamed.mime_type.as_deref(), Some("text/x-rust"));
+        assert_eq!(preview.kind, crate::models::MaterialPreviewKind::Code);
+        assert_eq!(preview.language.as_deref(), Some("rust"));
+        assert_eq!(preview.text.as_deref(), Some("fn main() {}\n"));
+    }
+
+    #[test]
     fn material_rename_reports_rollback_failure_without_silently_losing_file() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let source_path = temp_dir.path().join("missing-parent").join("source.txt");
@@ -4773,6 +6697,39 @@ mod tests {
                 progress: None,
             })
             .expect("create learning content")
+    }
+
+    fn handwriting_json() -> String {
+        handwriting_json_with_width(0.006)
+    }
+
+    fn handwriting_json_with_width(width: f64) -> String {
+        format!(
+            r##"{{"schemaVersion":1,"coordinateSpace":"normalized","strokes":[{{"id":"stroke-1","tool":"pen","color":"#1f2937","width":{},"points":[{{"x":0.12,"y":0.24,"t":1}},{{"x":0.2,"y":0.28,"t":2}}]}}]}}"##,
+            width
+        )
+    }
+
+    fn handwriting_json_with_stroke_count(count: usize) -> String {
+        let strokes = (0..count)
+            .map(|index| {
+                format!(
+                    r##"{{"id":"stroke-{index}","tool":"pen","color":"#1f2937","width":0.006,"points":[]}}"##
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(r##"{{"schemaVersion":1,"coordinateSpace":"normalized","strokes":[{strokes}]}}"##)
+    }
+
+    fn handwriting_json_with_point_count(count: usize) -> String {
+        let points = (0..count)
+            .map(|index| format!(r#"{{"x":0.1,"y":0.2,"t":{index}}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            r##"{{"schemaVersion":1,"coordinateSpace":"normalized","strokes":[{{"id":"stroke-many","tool":"pen","color":"#1f2937","width":0.006,"points":[{points}]}}]}}"##
+        )
     }
 
     fn write_source(temp_dir: &tempfile::TempDir, name: &str) -> PathBuf {

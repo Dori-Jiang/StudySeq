@@ -12,6 +12,39 @@ Object.defineProperty(HTMLMediaElement.prototype, "load", {
   value: vi.fn(),
 });
 
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+Object.defineProperty(globalThis, "ResizeObserver", {
+  configurable: true,
+  writable: true,
+  value: ResizeObserverStub,
+});
+
+Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+  configurable: true,
+  writable: true,
+  value: vi.fn(() => ({
+    beginPath: vi.fn(),
+    clearRect: vi.fn(),
+    lineTo: vi.fn(),
+    moveTo: vi.fn(),
+    restore: vi.fn(),
+    save: vi.fn(),
+    stroke: vi.fn(),
+  })),
+});
+
+Object.defineProperty(window, "confirm", {
+  configurable: true,
+  writable: true,
+  value: vi.fn(() => true),
+});
+
 afterEach(() => {
   cleanup();
+  vi.mocked(window.confirm).mockClear();
 });

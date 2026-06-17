@@ -233,16 +233,69 @@ pub struct Note {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct HandwritingNoteSummary {
+    pub id: String,
+    pub learning_content_id: String,
+    pub title: String,
+    pub stroke_schema_version: i64,
+    pub canvas_width: f64,
+    pub canvas_height: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandwritingNote {
+    pub id: String,
+    pub learning_content_id: String,
+    pub title: String,
+    pub stroke_data_json: String,
+    pub stroke_schema_version: i64,
+    pub canvas_width: f64,
+    pub canvas_height: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfPageAnnotation {
+    pub id: String,
+    pub material_id: String,
+    pub page_number: i64,
+    pub stroke_data_json: String,
+    pub stroke_schema_version: i64,
+    pub page_width: f64,
+    pub page_height: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavePdfPageAnnotationInput {
+    pub material_id: String,
+    pub page_number: i64,
+    pub page_width: f64,
+    pub page_height: f64,
+    pub stroke_data: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LearningDetail {
     pub learning_content: LearningContent,
     pub materials: Vec<MaterialItem>,
     pub notes: Vec<Note>,
+    pub handwriting_notes: Vec<HandwritingNoteSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MaterialPreviewKind {
     Text,
+    Code,
     Image,
     Pdf,
     Video,
@@ -259,6 +312,11 @@ pub struct MaterialPreview {
     pub data_url: Option<String>,
     pub asset_path: Option<String>,
     pub encoding: Option<String>,
+    pub language: Option<String>,
+    pub language_label: Option<String>,
+    pub line_count: Option<i64>,
+    pub is_truncated: bool,
+    pub highlighting_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -283,4 +341,25 @@ pub struct UpdateNoteInput {
     pub note_id: String,
     pub title: String,
     pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateHandwritingNoteInput {
+    pub learning_content_id: String,
+    pub title: String,
+    pub stroke_data_json: String,
+    pub canvas_width: f64,
+    pub canvas_height: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateHandwritingNoteInput {
+    pub learning_content_id: String,
+    pub note_id: String,
+    pub title: String,
+    pub stroke_data_json: String,
+    pub canvas_width: f64,
+    pub canvas_height: f64,
 }

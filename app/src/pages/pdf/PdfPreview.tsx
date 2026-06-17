@@ -1,11 +1,36 @@
 import {
   PointerEvent as ReactPointerEvent,
   WheelEvent as ReactWheelEvent,
+  useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 
+import {
+  deletePdfPageAnnotation,
+  getPdfPageAnnotation,
+  savePdfPageAnnotation,
+} from "../../shared/api/learningContentApi";
+import { toUserMessage } from "../../shared/api/errors";
+import { HandwritingToolbar } from "../handwriting/HandwritingToolbar";
+import {
+  canRedo,
+  canUndo,
+  clearHandwriting,
+  createHandwritingHistory,
+  DEFAULT_HANDWRITING_TOOL,
+  EMPTY_HANDWRITING_DATA,
+  parseHandwritingData,
+  pushStroke,
+  redoHandwriting,
+  serializeHandwritingData,
+  undoHandwriting,
+  type HandwritingHistory,
+  type HandwritingToolState,
+} from "../handwriting/handwritingModel";
+import { PdfAnnotationLayer } from "./PdfAnnotationLayer";
 import {
   PDF_BASE_HEIGHT,
   PDF_BASE_WIDTH,
@@ -39,6 +64,15 @@ const DEFAULT_PAGE_SIZE = {
   width: PDF_BASE_WIDTH,
   height: PDF_BASE_HEIGHT,
 };
+const PDF_ANNOTATION_SAVE_DELAY_MS = 1000;
+
+type PdfAnnotationSaveStatus =
+  | { kind: "idle" }
+  | { kind: "loading" }
+  | { kind: "dirty" }
+  | { kind: "saving" }
+  | { kind: "saved"; savedAt: string }
+  | { kind: "error"; message: string };
 
 function resolveInitialScale(
   initialScale: number | undefined,
@@ -50,14 +84,24 @@ function resolveInitialScale(
   return Math.max(nextScale, clampScale(minimumInitialScale));
 }
 
+function formatClockTime(date: Date) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
 export function PdfPreview({
   sourceUrl,
+  materialId,
   initialPageNumber,
   initialScale,
   minimumInitialScale,
   onStateChange,
 }: {
   sourceUrl: string;
+  materialId?: string;
   initialPageNumber?: number;
   initialScale?: number;
   minimumInitialScale?: number;
@@ -83,15 +127,38 @@ export function PdfPreview({
   const [isOutlineOpen, setIsOutlineOpen] = useState(false);
   const [outlineNodes, setOutlineNodes] = useState<PdfOutlineNode[] | null>(null);
   const [hasLoadFailed, setHasLoadFailed] = useState(false);
+  const [isAnnotationMode, setIsAnnotationMode] = useState(false);
+  const [showAnnotations, setShowAnnotations] = useState(true);
+  const [annotationHistory, setAnnotationHistory] = useState<HandwritingHistory>(() =>
+    createHandwritingHistory(),
+  );
+  const [annotationToolState, setAnnotationToolState] =
+    useState<HandwritingToolState>(DEFAULT_HANDWRITING_TOOL);
+  const [annotationSaveStatus, setAnnotationSaveStatus] =
+    useState<PdfAnnotationSaveStatus>({ kind: "idle" });
   // 适应宽度基准：100% 缩放时页面铺满阅读区可用宽度；环境不支持测量时退回 A4 固定宽
   const [fitWidth, setFitWidth] = useState(PDF_BASE_WIDTH);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const annotationSavePromiseRef = useRef<Promise<boolean> | null>(null);
+  const saveCurrentAnnotationRef = useRef<(() => Promise<boolean>) | null>(null);
+  const annotationGenerationRef = useRef(0);
+  const annotationLoadedKeyRef = useRef<string | null>(null);
+  const annotationLastSavedJsonRef = useRef(serializeHandwritingData(EMPTY_HANDWRITING_DATA));
+
+  function enableAnnotationMode() {
+    setIsAnnotationMode(true);
+  }
 
   const sheetWidth = fitWidth * scale;
   const sheetHeight = sheetWidth * (pageSize.height / pageSize.width);
   const displayScale = sheetWidth / pageSize.width;
   const displayedPageNumber =
     pageCount === null ? Math.max(1, pageNumber) : clampPageNumber(pageNumber, pageCount);
+  const annotationKey = materialId ? `${materialId}:${displayedPageNumber}` : null;
+  const isAnnotationDirty = useMemo(
+    () => annotationSaveStatus.kind === "dirty" || annotationSaveStatus.kind === "error",
+    [annotationSaveStatus.kind],
+  );
 
   useEffect(() => {
     const nextScale = resolveInitialScale(initialScale, minimumInitialScale);
@@ -106,7 +173,52 @@ export function PdfPreview({
     setIsOutlineOpen(false);
     setOutlineNodes(null);
     setHasLoadFailed(false);
-  }, [sourceUrl, initialPageNumber, initialScale, minimumInitialScale]);
+    setAnnotationHistory(createHandwritingHistory());
+    setAnnotationSaveStatus({ kind: materialId ? "loading" : "idle" });
+    setIsAnnotationMode(false);
+    annotationGenerationRef.current += 1;
+    annotationLoadedKeyRef.current = null;
+    annotationSavePromiseRef.current = null;
+    annotationLastSavedJsonRef.current = serializeHandwritingData(EMPTY_HANDWRITING_DATA);
+  }, [sourceUrl, materialId, initialPageNumber, initialScale, minimumInitialScale]);
+
+  useEffect(() => {
+    annotationGenerationRef.current += 1;
+    annotationSavePromiseRef.current = null;
+
+    if (!materialId || pageCount === null || hasLoadFailed) {
+      setAnnotationHistory(createHandwritingHistory());
+      setAnnotationSaveStatus({ kind: "idle" });
+      annotationLoadedKeyRef.current = null;
+      annotationLastSavedJsonRef.current = serializeHandwritingData(EMPTY_HANDWRITING_DATA);
+      return;
+    }
+
+    const currentKey = annotationKey;
+    if (!currentKey) return;
+    let isCancelled = false;
+    setAnnotationSaveStatus({ kind: "loading" });
+    getPdfPageAnnotation(materialId, displayedPageNumber)
+      .then((annotation) => {
+        if (isCancelled) return;
+        const data = annotation
+          ? parseHandwritingData(annotation.strokeDataJson)
+          : EMPTY_HANDWRITING_DATA;
+        annotationLoadedKeyRef.current = currentKey;
+        annotationLastSavedJsonRef.current = serializeHandwritingData(data);
+        setAnnotationHistory(createHandwritingHistory(data));
+        setAnnotationSaveStatus({ kind: "idle" });
+      })
+      .catch((error: unknown) => {
+        if (isCancelled) return;
+        setAnnotationHistory(createHandwritingHistory());
+        setAnnotationSaveStatus({ kind: "error", message: toUserMessage(error) });
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [annotationKey, displayedPageNumber, hasLoadFailed, materialId, pageCount]);
 
   useEffect(() => {
     if (!isOutlineOpen || outlineNodes !== null) return;
@@ -242,6 +354,84 @@ export function PdfPreview({
     onStateChange?.({ pageNumber: displayedPageNumber, scale });
   }, [displayedPageNumber, hasLoadFailed, onStateChange, pageCount, scale]);
 
+  const performAnnotationSave = useCallback(async (): Promise<boolean> => {
+    if (!materialId || pageCount === null || hasLoadFailed) return true;
+    if (annotationSaveStatus.kind === "loading") return false;
+
+    const currentKey = `${materialId}:${displayedPageNumber}`;
+    if (annotationLoadedKeyRef.current !== currentKey) return false;
+
+    const currentJson = serializeHandwritingData(annotationHistory.present);
+    if (currentJson === annotationLastSavedJsonRef.current) {
+      setAnnotationSaveStatus({ kind: "saved", savedAt: formatClockTime(new Date()) });
+      return true;
+    }
+
+    const currentGeneration = annotationGenerationRef.current;
+    setAnnotationSaveStatus({ kind: "saving" });
+    try {
+      if (annotationHistory.present.strokes.length === 0) {
+        await deletePdfPageAnnotation(materialId, displayedPageNumber);
+      } else {
+        await savePdfPageAnnotation({
+          materialId,
+          pageNumber: displayedPageNumber,
+          pageWidth: pageSize.width,
+          pageHeight: pageSize.height,
+          strokeData: currentJson,
+        });
+      }
+      if (currentGeneration !== annotationGenerationRef.current) return false;
+      annotationLastSavedJsonRef.current = currentJson;
+      setAnnotationSaveStatus({ kind: "saved", savedAt: formatClockTime(new Date()) });
+      return true;
+    } catch (error) {
+      if (currentGeneration === annotationGenerationRef.current) {
+        setAnnotationSaveStatus({ kind: "error", message: toUserMessage(error) });
+      }
+      return false;
+    }
+  }, [
+    annotationHistory.present,
+    annotationSaveStatus.kind,
+    displayedPageNumber,
+    hasLoadFailed,
+    materialId,
+    pageCount,
+    pageSize.height,
+    pageSize.width,
+  ]);
+
+  const saveCurrentAnnotation = useCallback((): Promise<boolean> => {
+    if (annotationSavePromiseRef.current) return annotationSavePromiseRef.current;
+
+    const promise = performAnnotationSave().finally(() => {
+      if (annotationSavePromiseRef.current === promise) {
+        annotationSavePromiseRef.current = null;
+      }
+    });
+    annotationSavePromiseRef.current = promise;
+    return promise;
+  }, [performAnnotationSave]);
+
+  useEffect(() => {
+    saveCurrentAnnotationRef.current = saveCurrentAnnotation;
+  }, [saveCurrentAnnotation]);
+
+  useEffect(() => {
+    if (!isAnnotationDirty) return;
+    const timeoutId = window.setTimeout(() => {
+      void saveCurrentAnnotation();
+    }, PDF_ANNOTATION_SAVE_DELAY_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [isAnnotationDirty, saveCurrentAnnotation]);
+
+  useEffect(() => {
+    return () => {
+      void saveCurrentAnnotationRef.current?.();
+    };
+  }, []);
+
   useEffect(() => {
     function handlePointerMove(event: PointerEvent) {
       const panState = panStateRef.current;
@@ -291,9 +481,14 @@ export function PdfPreview({
     document.body.classList.add("is-panning-pdf");
   }
 
-  function handleOutlineJump(targetPageNumber: number) {
+  async function goToPage(targetPageNumber: number) {
+    if (!(await saveCurrentAnnotation())) return;
     if (pageCount === null) return;
     setPageNumber(clampPageNumber(targetPageNumber, pageCount));
+  }
+
+  function handleOutlineJump(targetPageNumber: number) {
+    void goToPage(targetPageNumber);
   }
 
   function updatePageSize(nextPageSize: PdfViewport) {
@@ -326,7 +521,9 @@ export function PdfPreview({
         <button
           type="button"
           disabled={pageCount === null || displayedPageNumber <= 1}
-          onClick={() => setPageNumber((currentPage) => Math.max(1, currentPage - 1))}
+          onClick={() => {
+            void goToPage(displayedPageNumber - 1);
+          }}
         >
           上一页
         </button>
@@ -340,11 +537,9 @@ export function PdfPreview({
         <button
           type="button"
           disabled={pageCount === null || displayedPageNumber >= pageCount}
-          onClick={() =>
-            setPageNumber((currentPage) =>
-              pageCount === null ? currentPage : Math.min(pageCount, currentPage + 1),
-            )
-          }
+          onClick={() => {
+            void goToPage(displayedPageNumber + 1);
+          }}
         >
           下一页
         </button>
@@ -355,7 +550,77 @@ export function PdfPreview({
         <button type="button" onClick={() => adjustScale(0.2)}>
           放大
         </button>
+        {materialId ? (
+          <>
+            <button
+              type="button"
+              aria-pressed={isAnnotationMode}
+              onClick={() => setIsAnnotationMode((current) => !current)}
+            >
+              批注
+            </button>
+            <button
+              type="button"
+              aria-pressed={showAnnotations}
+              onClick={() => setShowAnnotations((current) => !current)}
+            >
+              {showAnnotations ? "隐藏批注" : "显示批注"}
+            </button>
+          </>
+        ) : null}
       </div>
+      {materialId ? (
+        <div className="pdf-annotation-toolbar-row">
+          <HandwritingToolbar
+            canRedo={canRedo(annotationHistory)}
+            canUndo={canUndo(annotationHistory)}
+            isSaving={annotationSaveStatus.kind === "saving"}
+            isDisabled={annotationSaveStatus.kind === "loading"}
+            toolState={annotationToolState}
+            onClear={() => {
+              enableAnnotationMode();
+              setAnnotationHistory((current) => clearHandwriting(current));
+              annotationGenerationRef.current += 1;
+              setAnnotationSaveStatus({ kind: "dirty" });
+            }}
+            onRedo={() => {
+              enableAnnotationMode();
+              setAnnotationHistory((current) => redoHandwriting(current));
+              annotationGenerationRef.current += 1;
+              setAnnotationSaveStatus({ kind: "dirty" });
+            }}
+            onSave={() => {
+              void saveCurrentAnnotation();
+            }}
+            onToolChange={(nextToolState) => {
+              enableAnnotationMode();
+              setAnnotationToolState(nextToolState);
+            }}
+            onUndo={() => {
+              enableAnnotationMode();
+              setAnnotationHistory((current) => undoHandwriting(current));
+              annotationGenerationRef.current += 1;
+              setAnnotationSaveStatus({ kind: "dirty" });
+            }}
+          />
+          <span
+            className={`pdf-annotation-save-status note-save-status note-save-status-${annotationSaveStatus.kind}`}
+            role={annotationSaveStatus.kind === "error" ? "alert" : undefined}
+          >
+            {annotationSaveStatus.kind === "loading"
+              ? "正在加载批注"
+              : annotationSaveStatus.kind === "saving"
+                ? "正在保存批注"
+                : annotationSaveStatus.kind === "dirty"
+                  ? "有未保存批注"
+                  : annotationSaveStatus.kind === "saved"
+                    ? `批注已保存 ${annotationSaveStatus.savedAt}`
+                    : annotationSaveStatus.kind === "error"
+                      ? annotationSaveStatus.message
+                      : " "}
+          </span>
+        </div>
+      ) : null}
       <div className="pdf-content">
         {isOutlineOpen &&
           (outlineNodes === null ? (
@@ -382,6 +647,18 @@ export function PdfPreview({
               }}
             >
               <canvas className="pdf-preview" ref={canvasRef} aria-label="PDF 预览" />
+              {materialId && showAnnotations ? (
+                <PdfAnnotationLayer
+                  data={annotationHistory.present}
+                  isAnnotating={isAnnotationMode}
+                  toolState={annotationToolState}
+                  onStrokeComplete={(stroke) => {
+                    setAnnotationHistory((current) => pushStroke(current, stroke));
+                    annotationGenerationRef.current += 1;
+                    setAnnotationSaveStatus({ kind: "dirty" });
+                  }}
+                />
+              ) : null}
               {hasLoadFailed && <p className="empty-state">PDF 加载失败，请重新打开资料</p>}
             </div>
           </div>

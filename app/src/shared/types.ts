@@ -156,13 +156,77 @@ export type Note = {
   updatedAt: string;
 };
 
+export type HandwritingPoint = {
+  x: number;
+  y: number;
+  t: number;
+};
+
+export type HandwritingTool = "pen" | "eraser";
+
+export type HandwritingStroke = {
+  id: string;
+  tool: HandwritingTool;
+  color: string;
+  width: number;
+  points: HandwritingPoint[];
+};
+
+export type HandwritingData = {
+  schemaVersion: 1;
+  coordinateSpace: "normalized";
+  strokes: HandwritingStroke[];
+};
+
+export type HandwritingNoteSummary = {
+  id: string;
+  learningContentId: string;
+  title: string;
+  strokeSchemaVersion: number;
+  canvasWidth: number;
+  canvasHeight: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type HandwritingNote = HandwritingNoteSummary & {
+  strokeDataJson: string;
+};
+
+export type PdfPageAnnotation = {
+  id: string;
+  materialId: string;
+  pageNumber: number;
+  strokeDataJson: string;
+  strokeSchemaVersion: number;
+  pageWidth: number;
+  pageHeight: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SavePdfPageAnnotationInput = {
+  materialId: string;
+  pageNumber: number;
+  pageWidth: number;
+  pageHeight: number;
+  strokeData: string;
+};
+
 export type LearningDetail = {
   learningContent: LearningContent;
   materials: MaterialItem[];
   notes: Note[];
+  handwritingNotes: HandwritingNoteSummary[];
 };
 
-export type MaterialPreviewKind = "text" | "image" | "pdf" | "video" | "unsupported";
+export type CodeHighlightingMode =
+  | "highlight"
+  | "plain_too_large"
+  | "plain_unknown_language"
+  | "plain_decode_lossy";
+
+export type MaterialPreviewKind = "text" | "code" | "image" | "pdf" | "video" | "unsupported";
 
 export type MaterialPreview = {
   materialId: string;
@@ -172,6 +236,11 @@ export type MaterialPreview = {
   dataUrl: string | null;
   assetPath: string | null;
   encoding: string | null;
+  language: string | null;
+  languageLabel: string | null;
+  lineCount: number | null;
+  isTruncated: boolean;
+  highlightingMode: CodeHighlightingMode | null;
 };
 
 export type ImportMaterialFileInput = {
@@ -189,4 +258,21 @@ export type UpdateNoteInput = {
   noteId: string;
   title: string;
   body: string;
+};
+
+export type CreateHandwritingNoteInput = {
+  learningContentId: string;
+  title: string;
+  strokeDataJson: string;
+  canvasWidth: number;
+  canvasHeight: number;
+};
+
+export type UpdateHandwritingNoteInput = {
+  learningContentId: string;
+  noteId: string;
+  title: string;
+  strokeDataJson: string;
+  canvasWidth: number;
+  canvasHeight: number;
 };

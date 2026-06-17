@@ -26,6 +26,7 @@ pub struct PendingMaterialLibraryLocation {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let data_dir = app
                 .path()
@@ -62,6 +63,14 @@ pub fn run() {
             commands::create_note,
             commands::update_note,
             commands::delete_note,
+            commands::list_handwriting_note_summaries,
+            commands::get_handwriting_note,
+            commands::create_handwriting_note,
+            commands::update_handwriting_note,
+            commands::delete_handwriting_note,
+            commands::get_pdf_page_annotation,
+            commands::save_pdf_page_annotation,
+            commands::delete_pdf_page_annotation,
             commands::preview_material_file,
             commands::get_material_reading_state,
             commands::save_material_reading_state,
@@ -75,6 +84,7 @@ pub fn run() {
             commands::create_material_folder,
             commands::move_material_item,
             commands::count_material_subtree,
+            commands::copy_text_to_clipboard,
         ])
         .run(tauri::generate_context!())
         .expect("error while running StudySeq");

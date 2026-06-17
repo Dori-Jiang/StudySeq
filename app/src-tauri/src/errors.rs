@@ -45,12 +45,26 @@ pub enum AppError {
     EmptyNoteTitle,
     #[error("笔记不存在")]
     NoteNotFound,
+    #[error("手写笔记不存在")]
+    HandwritingNoteNotFound,
+    #[error("手写笔记数据无效")]
+    InvalidHandwritingData,
+    #[error("手写笔记数据过大")]
+    HandwritingDataTooLarge,
+    #[error("PDF 批注不存在")]
+    PdfAnnotationNotFound,
+    #[error("PDF 批注数据无效")]
+    InvalidPdfAnnotationData,
+    #[error("PDF 批注数据过大")]
+    PdfAnnotationDataTooLarge,
     #[error("数据库错误：{0}")]
     Database(#[from] rusqlite::Error),
     #[error("文件系统错误：{0}")]
     Io(#[from] std::io::Error),
     #[error("应用状态不可用")]
     StateUnavailable,
+    #[error("剪贴板不可用")]
+    ClipboardUnavailable,
 }
 
 #[derive(Debug, Serialize)]
@@ -92,9 +106,16 @@ impl AppError {
             AppError::OfficeConversionFailed => "office_conversion_failed",
             AppError::EmptyNoteTitle => "empty_note_title",
             AppError::NoteNotFound => "note_not_found",
+            AppError::HandwritingNoteNotFound => "handwriting_note_not_found",
+            AppError::InvalidHandwritingData => "invalid_handwriting_data",
+            AppError::HandwritingDataTooLarge => "handwriting_data_too_large",
+            AppError::PdfAnnotationNotFound => "pdf_annotation_not_found",
+            AppError::InvalidPdfAnnotationData => "invalid_pdf_annotation_data",
+            AppError::PdfAnnotationDataTooLarge => "pdf_annotation_data_too_large",
             AppError::Database(_) => "database_error",
             AppError::Io(_) => "file_system_error",
             AppError::StateUnavailable => "state_unavailable",
+            AppError::ClipboardUnavailable => "clipboard_unavailable",
         }
     }
 
@@ -127,9 +148,24 @@ impl AppError {
             }
             AppError::EmptyNoteTitle => "笔记标题不能为空",
             AppError::NoteNotFound => "笔记不存在",
+            AppError::HandwritingNoteNotFound => "手写笔记不存在",
+            AppError::InvalidHandwritingData => {
+                "手写笔记数据无效，请清理后重试；已保留当前画布"
+            }
+            AppError::HandwritingDataTooLarge => {
+                "手写笔记内容过大，请拆分或清理部分笔迹后再保存"
+            }
+            AppError::PdfAnnotationNotFound => "PDF 批注不存在",
+            AppError::InvalidPdfAnnotationData => {
+                "PDF 批注数据无效，请清理后重试；已保留当前页面批注"
+            }
+            AppError::PdfAnnotationDataTooLarge => {
+                "PDF 批注内容过大，请清理部分笔迹后再保存"
+            }
             AppError::Database(_) => "数据库操作失败，请稍后重试",
             AppError::Io(_) => "文件系统操作失败，请确认文件仍可访问",
             AppError::StateUnavailable => "应用状态不可用",
+            AppError::ClipboardUnavailable => "剪贴板不可用，请稍后重试",
         }
     }
 }

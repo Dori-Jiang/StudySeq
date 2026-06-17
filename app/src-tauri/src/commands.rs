@@ -2,18 +2,21 @@ use std::path::{Path, PathBuf};
 
 use chrono::{Duration, Utc};
 use tauri::{Manager, State, Window};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
 use crate::errors::{ApiError, AppError};
 use crate::models::{
-    CreateLearningContentInput, CreateMaterialFolderInput, CreateNoteInput,
-    ImportMaterialFileInput, LearningContent, LearningDetail, MaterialDeletionReport, MaterialItem,
+    CreateHandwritingNoteInput, CreateLearningContentInput, CreateMaterialFolderInput,
+    CreateNoteInput, HandwritingNote, HandwritingNoteSummary, ImportMaterialFileInput,
+    LearningContent, LearningDetail, MaterialDeletionReport, MaterialItem,
     MaterialLibraryCleanupReport, MaterialLibraryLocation, MaterialLibraryLocationCandidate,
     MaterialLibraryLocationChangeInput, MaterialLibraryLocationChangeReport, MaterialLibraryStats,
     MaterialPreview, MaterialReadingState, MaterialSubtreeCount, MoveMaterialItemInput, Note,
-    RenameMaterialItemInput, RenameMaterialItemReport, SaveMaterialReadingStateInput,
-    SaveVideoPlaybackStateInput, UpdateLearningContentInput, UpdateNoteInput,
+    PdfPageAnnotation, RenameMaterialItemInput, RenameMaterialItemReport,
+    SaveMaterialReadingStateInput, SavePdfPageAnnotationInput, SaveVideoPlaybackStateInput,
+    UpdateHandwritingNoteInput, UpdateLearningContentInput, UpdateNoteInput,
 };
 use crate::repository::LearningContentRepository;
 use crate::{AppState, PendingMaterialLibraryLocation};
@@ -136,6 +139,16 @@ pub fn import_material_file(
 }
 
 #[tauri::command]
+pub fn copy_text_to_clipboard(window: Window, text: String) -> Result<(), ApiError> {
+    window
+        .app_handle()
+        .clipboard()
+        .write_text(text)
+        .map_err(|_| AppError::ClipboardUnavailable)?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn create_note(state: State<'_, AppState>, input: CreateNoteInput) -> Result<Note, ApiError> {
     let repository = state
         .repository
@@ -163,6 +176,127 @@ pub fn delete_note(state: State<'_, AppState>, id: String) -> Result<(), ApiErro
         .map_err(|_| AppError::StateUnavailable)?;
 
     delete_note_in_repository(&repository, &id)
+}
+
+#[tauri::command]
+pub fn list_handwriting_note_summaries(
+    state: State<'_, AppState>,
+    learning_content_id: String,
+) -> Result<Vec<HandwritingNoteSummary>, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    list_handwriting_note_summaries_in_repository(&repository, &learning_content_id)
+}
+
+#[tauri::command]
+pub fn get_handwriting_note(
+    state: State<'_, AppState>,
+    learning_content_id: String,
+    id: String,
+) -> Result<HandwritingNote, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    get_handwriting_note_from_repository(&repository, &learning_content_id, &id)
+}
+
+#[tauri::command]
+pub fn create_handwriting_note(
+    state: State<'_, AppState>,
+    input: CreateHandwritingNoteInput,
+) -> Result<HandwritingNote, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    create_handwriting_note_in_repository(&repository, input)
+}
+
+#[tauri::command]
+pub fn update_handwriting_note(
+    state: State<'_, AppState>,
+    input: UpdateHandwritingNoteInput,
+) -> Result<HandwritingNote, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    update_handwriting_note_in_repository(&repository, input)
+}
+
+#[tauri::command]
+pub fn delete_handwriting_note(
+    state: State<'_, AppState>,
+    learning_content_id: String,
+    id: String,
+) -> Result<(), ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+
+    delete_handwriting_note_in_repository(&repository, &learning_content_id, &id)
+}
+
+#[tauri::command]
+pub fn get_pdf_page_annotation(
+    state: State<'_, AppState>,
+    material_id: String,
+    page_number: i64,
+) -> Result<Option<PdfPageAnnotation>, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+    let material_library_dir = current_material_library_dir(&state)?;
+
+    get_pdf_page_annotation_from_repository(
+        &repository,
+        &material_id,
+        page_number,
+        &material_library_dir,
+    )
+}
+
+#[tauri::command]
+pub fn save_pdf_page_annotation(
+    state: State<'_, AppState>,
+    input: SavePdfPageAnnotationInput,
+) -> Result<PdfPageAnnotation, ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+    let material_library_dir = current_material_library_dir(&state)?;
+
+    save_pdf_page_annotation_in_repository(&repository, input, &material_library_dir)
+}
+
+#[tauri::command]
+pub fn delete_pdf_page_annotation(
+    state: State<'_, AppState>,
+    material_id: String,
+    page_number: i64,
+) -> Result<(), ApiError> {
+    let repository = state
+        .repository
+        .lock()
+        .map_err(|_| AppError::StateUnavailable)?;
+    let material_library_dir = current_material_library_dir(&state)?;
+
+    delete_pdf_page_annotation_in_repository(
+        &repository,
+        &material_id,
+        page_number,
+        &material_library_dir,
+    )
 }
 
 #[tauri::command]
@@ -571,6 +705,87 @@ fn delete_note_in_repository(
     id: &str,
 ) -> Result<(), ApiError> {
     repository.delete_note(id).map_err(ApiError::from)
+}
+
+fn list_handwriting_note_summaries_in_repository(
+    repository: &LearningContentRepository,
+    learning_content_id: &str,
+) -> Result<Vec<HandwritingNoteSummary>, ApiError> {
+    repository
+        .list_handwriting_note_summaries(learning_content_id)
+        .map_err(ApiError::from)
+}
+
+fn get_handwriting_note_from_repository(
+    repository: &LearningContentRepository,
+    learning_content_id: &str,
+    id: &str,
+) -> Result<HandwritingNote, ApiError> {
+    repository
+        .get_handwriting_note_in_content(learning_content_id, id)
+        .map_err(ApiError::from)?
+        .ok_or(AppError::HandwritingNoteNotFound)
+        .map_err(ApiError::from)
+}
+
+fn create_handwriting_note_in_repository(
+    repository: &LearningContentRepository,
+    input: CreateHandwritingNoteInput,
+) -> Result<HandwritingNote, ApiError> {
+    repository
+        .create_handwriting_note(input)
+        .map_err(ApiError::from)
+}
+
+fn update_handwriting_note_in_repository(
+    repository: &LearningContentRepository,
+    input: UpdateHandwritingNoteInput,
+) -> Result<HandwritingNote, ApiError> {
+    repository
+        .update_handwriting_note(input)
+        .map_err(ApiError::from)
+}
+
+fn delete_handwriting_note_in_repository(
+    repository: &LearningContentRepository,
+    learning_content_id: &str,
+    id: &str,
+) -> Result<(), ApiError> {
+    repository
+        .delete_handwriting_note(learning_content_id, id)
+        .map_err(ApiError::from)
+}
+
+fn get_pdf_page_annotation_from_repository(
+    repository: &LearningContentRepository,
+    material_id: &str,
+    page_number: i64,
+    material_library_dir: &std::path::Path,
+) -> Result<Option<PdfPageAnnotation>, ApiError> {
+    repository
+        .get_pdf_page_annotation(material_id, page_number, material_library_dir)
+        .map_err(ApiError::from)
+}
+
+fn save_pdf_page_annotation_in_repository(
+    repository: &LearningContentRepository,
+    input: SavePdfPageAnnotationInput,
+    material_library_dir: &std::path::Path,
+) -> Result<PdfPageAnnotation, ApiError> {
+    repository
+        .save_pdf_page_annotation(input, material_library_dir)
+        .map_err(ApiError::from)
+}
+
+fn delete_pdf_page_annotation_in_repository(
+    repository: &LearningContentRepository,
+    material_id: &str,
+    page_number: i64,
+    material_library_dir: &std::path::Path,
+) -> Result<(), ApiError> {
+    repository
+        .delete_pdf_page_annotation(material_id, page_number, material_library_dir)
+        .map_err(ApiError::from)
 }
 
 fn preview_material_file_in_repository(
@@ -1193,5 +1408,287 @@ mod tests {
             .expect("get detail")
             .expect("detail exists");
         assert!(detail.notes.is_empty());
+    }
+
+    #[test]
+    fn command_handlers_manage_handwriting_notes() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let content = create_learning_content_in_repository(
+            &repository,
+            CreateLearningContentInput {
+                name: "手写命令闭环".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            },
+        )
+        .expect("create learning content");
+
+        let created = create_handwriting_note_in_repository(
+            &repository,
+            CreateHandwritingNoteInput {
+                learning_content_id: content.id.clone(),
+                title: "手写草稿".to_string(),
+                stroke_data_json: handwriting_json(),
+                canvas_width: 1024.0,
+                canvas_height: 768.0,
+            },
+        )
+        .expect("create handwriting note");
+        let summaries = list_handwriting_note_summaries_in_repository(&repository, &content.id)
+            .expect("list handwriting summaries");
+        let loaded = get_handwriting_note_from_repository(&repository, &content.id, &created.id)
+            .expect("get handwriting note");
+        let updated = update_handwriting_note_in_repository(
+            &repository,
+            UpdateHandwritingNoteInput {
+                learning_content_id: content.id.clone(),
+                note_id: created.id.clone(),
+                title: "手写复盘".to_string(),
+                stroke_data_json: handwriting_json_with_width(0.012),
+                canvas_width: 1200.0,
+                canvas_height: 800.0,
+            },
+        )
+        .expect("update handwriting note");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].title, "手写草稿");
+        assert_eq!(loaded.stroke_data_json, handwriting_json());
+        assert_eq!(updated.title, "手写复盘");
+        assert!(updated.stroke_data_json.contains("0.012"));
+
+        delete_handwriting_note_in_repository(&repository, &content.id, &created.id)
+            .expect("delete handwriting note");
+        assert!(
+            list_handwriting_note_summaries_in_repository(&repository, &content.id)
+                .expect("list handwriting summaries after delete")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn command_handlers_scope_handwriting_notes_to_learning_content() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let first = create_learning_content_in_repository(
+            &repository,
+            CreateLearningContentInput {
+                name: "第一项".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            },
+        )
+        .expect("create first learning content");
+        let second = create_learning_content_in_repository(
+            &repository,
+            CreateLearningContentInput {
+                name: "第二项".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            },
+        )
+        .expect("create second learning content");
+        let note = create_handwriting_note_in_repository(
+            &repository,
+            CreateHandwritingNoteInput {
+                learning_content_id: second.id.clone(),
+                title: "第二项手写".to_string(),
+                stroke_data_json: handwriting_json(),
+                canvas_width: 1024.0,
+                canvas_height: 768.0,
+            },
+        )
+        .expect("create handwriting note");
+
+        let get_error = get_handwriting_note_from_repository(&repository, &first.id, &note.id)
+            .expect_err("cross-content get should fail");
+        let update_error = update_handwriting_note_in_repository(
+            &repository,
+            UpdateHandwritingNoteInput {
+                learning_content_id: first.id.clone(),
+                note_id: note.id.clone(),
+                title: "越权更新".to_string(),
+                stroke_data_json: handwriting_json(),
+                canvas_width: 1024.0,
+                canvas_height: 768.0,
+            },
+        )
+        .expect_err("cross-content update should fail");
+        let delete_error = delete_handwriting_note_in_repository(&repository, &first.id, &note.id)
+            .expect_err("cross-content delete should fail");
+
+        assert_eq!(get_error.code, "handwriting_note_not_found");
+        assert_eq!(update_error.code, "handwriting_note_not_found");
+        assert_eq!(delete_error.code, "handwriting_note_not_found");
+        assert!(
+            get_handwriting_note_from_repository(&repository, &second.id, &note.id)
+                .expect("owner can still read")
+                .id
+                == note.id
+        );
+    }
+
+    #[test]
+    fn command_handlers_reject_invalid_handwriting_payload_with_stable_error() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let content = create_learning_content_in_repository(
+            &repository,
+            CreateLearningContentInput {
+                name: "手写错误".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            },
+        )
+        .expect("create learning content");
+
+        let error = create_handwriting_note_in_repository(
+            &repository,
+            CreateHandwritingNoteInput {
+                learning_content_id: content.id,
+                title: "坏数据".to_string(),
+                stroke_data_json: "not-json".to_string(),
+                canvas_width: 1024.0,
+                canvas_height: 768.0,
+            },
+        )
+        .expect_err("invalid handwriting should fail");
+
+        assert_eq!(error.code, "invalid_handwriting_data");
+        assert!(!error.message.contains("not-json"));
+    }
+
+    #[test]
+    fn command_handlers_manage_pdf_page_annotations() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("讲义.pdf");
+        std::fs::write(&source_file, b"%PDF-1.7\n%%EOF").expect("write pdf");
+        let content = create_learning_content_in_repository(
+            &repository,
+            CreateLearningContentInput {
+                name: "PDF 批注命令".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            },
+        )
+        .expect("create learning content");
+        let material = import_material_file_in_repository(
+            &repository,
+            ImportMaterialFileInput {
+                learning_content_id: content.id,
+                parent_id: None,
+            },
+            &source_file,
+            &material_library_dir,
+        )
+        .expect("import pdf");
+
+        let saved = save_pdf_page_annotation_in_repository(
+            &repository,
+            SavePdfPageAnnotationInput {
+                material_id: material.id.clone(),
+                page_number: 1,
+                page_width: 595.0,
+                page_height: 842.0,
+                stroke_data: handwriting_json(),
+            },
+            &material_library_dir,
+        )
+        .expect("save pdf annotation");
+        let loaded = get_pdf_page_annotation_from_repository(
+            &repository,
+            &material.id,
+            1,
+            &material_library_dir,
+        )
+        .expect("get annotation")
+        .expect("annotation exists");
+        delete_pdf_page_annotation_in_repository(
+            &repository,
+            &material.id,
+            1,
+            &material_library_dir,
+        )
+        .expect("delete annotation");
+        let missing = get_pdf_page_annotation_from_repository(
+            &repository,
+            &material.id,
+            1,
+            &material_library_dir,
+        )
+        .expect("get missing annotation");
+
+        assert_eq!(saved.material_id, material.id);
+        assert_eq!(loaded.id, saved.id);
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn command_handlers_reject_invalid_pdf_annotation_payload_with_stable_error() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let repository = LearningContentRepository::open(temp_dir.path().join("studyseq.sqlite"))
+            .expect("open db");
+        let material_library_dir = temp_dir.path().join("materials");
+        let source_file = temp_dir.path().join("讲义.pdf");
+        std::fs::write(&source_file, b"%PDF-1.7\n%%EOF").expect("write pdf");
+        let content = create_learning_content_in_repository(
+            &repository,
+            CreateLearningContentInput {
+                name: "PDF 批注错误".to_string(),
+                deadline: None,
+                estimated_hours: None,
+                progress: None,
+            },
+        )
+        .expect("create learning content");
+        let material = import_material_file_in_repository(
+            &repository,
+            ImportMaterialFileInput {
+                learning_content_id: content.id,
+                parent_id: None,
+            },
+            &source_file,
+            &material_library_dir,
+        )
+        .expect("import pdf");
+
+        let error = save_pdf_page_annotation_in_repository(
+            &repository,
+            SavePdfPageAnnotationInput {
+                material_id: material.id,
+                page_number: 1,
+                page_width: 595.0,
+                page_height: 842.0,
+                stroke_data: "not-json".to_string(),
+            },
+            &material_library_dir,
+        )
+        .expect_err("invalid annotation should fail");
+
+        assert_eq!(error.code, "invalid_pdf_annotation_data");
+        assert!(!error.message.contains("not-json"));
+    }
+
+    fn handwriting_json() -> String {
+        handwriting_json_with_width(0.006)
+    }
+
+    fn handwriting_json_with_width(width: f64) -> String {
+        format!(
+            r##"{{"schemaVersion":1,"coordinateSpace":"normalized","strokes":[{{"id":"stroke-1","tool":"pen","color":"#1f2937","width":{},"points":[{{"x":0.12,"y":0.24,"t":1}}]}}]}}"##,
+            width
+        )
     }
 }

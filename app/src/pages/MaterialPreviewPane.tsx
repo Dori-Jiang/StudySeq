@@ -8,6 +8,7 @@ import {
   VIDEO_LOAD_FAILED_MESSAGE,
   VideoPreview,
 } from "./VideoPreview";
+import { CodePreview } from "./code/CodePreview";
 
 const XLSX_DEFAULT_READING_SCALE = 1.4;
 
@@ -44,6 +45,10 @@ export function MaterialPreviewPane({
     return <pre className="text-preview">{preview.text}</pre>;
   }
 
+  if (preview.kind === "code") {
+    return <CodePreview preview={preview} />;
+  }
+
   if (preview.kind === "image") {
     const sourceUrl = preview.assetPath ? convertFileSrc(preview.assetPath) : preview.dataUrl;
     if (!sourceUrl) {
@@ -60,6 +65,7 @@ export function MaterialPreviewPane({
 
     return (
       <PdfPreview
+        materialId={material.id}
         sourceUrl={sourceUrl}
         initialPageNumber={pdfState?.pageNumber}
         initialScale={pdfState?.scale}

@@ -42,6 +42,11 @@ function buildPreview(overrides: Partial<MaterialPreview> = {}): MaterialPreview
     dataUrl: null,
     assetPath: "C:\\appdata\\materials\\lc-1\\课程视频.mp4",
     encoding: null,
+    language: null,
+    languageLabel: null,
+    lineCount: null,
+    isTruncated: false,
+    highlightingMode: null,
     ...overrides,
   };
 }

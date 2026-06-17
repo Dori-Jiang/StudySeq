@@ -10,9 +10,11 @@
 
 ## 当前阶段
 
-当前进入 **V1.8.1 稳定补丁完成态**。
+当前进入 **V1.11.0 PDF 页面手写批注完成态**。
 
-V1.7 已按“当前学习内容资料定位增强”完成自动化实现、自动化验证、隔离真实 App 手测、debug/release 发包和文档收口。用户已确认 V1.8 可以做“更完整能力更新”，当前 V1.8 收敛为 Office 转 PDF 最小闭环；自动化实现、代码审查修复、debug/release 发包验证已完成，真实 App 手测反馈中的 XLSX 显示问题已完成修复。当前 V1.8.1 以稳定当前软件为主体，不扩展 Office 能力；核心代码补丁、自动化 release gate、正式 release 发包和隔离真实 App 固定样本复查均已完成。
+V1.7 已按“当前学习内容资料定位增强”完成自动化实现、自动化验证、隔离真实 App 手测、debug/release 发包和文档收口。用户已确认 V1.8 可以做“更完整能力更新”，当前 V1.8 收敛为 Office 转 PDF 最小闭环；自动化实现、代码审查修复、debug/release 发包验证已完成，真实 App 手测反馈中的 XLSX 显示问题已完成修复。当前 V1.8.1 以稳定当前软件为主体，不扩展 Office 能力；核心代码补丁、自动化 release gate、正式 release 发包和隔离真实 App 固定样本复查均已完成。V1.9.0 代码文件载入与代码高亮已完成自动化实现、subagent 复核、隔离真实 App 固定样本 smoke、完整 release gate 和 debug/release 发包。V1.10.0 基础手写笔记已完成自动化开发、审查修复、完整 release gate 和 debug/release 发包。V1.11.0 PDF 页面手写批注已完成自动化开发、agent 复核、自动化 release gate 和 debug/release 发包。
+
+2026-06-16 已确认 V2 前必须完成四项最终工作台能力：代码文件载入和代码高亮、基础手写笔记、PDF 阅读页直接手写批注、更多视频格式播放。V2.0 定义为功能冻结后的稳定发布；V2 后主线转为 `2.0.x` 稳定性修复。详细路线见 [`studyseq-pre-v2-roadmap.md`](studyseq-pre-v2-roadmap.md)。
 
 V1.8 目标是在不引入 Office 原生预览、不依赖系统 Office / LibreOffice、不改 SQLite schema 的前提下，让 App 管理资料库中的 DOCX / PPTX / XLSX 可以转换为派生 PDF，并复用现有 `PdfPreview` 完成 App 内阅读。
 
@@ -389,18 +391,40 @@ V1.8.1 不进入：
 - 新增 SQLite schema 或 `PRAGMA user_version` 迁移。
 - 新依赖、大型 repository 重构或 asset 协议令牌化大改造。
 
-### V2：后续扩展候选
+### V1.9 - V2.0：V2 前能力完成路线
 
-V2 以后再评估：
+V2 前能力完成路线文档：[`studyseq-pre-v2-roadmap.md`](studyseq-pre-v2-roadmap.md)。
 
-- Office 老格式、Office 原生预览或更完整转换治理。
-- 视频转码或播放内核。
-- PDF 全文搜索。
-- 复杂资料树和拖拽移动。
-- 笔记分组。
-- 云同步、账号、多端同步。
-- SQLite 加密。
-- 自动进度检测和学习记录统计。
+详细开发计划：
+
+- V1.9：[`studyseq-v1.9-development-plan.md`](studyseq-v1.9-development-plan.md)
+- V1.10：[`studyseq-v1.10-development-plan.md`](studyseq-v1.10-development-plan.md)
+- V1.11：[`studyseq-v1.11-development-plan.md`](studyseq-v1.11-development-plan.md)
+- V1.12：[`studyseq-v1.12-development-plan.md`](studyseq-v1.12-development-plan.md)
+- V1.13 / V2.0：[`studyseq-v1.13-v2.0-release-plan.md`](studyseq-v1.13-v2.0-release-plan.md)
+
+已确认版本边界：
+
+- V1.8.2：预留给 V1.8.1 的紧急稳定补丁，不做新能力。
+- V1.9.0 / V1.9.1：代码文件载入与代码高亮，以及必要稳定补丁。V1.9.0 自动化实现、release gate 和发包已完成，V1.9.1 只在真实样本暴露稳定性问题时切出。
+- V1.10.0 / V1.10.1：基础手写笔记，以及必要稳定补丁。V1.10.0 自动化实现、审查修复、release gate 和发包已完成，V1.10.1 只在真实使用暴露稳定性问题时切出。
+- V1.11.0 / V1.11.1：PDF 阅读页直接手写批注，以及必要稳定补丁。V1.11.0 自动化实现、agent 复核、release gate 和发包已完成，V1.11.1 只在真实使用暴露坐标、保存、删除或 Office 派生 PDF 稳定性问题时切出。
+- V1.12.0 / V1.12.1：更多视频格式技术定版、第一批支持和稳定补丁。
+- V1.13.0：V2 前功能冻结与全量回归，不新增能力。
+- V2.0：稳定发布，不新增能力；V2 后只进入 `2.0.x` 稳定修复线。
+
+V2 前功能统一边界：
+
+- 四项能力都接入当前详情页阅读工作台，不新建独立中心，不恢复旧独立阅读页。
+- 代码高亮只做资料只读阅读，不做 IDE、编辑、运行、调试或 Git。
+- 手写笔记只做基础笔迹记录，不做压感、OCR、手写识别或无限白板。
+- PDF 批注不改写原 PDF，不做签名、导出带批注 PDF、协作批注。
+- 更多视频格式必须先完成播放 / 转码技术定版，不无限承诺所有历史格式。
+
+V2 后稳定修复方向：
+
+- 崩溃、数据迁移、资料库清理、预览失败、性能、打包、错误提示和兼容性。
+- 不再把云同步、账号、多端同步、复杂统计、PDF 全文搜索、OCR 或 Office 原生编辑塞进 V2.0。
 
 ## 已完成
 
@@ -825,9 +849,9 @@ npm.cmd run tauri -- build
 
 ## 下一步
 
-1. 真实 App 复查固定样本：DOCX / PPTX / XLSX、中文文件名、坏文件失败提示、重复打开缓存、迁移/删除/重命名缓存处理、断网流程。
-2. 真实 App 复查通过后，准备提交、推送和 tag 收口。
-3. 若需要重新生成主 target debug 包，先关闭正在占用 `app/src-tauri/target/debug/studyseq.exe` 的 App 进程；本轮已用临时 `CARGO_TARGET_DIR` 生成 debug 包。
+1. 用户侧手工复核 V1.11.0 PDF 页面手写批注主线：普通 PDF 多页、缩放、目录跳转、中键拖动、Office 派生 PDF、删除资料/文件夹/学习内容清理。
+2. 若无阻塞问题，提交、tag 和 release 收口 V1.11.0。
+3. 只有真实样本暴露坐标、保存、删除或 Office 派生 PDF 稳定性问题时，才切 V1.11.1 稳定补丁。
 
 ## 推迟项
 
@@ -841,7 +865,6 @@ npm.cmd run tauri -- build
 - SQLite 加密。
 - Office 原生预览或编辑。
 - Office 老格式 `doc` / `ppt` / `xls` 转换。
-- 新视频格式支持。
 - PDF 全文搜索。
 - 复杂资料树和拖拽移动。
 - 全局资料搜索中心。
@@ -861,6 +884,16 @@ npm.cmd run tauri -- build
 - 资料库迁移进度条、后台任务队列和取消迁移。
 - 多资料库、历史资料库位置列表和备份系统。
 - 大设置中心、主题设置和快捷键设置。
+
+## V2 后稳定修复线
+
+V2.0 发布后，后续版本默认只开 `2.0.x` 稳定修复：
+
+- 崩溃、启动失败、打包问题。
+- 资料库迁移、cleanup、删除和派生文件清理问题。
+- txt、图片、PDF、Office 派生 PDF、视频、代码预览、手写笔记和 PDF 批注的预览 / 保存失败。
+- 大文件性能、内存占用、磁盘空间和错误提示。
+- Windows 兼容性和真实 App 回归。
 
 ## 风险
 
@@ -977,3 +1010,6 @@ npm.cmd run tauri -- build
 - 2026-06-15：完成 V1.8.1 自动化 release gate 和正式发包验证：`npm.cmd test`（11 文件、163 测试）、`npm.cmd run typecheck`、`npm.cmd run build`、`cargo fmt --check`、`cargo test`（88 测试）、`cargo clippy -- -D warnings`、Windows 子系统静态检查、`npm.cmd audit --audit-level=high`、`cargo tree -i office2pdf`、`npm.cmd run tauri -- build` 均通过；`cargo-audit` 本机未安装未运行。正式产物为 `app/src-tauri/target/release/studyseq.exe`、`app/src-tauri/target/release/bundle/msi/StudySeq_1.8.1_x64_en-US.msi`、`app/src-tauri/target/release/bundle/nsis/StudySeq_1.8.1_x64-setup.exe`。主 debug exe 被运行中进程占用，本轮用临时 `CARGO_TARGET_DIR` 生成 debug 包。
 - 2026-06-15：完成 V1.8.1 隔离真实 App 固定样本复查：使用临时 identifier `com.studyseq.desktop.v181test` 和隔离数据目录，验证真实 Tauri App 中 DOCX/PPTX/XLSX 均转 PDF 并渲染到 `PdfPreview`，XLSX 使用 `office-pdf-xlsx-wide-v1` 和 140% 缩放，普通 PDF 保持第 2 页和 80% 缩放，txt、图片、WebM、嵌套文件夹返回、坏 DOCX 失败终态、重复打开缓存复用、删除 Office 不删除原始来源文件、重启恢复和 CDP offline 模式本地阅读均通过。证据文件位于 `C:\Users\123\AppData\Local\Temp\studyseq-v181-a5\`；本轮通过预置隔离库验证 App 管理资料主链路，未自动化覆盖系统文件选择器导入。
 - 2026-06-15：完成 V1.8.1 completion audit 复跑：再次通过前端 163 测试、typecheck、生产 build、Rust fmt/test/clippy、Windows 子系统静态检查、`npm.cmd audit --audit-level=high`、`cargo tree -i office2pdf`、Tauri debug no-bundle 构建和正式 release 构建；本轮 debug 复跑使用 `CARGO_TARGET_DIR=C:\Users\123\AppData\Local\Temp\studyseq-v181-audit-debug-target`，正式 release MSI/NSIS 已重新生成。
+- 2026-06-16：完成 V1.9.0 代码文件载入与代码高亮收口：按 `AGENTS.md` 活用 `e2e-runner` 和 `security-reviewer` 子代理复核；修复审查项后复制改走 Rust Tauri command + `clipboard-manager:allow-write-text`，并移除前端 `dialog:default` capability。隔离真实 App smoke 使用临时 identifier `com.studyseq.desktop.v190test`，验证 TS/TSX/Python/Rust/JSON/YAML/CSS/HTML 高亮、TOML 纯文本兜底、octet-stream 重命名 fallback、plain.txt 回归、large.ts 截断与纯文本、大文件无执行、HTML 注入样本不执行、GBK 编码和复制按钮 `已复制`；证据文件为 `C:\Users\123\AppData\Local\Temp\studyseq-v190-smoke-20260616215425\cdp-smoke-v2.json`。最终 release gate 已通过：前端 173 测试、typecheck、build、npm audit high、`dangerouslySetInnerHTML` 无命中、Rust 93 测试、fmt、clippy、Windows 子系统检查、Tauri debug/release build；正式产物为 `app/src-tauri/target/release/studyseq.exe`、`app/src-tauri/target/release/bundle/msi/StudySeq_1.9.0_x64_en-US.msi`、`app/src-tauri/target/release/bundle/nsis/StudySeq_1.9.0_x64-setup.exe`。
+- 2026-06-17：完成 V1.10.0 基础手写笔记收口：新增通用归一化 stroke JSON 模型和 `handwriting_notes` 表，数据库升级到 `user_version = 7`；Rust command / repository 提供手写笔记 summary/detail 分离 CRUD，校验 schema、大小、stroke/point 数、坐标、工具、颜色、宽度、标题和 canvas 尺寸，读取/更新/删除绑定 `learning_content_id + note_id`，删除学习内容会同事务删除手写笔记。详情页右侧笔记区新增“文本 / 手写”切换，保留纯文本笔记体验；手写编辑器支持标题、笔、橡皮、颜色、粗细、撤销、重做、清空、保存、失败重试，并在切换文本、新建手写或选择其他手写前 flush 未保存内容。最终 release gate 已通过：前端 189 测试、typecheck、build、npm audit high、Rust 101 测试、fmt、clippy、Windows 子系统检查、Tauri debug/release build；正式产物为 `app/src-tauri/target/release/studyseq.exe`、`app/src-tauri/target/release/bundle/msi/StudySeq_1.10.0_x64_en-US.msi`、`app/src-tauri/target/release/bundle/nsis/StudySeq_1.10.0_x64-setup.exe`。
+- 2026-06-17：完成 V1.11.0 PDF 页面手写批注收口：新增 `pdf_page_annotations` 表并将数据库升级到 `user_version = 8`，批注按 `material_id + page_number` 保存，复用 V1.10 通用 stroke JSON 模型；Rust command / repository 提供读取、保存、删除，保存前校验资料必须是 App 资料库内可预览 PDF 或 Office 派生 PDF、页码、页面尺寸和笔迹数据，删除资料、文件夹、学习内容和 cleanup 会清理关联批注。前端在现有详情页 `PdfPreview` 的 `.pdf-page-sheet` 内叠加 `PdfAnnotationLayer`，提供阅读 / 批注模式、显示 / 隐藏、笔、橡皮、颜色、粗细、撤销、重做、清除当前页和保存状态；翻页和目录跳转前 flush 当前页批注，不恢复旧独立阅读页，不改写 PDF 或 `.derived` 文件。最终 release gate 已通过：前端 196 测试、typecheck、build、npm audit high、Rust 107 测试、fmt、clippy、Windows 子系统检查、Tauri debug/release build；正式产物为 `app/src-tauri/target/release/studyseq.exe`、`app/src-tauri/target/release/bundle/msi/StudySeq_1.11.0_x64_en-US.msi`、`app/src-tauri/target/release/bundle/nsis/StudySeq_1.11.0_x64-setup.exe`。

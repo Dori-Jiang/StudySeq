@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { StudyDetailPage } from "./StudyDetailPage";
 import * as learningContentApi from "../shared/api/learningContentApi";
+import type { MaterialPreview } from "../shared/types";
 
 const pdfRenderMock = vi.fn(() => ({ promise: Promise.resolve() }));
 const pdfGetPageMock = vi.fn((pageNumber: number) =>
@@ -38,13 +39,20 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
 const getLearningDetail = vi.mocked(learningContentApi.getLearningDetail);
 const importMaterialFile = vi.mocked(learningContentApi.importMaterialFile);
 const createNote = vi.mocked(learningContentApi.createNote);
+const createHandwritingNote = vi.mocked(learningContentApi.createHandwritingNote);
 const deleteMaterialItem = vi.mocked(learningContentApi.deleteMaterialItem);
 const deleteNote = vi.mocked(learningContentApi.deleteNote);
+const deleteHandwritingNote = vi.mocked(learningContentApi.deleteHandwritingNote);
+const getHandwritingNote = vi.mocked(learningContentApi.getHandwritingNote);
+const getPdfPageAnnotation = vi.mocked(learningContentApi.getPdfPageAnnotation);
 const previewMaterialFile = vi.mocked(learningContentApi.previewMaterialFile);
 const updateLearningContent = vi.mocked(learningContentApi.updateLearningContent);
 const updateNote = vi.mocked(learningContentApi.updateNote);
+const updateHandwritingNote = vi.mocked(learningContentApi.updateHandwritingNote);
 const getMaterialReadingState = vi.mocked(learningContentApi.getMaterialReadingState);
 const saveMaterialReadingState = vi.mocked(learningContentApi.saveMaterialReadingState);
+const savePdfPageAnnotation = vi.mocked(learningContentApi.savePdfPageAnnotation);
+const deletePdfPageAnnotation = vi.mocked(learningContentApi.deletePdfPageAnnotation);
 const saveVideoPlaybackState = vi.mocked(learningContentApi.saveVideoPlaybackState);
 const getMaterialLibraryLocation = vi.mocked(learningContentApi.getMaterialLibraryLocation);
 const getMaterialLibraryStats = vi.mocked(learningContentApi.getMaterialLibraryStats);
@@ -54,6 +62,24 @@ const createMaterialFolder = vi.mocked(learningContentApi.createMaterialFolder);
 const moveMaterialItem = vi.mocked(learningContentApi.moveMaterialItem);
 const countMaterialSubtree = vi.mocked(learningContentApi.countMaterialSubtree);
 const pendingFileDeleteSummary = "已标记删除 1 个文件、0 个文件夹";
+
+function buildMaterialPreview(overrides: Partial<MaterialPreview> = {}): MaterialPreview {
+  return {
+    materialId: "mat-1",
+    kind: "text",
+    mimeType: "text/plain",
+    text: null,
+    dataUrl: null,
+    assetPath: null,
+    encoding: null,
+    language: null,
+    languageLabel: null,
+    lineCount: null,
+    isTruncated: false,
+    highlightingMode: null,
+    ...overrides,
+  };
+}
 
 const baseDetail = {
   learningContent: {
@@ -92,6 +118,7 @@ const baseDetail = {
       updatedAt: "2026-06-08T00:00:00Z",
     },
   ],
+  handwritingNotes: [],
 };
 
 describe("StudyDetailPage", () => {
@@ -99,13 +126,20 @@ describe("StudyDetailPage", () => {
     getLearningDetail.mockReset();
     importMaterialFile.mockReset();
     createNote.mockReset();
+    createHandwritingNote.mockReset();
     deleteMaterialItem.mockReset();
     deleteNote.mockReset();
+    deleteHandwritingNote.mockReset();
+    getHandwritingNote.mockReset();
+    getPdfPageAnnotation.mockReset();
     previewMaterialFile.mockReset();
     updateLearningContent.mockReset();
     updateNote.mockReset();
+    updateHandwritingNote.mockReset();
     getMaterialReadingState.mockReset();
     saveMaterialReadingState.mockReset();
+    savePdfPageAnnotation.mockReset();
+    deletePdfPageAnnotation.mockReset();
     saveVideoPlaybackState.mockReset();
     getMaterialLibraryLocation.mockReset();
     getMaterialLibraryStats.mockReset();
@@ -118,6 +152,19 @@ describe("StudyDetailPage", () => {
     pdfGetPageMock.mockClear();
     pdfRenderMock.mockClear();
     getMaterialReadingState.mockResolvedValue(null);
+    getPdfPageAnnotation.mockResolvedValue(null);
+    savePdfPageAnnotation.mockResolvedValue({
+      id: "annotation-1",
+      materialId: "mat-pdf",
+      pageNumber: 1,
+      strokeDataJson: '{"schemaVersion":1,"coordinateSpace":"normalized","strokes":[]}',
+      strokeSchemaVersion: 1,
+      pageWidth: 100,
+      pageHeight: 120,
+      createdAt: "2026-06-17T00:00:00Z",
+      updatedAt: "2026-06-17T00:00:00Z",
+    });
+    deletePdfPageAnnotation.mockResolvedValue(undefined);
     getMaterialLibraryLocation.mockResolvedValue({
       path: "C:/Users/123/AppData/Roaming/com.studyseq.desktop/materials",
       isDefault: true,
@@ -234,6 +281,108 @@ describe("StudyDetailPage", () => {
     expect(screen.getByText(/已保存/)).toBeInTheDocument();
   });
 
+  it("creates a handwriting note from the note panel without removing text note entry", async () => {
+    const strokeDataJson =
+      '{"schemaVersion":1,"coordinateSpace":"normalized","strokes":[]}';
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    createHandwritingNote.mockResolvedValueOnce({
+      id: "hand-1",
+      learningContentId: "study-1",
+      title: "手写草稿",
+      strokeDataJson,
+      strokeSchemaVersion: 1,
+      canvasWidth: 1024,
+      canvasHeight: 720,
+      createdAt: "2026-06-16T00:00:00Z",
+      updatedAt: "2026-06-16T00:00:00Z",
+    });
+    getHandwritingNote.mockResolvedValueOnce({
+      id: "hand-1",
+      learningContentId: "study-1",
+      title: "手写草稿",
+      strokeDataJson,
+      strokeSchemaVersion: 1,
+      canvasWidth: 1024,
+      canvasHeight: 720,
+      createdAt: "2026-06-16T00:00:00Z",
+      updatedAt: "2026-06-16T00:00:00Z",
+    });
+
+    renderDetailPage();
+    await screen.findByText("第一条笔记");
+    await userEvent.click(screen.getByRole("button", { name: "手写" }));
+
+    expect(screen.getByText("还没有手写笔记")).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("手写笔记标题"), "手写草稿");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => {
+      expect(createHandwritingNote).toHaveBeenCalledWith({
+        learningContentId: "study-1",
+        title: "手写草稿",
+        strokeDataJson,
+        canvasWidth: 1024,
+        canvasHeight: 720,
+      });
+    });
+    expect(await screen.findByLabelText("选择手写笔记")).toHaveTextContent("手写草稿");
+
+    await userEvent.click(screen.getByRole("button", { name: "文本" }));
+    expect(screen.getByText("第一条笔记")).toBeInTheDocument();
+  });
+
+  it("flushes a dirty handwriting draft before switching back to text notes", async () => {
+    const strokeDataJson = '{"schemaVersion":1,"coordinateSpace":"normalized","strokes":[]}';
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    createHandwritingNote.mockResolvedValueOnce({
+      id: "hand-1",
+      learningContentId: "study-1",
+      title: "未保存手写",
+      strokeDataJson,
+      strokeSchemaVersion: 1,
+      canvasWidth: 1024,
+      canvasHeight: 720,
+      createdAt: "2026-06-16T00:00:00Z",
+      updatedAt: "2026-06-16T00:00:00Z",
+    });
+
+    renderDetailPage();
+    await screen.findByText("第一条笔记");
+    await userEvent.click(screen.getByRole("button", { name: "手写" }));
+    await userEvent.type(screen.getByLabelText("手写笔记标题"), "未保存手写");
+    await userEvent.click(screen.getByRole("button", { name: "文本" }));
+
+    await waitFor(() => {
+      expect(createHandwritingNote).toHaveBeenCalledWith({
+        learningContentId: "study-1",
+        title: "未保存手写",
+        strokeDataJson,
+        canvasWidth: 1024,
+        canvasHeight: 720,
+      });
+    });
+    expect(await screen.findByLabelText("笔记标题")).toBeInTheDocument();
+    expect(screen.getByText("第一条笔记")).toBeInTheDocument();
+  });
+
+  it("keeps the handwriting editor open when flush before leaving fails", async () => {
+    getLearningDetail.mockResolvedValueOnce(baseDetail);
+    createHandwritingNote.mockRejectedValueOnce({
+      code: "database_error",
+      message: "保存失败",
+    });
+
+    renderDetailPage();
+    await screen.findByText("第一条笔记");
+    await userEvent.click(screen.getByRole("button", { name: "手写" }));
+    await userEvent.type(screen.getByLabelText("手写笔记标题"), "未保存手写");
+    await userEvent.click(screen.getByRole("button", { name: "文本" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("保存失败");
+    expect(screen.getByText("手写笔记保存失败，请先重试后再离开。")).toBeInTheDocument();
+    expect(screen.getByLabelText("手写笔记标题")).toHaveValue("未保存手写");
+  });
+
   it("uses the material row as the read entry without showing a read button", async () => {
     getLearningDetail.mockResolvedValueOnce({
       ...baseDetail,
@@ -274,7 +423,7 @@ describe("StudyDetailPage", () => {
         },
       ],
     });
-    previewMaterialFile.mockResolvedValueOnce({
+    previewMaterialFile.mockResolvedValueOnce(buildMaterialPreview({
       materialId: "mat-1",
       kind: "text",
       mimeType: "text/plain",
@@ -282,7 +431,7 @@ describe("StudyDetailPage", () => {
       dataUrl: null,
       assetPath: null,
       encoding: "utf-8",
-    });
+    }));
 
     renderDetailPage();
     await screen.findByText("资料.txt");
@@ -306,6 +455,43 @@ describe("StudyDetailPage", () => {
     expect(screen.queryByText("资料正文")).not.toBeInTheDocument();
   });
 
+  it("renders code material inside the existing detail preview pane", async () => {
+    getLearningDetail.mockResolvedValueOnce({
+      ...baseDetail,
+      materials: [
+        {
+          ...baseDetail.materials[0],
+          id: "mat-code",
+          name: "main.ts",
+          storedPath: "C:/app/main.ts",
+          mimeType: "application/x-typescript",
+        },
+      ],
+    });
+    previewMaterialFile.mockResolvedValueOnce(
+      buildMaterialPreview({
+        materialId: "mat-code",
+        kind: "code",
+        mimeType: "application/x-typescript",
+        text: "const answer: number = 42;",
+        encoding: "utf-8",
+        language: "typescript",
+        languageLabel: "TypeScript",
+        lineCount: 1,
+        highlightingMode: "highlight",
+      }),
+    );
+
+    renderDetailPage();
+    await screen.findByText("main.ts");
+    await userEvent.click(screen.getByRole("button", { name: "打开资料：main.ts" }));
+
+    expect(await screen.findByLabelText("代码预览")).toBeInTheDocument();
+    expect(screen.getByText("TypeScript")).toBeInTheDocument();
+    expect(screen.getByText("const")).toHaveClass("token");
+    expect(screen.getByRole("button", { name: "返回资料列表" })).toBeInTheDocument();
+  });
+
   it("auto-opens the continue target from the query and keeps its folder context", async () => {
     const folder = {
       ...baseDetail.materials[0],
@@ -326,7 +512,7 @@ describe("StudyDetailPage", () => {
       ...baseDetail,
       materials: [folder, nested, baseDetail.materials[0]],
     });
-    previewMaterialFile.mockResolvedValueOnce({
+    previewMaterialFile.mockResolvedValueOnce(buildMaterialPreview({
       materialId: "mat-continue",
       kind: "text",
       mimeType: "text/plain",
@@ -334,7 +520,7 @@ describe("StudyDetailPage", () => {
       dataUrl: null,
       assetPath: null,
       encoding: "utf-8",
-    });
+    }));
 
     renderDetailPage("/studies/study-1?continue=1&materialId=mat-continue");
 
@@ -438,7 +624,7 @@ describe("StudyDetailPage", () => {
     });
     previewMaterialFile
       .mockReturnValueOnce(firstPreviewPromise)
-      .mockResolvedValueOnce({
+      .mockResolvedValueOnce(buildMaterialPreview({
         materialId: "mat-b",
         kind: "text",
         mimeType: "text/plain",
@@ -446,7 +632,7 @@ describe("StudyDetailPage", () => {
         dataUrl: null,
         assetPath: null,
         encoding: "utf-8",
-      });
+      }));
     getMaterialReadingState.mockReturnValueOnce(firstStatePromise).mockResolvedValueOnce(null);
 
     renderDetailPage();
@@ -457,7 +643,7 @@ describe("StudyDetailPage", () => {
 
     expect(await screen.findByText("B content")).toBeInTheDocument();
 
-    resolveFirstPreview!({
+    resolveFirstPreview!(buildMaterialPreview({
       materialId: "mat-a",
       kind: "text",
       mimeType: "text/plain",
@@ -465,7 +651,7 @@ describe("StudyDetailPage", () => {
       dataUrl: null,
       assetPath: null,
       encoding: "utf-8",
-    });
+    }));
     resolveFirstState!(null);
 
     await waitFor(() => {
@@ -498,7 +684,7 @@ describe("StudyDetailPage", () => {
     });
     previewMaterialFile
       .mockReturnValueOnce(firstPreviewPromise)
-      .mockResolvedValueOnce({
+      .mockResolvedValueOnce(buildMaterialPreview({
         materialId: "mat-b",
         kind: "text",
         mimeType: "text/plain",
@@ -506,7 +692,7 @@ describe("StudyDetailPage", () => {
         dataUrl: null,
         assetPath: null,
         encoding: "utf-8",
-      });
+      }));
     getMaterialReadingState.mockResolvedValue(null);
 
     renderDetailPage();
@@ -551,7 +737,7 @@ describe("StudyDetailPage", () => {
         },
       ],
     });
-    previewMaterialFile.mockResolvedValueOnce({
+    previewMaterialFile.mockResolvedValueOnce(buildMaterialPreview({
       materialId: "mat-pdf",
       kind: "pdf",
       mimeType: "application/pdf",
@@ -559,7 +745,7 @@ describe("StudyDetailPage", () => {
       dataUrl: null,
       assetPath: "C:/app/inline-reader.pdf",
       encoding: null,
-    });
+    }));
 
     renderDetailPage();
     await screen.findByText("资料.pdf");
@@ -568,6 +754,8 @@ describe("StudyDetailPage", () => {
 
     expect(await screen.findByLabelText("PDF 预览")).toBeInTheDocument();
     expect(await screen.findByText("第 1 / 3 页")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "批注" })).toBeInTheDocument();
+    expect(getPdfPageAnnotation).toHaveBeenCalledWith("mat-pdf", 1);
     expect(pdfGetDocumentMock).toHaveBeenCalledWith({
       url: "asset://localhost/C%3A%2Fapp%2Finline-reader.pdf",
     });
@@ -588,7 +776,7 @@ describe("StudyDetailPage", () => {
         },
       ],
     });
-    previewMaterialFile.mockResolvedValueOnce({
+    previewMaterialFile.mockResolvedValueOnce(buildMaterialPreview({
       materialId: "mat-image",
       kind: "image",
       mimeType: "image/png",
@@ -596,7 +784,7 @@ describe("StudyDetailPage", () => {
       dataUrl: null,
       assetPath: "C:/app/screenshot.png",
       encoding: null,
-    });
+    }));
 
     renderDetailPage();
     await screen.findByText("截图.png");
@@ -606,6 +794,7 @@ describe("StudyDetailPage", () => {
       "src",
       "asset://localhost/C%3A%2Fapp%2Fscreenshot.png",
     );
+    expect(screen.queryByRole("button", { name: "批注" })).not.toBeInTheDocument();
   });
 
   it("restores and saves PDF page state in the detail inline reader", async () => {
@@ -630,7 +819,7 @@ describe("StudyDetailPage", () => {
       videoPositionSeconds: null,
       updatedAt: "2026-06-09T00:00:00Z",
     });
-    previewMaterialFile.mockResolvedValueOnce({
+    previewMaterialFile.mockResolvedValueOnce(buildMaterialPreview({
       materialId: "mat-pdf",
       kind: "pdf",
       mimeType: "application/pdf",
@@ -638,7 +827,7 @@ describe("StudyDetailPage", () => {
       dataUrl: null,
       assetPath: "C:/app/page-state.pdf",
       encoding: null,
-    });
+    }));
 
     renderDetailPage();
     await screen.findByText("资料.pdf");
@@ -680,7 +869,7 @@ describe("StudyDetailPage", () => {
       videoPositionSeconds: null,
       updatedAt: "2026-06-15T00:00:00Z",
     });
-    previewMaterialFile.mockResolvedValueOnce({
+    previewMaterialFile.mockResolvedValueOnce(buildMaterialPreview({
       materialId: "mat-xlsx",
       kind: "pdf",
       mimeType: "application/pdf",
@@ -688,7 +877,7 @@ describe("StudyDetailPage", () => {
       dataUrl: null,
       assetPath: "C:/app/.derived/office-pdf/mat-xlsx.pdf",
       encoding: null,
-    });
+    }));
 
     renderDetailPage();
     await screen.findByText("生活开支.xlsx");
@@ -721,7 +910,7 @@ describe("StudyDetailPage", () => {
       videoPositionSeconds: null,
       updatedAt: "2026-06-15T00:00:00Z",
     });
-    previewMaterialFile.mockResolvedValueOnce({
+    previewMaterialFile.mockResolvedValueOnce(buildMaterialPreview({
       materialId: "mat-xlsx",
       kind: "pdf",
       mimeType: "application/pdf",
@@ -729,7 +918,7 @@ describe("StudyDetailPage", () => {
       dataUrl: null,
       assetPath: "C:/app/.derived/office-pdf-xlsx-wide-v1/mat-xlsx.pdf",
       encoding: null,
-    });
+    }));
 
     renderDetailPage();
     await screen.findByText("生活开支");
@@ -762,7 +951,7 @@ describe("StudyDetailPage", () => {
       videoPositionSeconds: null,
       updatedAt: "2026-06-15T00:00:00Z",
     });
-    previewMaterialFile.mockResolvedValueOnce({
+    previewMaterialFile.mockResolvedValueOnce(buildMaterialPreview({
       materialId: "mat-pdf",
       kind: "pdf",
       mimeType: "application/pdf",
@@ -770,7 +959,7 @@ describe("StudyDetailPage", () => {
       dataUrl: null,
       assetPath: "C:/app/low-scale.pdf",
       encoding: null,
-    });
+    }));
 
     renderDetailPage();
     await screen.findByText("资料.pdf");
@@ -803,7 +992,7 @@ describe("StudyDetailPage", () => {
       videoPositionSeconds: null,
       updatedAt: "2026-06-15T00:00:00Z",
     });
-    previewMaterialFile.mockResolvedValueOnce({
+    previewMaterialFile.mockResolvedValueOnce(buildMaterialPreview({
       materialId: "mat-pdf",
       kind: "pdf",
       mimeType: "application/pdf",
@@ -811,7 +1000,7 @@ describe("StudyDetailPage", () => {
       dataUrl: null,
       assetPath: "C:/app/renamed.pdf",
       encoding: null,
-    });
+    }));
 
     renderDetailPage();
     await screen.findByText("资料.xlsx");
@@ -835,7 +1024,7 @@ describe("StudyDetailPage", () => {
         },
       ],
     });
-    previewMaterialFile.mockResolvedValueOnce({
+    previewMaterialFile.mockResolvedValueOnce(buildMaterialPreview({
       materialId: "mat-pdf",
       kind: "pdf",
       mimeType: "application/pdf",
@@ -843,7 +1032,7 @@ describe("StudyDetailPage", () => {
       dataUrl: null,
       assetPath: "C:/app/quick-return.pdf",
       encoding: null,
-    });
+    }));
 
     renderDetailPage();
     await screen.findByText("资料.pdf");
@@ -876,7 +1065,7 @@ describe("StudyDetailPage", () => {
         },
       ],
     });
-    previewMaterialFile.mockResolvedValueOnce({
+    previewMaterialFile.mockResolvedValueOnce(buildMaterialPreview({
       materialId: "mat-pdf",
       kind: "pdf",
       mimeType: "application/pdf",
@@ -884,7 +1073,7 @@ describe("StudyDetailPage", () => {
       dataUrl: null,
       assetPath: "C:/app/quick-scale.pdf",
       encoding: null,
-    });
+    }));
 
     renderDetailPage();
     await screen.findByText("资料.pdf");
@@ -926,7 +1115,7 @@ describe("StudyDetailPage", () => {
       videoPositionSeconds: 24,
       updatedAt: "2026-06-09T00:00:00Z",
     });
-    previewMaterialFile.mockResolvedValueOnce({
+    previewMaterialFile.mockResolvedValueOnce(buildMaterialPreview({
       materialId: "mat-video",
       kind: "video",
       mimeType: "video/mp4",
@@ -934,7 +1123,7 @@ describe("StudyDetailPage", () => {
       dataUrl: null,
       assetPath: "C:/app/课程视频.mp4",
       encoding: null,
-    });
+    }));
 
     renderDetailPage();
     await screen.findByText("课程视频.mp4");
@@ -976,7 +1165,7 @@ describe("StudyDetailPage", () => {
         },
       ],
     });
-    previewMaterialFile.mockResolvedValueOnce({
+    previewMaterialFile.mockResolvedValueOnce(buildMaterialPreview({
       materialId: "mat-pdf",
       kind: "pdf",
       mimeType: "application/pdf",
@@ -984,7 +1173,7 @@ describe("StudyDetailPage", () => {
       dataUrl: null,
       assetPath: "C:/app/pdf-cache.pdf",
       encoding: null,
-    });
+    }));
 
     renderDetailPage();
     await screen.findByText("资料.pdf");
@@ -1575,7 +1764,7 @@ describe("StudyDetailPage", () => {
         ...baseDetail,
         materials: [folderItem, nestedFile, baseDetail.materials[0]],
       });
-      previewMaterialFile.mockResolvedValueOnce({
+      previewMaterialFile.mockResolvedValueOnce(buildMaterialPreview({
         materialId: "mat-nested",
         kind: "text",
         mimeType: "text/plain",
@@ -1583,7 +1772,7 @@ describe("StudyDetailPage", () => {
         dataUrl: null,
         assetPath: null,
         encoding: "utf-8",
-      });
+      }));
 
       renderDetailPage();
       await screen.findByText("第一章");
@@ -1605,7 +1794,7 @@ describe("StudyDetailPage", () => {
         ...baseDetail,
         materials: [folderItem, nestedFile, baseDetail.materials[0]],
       });
-      previewMaterialFile.mockResolvedValueOnce({
+      previewMaterialFile.mockResolvedValueOnce(buildMaterialPreview({
         materialId: "mat-nested",
         kind: "text",
         mimeType: "text/plain",
@@ -1613,7 +1802,7 @@ describe("StudyDetailPage", () => {
         dataUrl: null,
         assetPath: null,
         encoding: "utf-8",
-      });
+      }));
 
       renderDetailPage();
       await screen.findByText("第一章");

@@ -15,6 +15,7 @@ import {
   createNote,
   cleanupMaterialLibrary,
   deleteMaterialItem,
+  deleteHandwritingNote,
   deleteNote,
   getLearningDetail,
   getMaterialLibraryLocation,
@@ -28,6 +29,10 @@ import {
   saveVideoPlaybackState,
   updateNote,
 } from "../shared/api/learningContentApi";
+import {
+  HandwritingNoteEditor,
+  type HandwritingNoteEditorHandle,
+} from "./handwriting/HandwritingNoteEditor";
 import { MaterialPreviewPane } from "./MaterialPreviewPane";
 import { MaterialDeletionBar } from "./materials/MaterialDeletionBar";
 import { MaterialExplorer } from "./materials/MaterialExplorer";
@@ -41,6 +46,8 @@ import type {
   MaterialLibraryLocation,
   MaterialLibraryStats,
   MaterialPreview,
+  HandwritingNote,
+  HandwritingNoteSummary,
   Note,
   StudyStatus,
 } from "../shared/types";
@@ -49,6 +56,8 @@ const DEFAULT_DETAIL_SPLIT_RATIO = 58;
 const MIN_DETAIL_SPLIT_RATIO = 30;
 const MAX_DETAIL_SPLIT_RATIO = 70;
 const PDF_STATE_SAVE_DELAY_MS = 800;
+
+type NoteMode = "text" | "handwriting";
 
 const statusLabels: Record<StudyStatus, string> = {
   planned: "计划中",
@@ -62,6 +71,7 @@ export function StudyDetailPage() {
   const { studyId } = useParams<{ studyId: string }>();
   const [searchParams] = useSearchParams();
   const detailGridRef = useRef<HTMLDivElement | null>(null);
+  const handwritingEditorRef = useRef<HandwritingNoteEditorHandle | null>(null);
   const isDetailSplitDraggingRef = useRef(false);
   const materialOpenRequestIdRef = useRef(0);
   const selectedMaterialIdRef = useRef<string | null>(null);
@@ -77,8 +87,11 @@ export function StudyDetailPage() {
     | { kind: "error"; message: string }
     | null
   >(null);
+  const [noteMode, setNoteMode] = useState<NoteMode>("text");
+  const [hasUnsavedHandwritingChanges, setHasUnsavedHandwritingChanges] = useState(false);
   const [pendingDeletedMaterialIds, setPendingDeletedMaterialIds] = useState<string[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [selectedHandwritingNoteId, setSelectedHandwritingNoteId] = useState<string | null>(null);
   const [selectedMaterialId, setSelectedMaterialId] = useState<string | null>(null);
   const [selectedMaterialPreview, setSelectedMaterialPreview] = useState<MaterialPreview | null>(
     null,
@@ -107,6 +120,17 @@ export function StudyDetailPage() {
   const [currentMaterialFolderId, setCurrentMaterialFolderId] = useState<string | null>(null);
   const selectedMaterial =
     detail?.materials.find((material) => material.id === selectedMaterialId) ?? undefined;
+  const flushHandwritingBeforeLeave = useCallback(async () => {
+    if (!hasUnsavedHandwritingChanges) return true;
+    const saved = await handwritingEditorRef.current?.flushPendingChanges();
+    if (!saved) {
+      setError("手写笔记保存失败，请先重试后再离开。");
+      return false;
+    }
+    setHasUnsavedHandwritingChanges(false);
+    setError(null);
+    return true;
+  }, [hasUnsavedHandwritingChanges]);
   const handleCurrentMaterialFolderChange = useCallback((folderId: string | null) => {
     setCurrentMaterialFolderId(folderId);
   }, []);
@@ -666,11 +690,59 @@ export function StudyDetailPage() {
     }
   }
 
+  async function handleDeleteHandwritingNote(note: HandwritingNoteSummary) {
+    if (!window.confirm(`确定删除手写笔记「${note.title}」吗？`)) {
+      return;
+    }
+
+    try {
+      await deleteHandwritingNote(note.learningContentId, note.id);
+      if (selectedHandwritingNoteId === note.id) {
+        setSelectedHandwritingNoteId(null);
+        setHasUnsavedHandwritingChanges(false);
+      }
+      setDetail((currentDetail) =>
+        currentDetail
+          ? {
+              ...currentDetail,
+              handwritingNotes: currentDetail.handwritingNotes.filter(
+                (currentNote) => currentNote.id !== note.id,
+              ),
+            }
+          : currentDetail,
+      );
+      setError(null);
+    } catch (deleteError: unknown) {
+      setError(toUserMessage(deleteError));
+    }
+  }
+
+  function handleHandwritingSaved(note: HandwritingNote) {
+    setSelectedHandwritingNoteId(note.id);
+    setHasUnsavedHandwritingChanges(false);
+    setDetail((currentDetail) =>
+      currentDetail
+        ? {
+            ...currentDetail,
+            handwritingNotes: upsertHandwritingNoteSummary(currentDetail.handwritingNotes, note),
+          }
+        : currentDetail,
+    );
+    setError(null);
+  }
+
   function handleSelectNote(note: Note) {
     setSelectedNoteId(note.id);
     setNoteTitle(note.title);
     setNoteBody(note.body);
     setNoteSaveStatus(null);
+    setError(null);
+  }
+
+  async function handleNewHandwritingNote() {
+    if (!(await flushHandwritingBeforeLeave())) return;
+    setSelectedHandwritingNoteId(null);
+    setHasUnsavedHandwritingChanges(false);
     setError(null);
   }
 
@@ -814,55 +886,121 @@ export function StudyDetailPage() {
         <section className="detail-panel">
           <div className="panel-title-row">
             <h2>笔记</h2>
-            <button type="button" onClick={handleNewNote}>
-              新建笔记
-            </button>
-          </div>
-          <NoteSelector
-            notes={detail.notes}
-            selectedNoteId={selectedNoteId}
-            onDelete={handleDeleteNote}
-            onSelect={handleSelectNoteId}
-          />
-          <form
-            aria-label="笔记编辑区"
-            className="note-form note-document-editor"
-            onSubmit={handleSaveNote}
-          >
-            <input
-              aria-label="笔记标题"
-              className="note-document-title"
-              value={noteTitle}
-              onChange={(event) => {
-                setNoteTitle(event.target.value);
-                setNoteSaveStatus(null);
-              }}
-              placeholder="无标题笔记"
-            />
-            <textarea
-              aria-label="笔记正文"
-              className="note-document-body"
-              value={noteBody}
-              onChange={(event) => {
-                setNoteBody(event.target.value);
-                setNoteSaveStatus(null);
-              }}
-              placeholder="开始记录..."
-            />
-            <div className="note-document-actions">
-              {noteSaveStatus ? (
-                <span
-                  className={`note-save-status note-save-status-${noteSaveStatus.kind}`}
-                  role={noteSaveStatus.kind === "error" ? "alert" : undefined}
+            <div className="note-title-actions">
+              <div className="segmented-control" aria-label="笔记类型">
+                <button
+                  type="button"
+                  className={noteMode === "text" ? "active" : ""}
+                  onClick={() => {
+                    void (async () => {
+                      if (noteMode === "handwriting" && !(await flushHandwritingBeforeLeave())) {
+                        return;
+                      }
+                      setNoteMode("text");
+                      setHasUnsavedHandwritingChanges(false);
+                    })();
+                  }}
                 >
-                  {noteSaveStatus.kind === "saved"
-                    ? `已保存 ${noteSaveStatus.savedAt}`
-                    : noteSaveStatus.message}
-                </span>
-              ) : null}
-              <button type="submit">保存笔记</button>
+                  文本
+                </button>
+                <button
+                  type="button"
+                  className={noteMode === "handwriting" ? "active" : ""}
+                  onClick={() => {
+                    setNoteMode("handwriting");
+                  }}
+                >
+                  手写
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (noteMode === "text") {
+                    handleNewNote();
+                  } else {
+                    void handleNewHandwritingNote();
+                  }
+                }}
+              >
+                {noteMode === "text" ? "新建笔记" : "新建手写"}
+              </button>
             </div>
-          </form>
+          </div>
+          {noteMode === "text" ? (
+            <>
+              <NoteSelector
+                notes={detail.notes}
+                selectedNoteId={selectedNoteId}
+                onDelete={handleDeleteNote}
+                onSelect={handleSelectNoteId}
+              />
+              <form
+                aria-label="笔记编辑区"
+                className="note-form note-document-editor"
+                onSubmit={handleSaveNote}
+              >
+                <input
+                  aria-label="笔记标题"
+                  className="note-document-title"
+                  value={noteTitle}
+                  onChange={(event) => {
+                    setNoteTitle(event.target.value);
+                    setNoteSaveStatus(null);
+                  }}
+                  placeholder="无标题笔记"
+                />
+                <textarea
+                  aria-label="笔记正文"
+                  className="note-document-body"
+                  value={noteBody}
+                  onChange={(event) => {
+                    setNoteBody(event.target.value);
+                    setNoteSaveStatus(null);
+                  }}
+                  placeholder="开始记录..."
+                />
+                <div className="note-document-actions">
+                  {noteSaveStatus ? (
+                    <span
+                      className={`note-save-status note-save-status-${noteSaveStatus.kind}`}
+                      role={noteSaveStatus.kind === "error" ? "alert" : undefined}
+                    >
+                      {noteSaveStatus.kind === "saved"
+                        ? `已保存 ${noteSaveStatus.savedAt}`
+                        : noteSaveStatus.message}
+                    </span>
+                  ) : null}
+                  <button type="submit">保存笔记</button>
+                </div>
+              </form>
+            </>
+          ) : (
+            <>
+              <HandwritingNoteSelector
+                notes={detail.handwritingNotes}
+                selectedNoteId={selectedHandwritingNoteId}
+                onDelete={handleDeleteHandwritingNote}
+                onSelect={(noteId) => {
+                  void (async () => {
+                    if (!(await flushHandwritingBeforeLeave())) return;
+                    setSelectedHandwritingNoteId(noteId || null);
+                    setHasUnsavedHandwritingChanges(false);
+                  })();
+                }}
+              />
+              <HandwritingNoteEditor
+                ref={handwritingEditorRef}
+                learningContentId={detail.learningContent.id}
+                onDirtyChange={setHasUnsavedHandwritingChanges}
+                selectedSummary={
+                  detail.handwritingNotes.find((note) => note.id === selectedHandwritingNoteId) ??
+                  null
+                }
+                onSaved={handleHandwritingSaved}
+              />
+            </>
+          )}
         </section>
       </div>
     </main>
@@ -978,6 +1116,50 @@ function NoteSelector({
   );
 }
 
+function HandwritingNoteSelector({
+  notes,
+  onDelete,
+  onSelect,
+  selectedNoteId,
+}: {
+  notes: HandwritingNoteSummary[];
+  onDelete: (note: HandwritingNoteSummary) => void;
+  onSelect: (noteId: string) => void;
+  selectedNoteId: string | null;
+}) {
+  const selectedNote = notes.find((note) => note.id === selectedNoteId);
+
+  if (notes.length === 0) {
+    return <p className="empty-state">还没有手写笔记</p>;
+  }
+
+  return (
+    <div className="note-selector-row">
+      <label>
+        选择手写笔记
+        <select value={selectedNoteId ?? ""} onChange={(event) => onSelect(event.target.value)}>
+          <option value="">新建手写笔记</option>
+          {notes.map((note) => (
+            <option key={note.id} value={note.id}>
+              {note.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button
+        type="button"
+        aria-label="删除当前手写笔记"
+        disabled={!selectedNote}
+        onClick={() => {
+          if (selectedNote) onDelete(selectedNote);
+        }}
+      >
+        删除
+      </button>
+    </div>
+  );
+}
+
 function formatHours(hours: number) {
   return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} 小时`;
 }
@@ -995,6 +1177,26 @@ function upsertNote(notes: Note[], savedNote: Note) {
   if (!hasNote) return [...notes, savedNote];
 
   return notes.map((note) => (note.id === savedNote.id ? savedNote : note));
+}
+
+function upsertHandwritingNoteSummary(
+  notes: HandwritingNoteSummary[],
+  savedNote: HandwritingNote,
+) {
+  const summary: HandwritingNoteSummary = {
+    id: savedNote.id,
+    learningContentId: savedNote.learningContentId,
+    title: savedNote.title,
+    strokeSchemaVersion: savedNote.strokeSchemaVersion,
+    canvasWidth: savedNote.canvasWidth,
+    canvasHeight: savedNote.canvasHeight,
+    createdAt: savedNote.createdAt,
+    updatedAt: savedNote.updatedAt,
+  };
+  const hasNote = notes.some((note) => note.id === savedNote.id);
+  if (!hasNote) return [summary, ...notes];
+
+  return notes.map((note) => (note.id === savedNote.id ? summary : note));
 }
 
 function findNearestRemainingParentFolder(
